@@ -2,6 +2,9 @@
 
 Hardware control library for microscopes via Pycromanager (Micro-Manager).
 
+> **Part of the QPSC (QuPath Scope Control) system**
+> For complete installation instructions, see: https://github.com/uw-loci/QPSC
+
 ## Features
 
 - **Hardware Abstraction**: Platform-independent microscope control interface
@@ -12,6 +15,9 @@ Hardware control library for microscopes via Pycromanager (Micro-Manager).
 
 ## Installation
 
+**Recommended:** Use the [QPSC installation instructions](https://github.com/uw-loci/QPSC#quick-start) which includes all required components.
+
+**Standalone installation:**
 ```bash
 pip install microscope-control
 ```
