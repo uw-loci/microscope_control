@@ -17,6 +17,12 @@ Hardware control library for microscopes via Pycromanager (Micro-Manager).
 
 **Part of [QPSC (QuPath Scope Control)](https://github.com/uw-loci/QPSC)**
 
+**Requirements:**
+- Python 3.9 or later
+- pip (Python package installer)
+- Git (for `pip install git+https://...` commands)
+- Micro-Manager 2.0+
+
 ⚠️ **Important**: This package depends on `ppm-library` and requires Micro-Manager 2.0+.
 See the [QPSC Installation Guide](https://github.com/uw-loci/QPSC#automated-installation-windows) for complete setup instructions.
 
