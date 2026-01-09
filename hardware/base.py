@@ -83,7 +83,7 @@ def is_coordinate_in_range(settings: Dict[str, Any], position: Position) -> bool
         x_high = x_limits.get('high')
 
         if x_low is not None and x_high is not None:
-            if x_low < position.x < x_high:
+            if x_low <= position.x <= x_high:
                 _within_x_limit = True
             else:
                 logger.warning(f"X position {position.x} out of range [{x_low}, {x_high}]")
@@ -102,7 +102,7 @@ def is_coordinate_in_range(settings: Dict[str, Any], position: Position) -> bool
         y_high = y_limits.get('high')
 
         if y_low is not None and y_high is not None:
-            if y_low < position.y < y_high:
+            if y_low <= position.y <= y_high:
                 _within_y_limit = True
             else:
                 logger.warning(f"Y position {position.y} out of range [{y_low}, {y_high}]")
@@ -125,7 +125,7 @@ def is_coordinate_in_range(settings: Dict[str, Any], position: Position) -> bool
         z_high = z_limits.get('high')
 
         if z_low is not None and z_high is not None:
-            if z_low < position.z < z_high:
+            if z_low <= position.z <= z_high:
                 _within_z_limit = True
             else:
                 logger.warning(f"Z position {position.z} out of range [{z_low}, {z_high}]")
