@@ -18,7 +18,8 @@ dependencies = [
     "psutil>=5.9.0",
     "matplotlib>=3.8.0",
     "scikit-image>=0.21.0",
-    "opencv-python-headless>=4.8.0",  # Headless version for server environments
+    # opencv: Install separately via conda on Windows: conda install -c conda-forge opencv
+    # or via pip elsewhere: pip install opencv-python-headless>=4.8.0
     "ppm-library>=1.0.0",  # For debayering
 ]
 
