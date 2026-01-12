@@ -50,8 +50,8 @@ class EmptyRegionDetector:
         mean_entropy = np.mean(entropy_map)
 
         return {
-            "is_empty": mean_entropy < entropy_threshold,
-            "mean_entropy": mean_entropy,
+            "is_empty": bool(mean_entropy < entropy_threshold),
+            "mean_entropy": float(mean_entropy),
             "entropy_map": entropy_map,
         }
 
@@ -99,11 +99,11 @@ class EmptyRegionDetector:
                     results.append(False)
 
         # Overall assessment
-        empty_ratio = sum(results) / len(results) if results else 0
+        empty_ratio = sum(results) / len(results) if results else 0.0
 
         return {
-            "is_empty": empty_ratio > 0.8,
-            "empty_ratio": empty_ratio,
+            "is_empty": bool(empty_ratio > 0.8),
+            "empty_ratio": float(empty_ratio),
             "saturation_map": saturated.astype(float),
         }
 
@@ -144,9 +144,9 @@ class EmptyRegionDetector:
         mean_variance = np.mean(variances)
 
         return {
-            "is_empty": mean_variance < variance_threshold and variance_range < 2.0,
-            "mean_variance": mean_variance,
-            "scale_consistency": variance_range,
+            "is_empty": bool(mean_variance < variance_threshold and variance_range < 2.0),
+            "mean_variance": float(mean_variance),
+            "scale_consistency": float(variance_range),
             "variances_per_scale": dict(zip(scales, variances)),
         }
 
@@ -182,14 +182,14 @@ class EmptyRegionDetector:
         channel_diff = np.max([np.std(b), np.std(g), np.std(r)])
 
         return {
-            "is_empty": (
+            "is_empty": bool(
                 mean_brightness > min_brightness
                 and mean_saturation < max_saturation
                 and channel_diff < 10
             ),
-            "mean_brightness": mean_brightness,
-            "mean_saturation": mean_saturation,
-            "channel_variance": channel_diff,
+            "mean_brightness": float(mean_brightness),
+            "mean_saturation": float(mean_saturation),
+            "channel_variance": float(channel_diff),
         }
 
     @staticmethod
@@ -233,7 +233,7 @@ class EmptyRegionDetector:
         texture_score = np.std(laplacian)
 
         # Combined decision
-        is_empty = (
+        is_empty = bool(
             mean_variance < variance_threshold
             and edge_density < edge_threshold
             and brightness_ratio > saturation_ratio_threshold
@@ -242,10 +242,10 @@ class EmptyRegionDetector:
 
         return {
             "is_empty": is_empty,
-            "mean_variance": mean_variance,
-            "edge_density": edge_density,
-            "brightness_ratio": brightness_ratio,
-            "texture_score": texture_score,
+            "mean_variance": float(mean_variance),
+            "edge_density": float(edge_density),
+            "brightness_ratio": float(brightness_ratio),
+            "texture_score": float(texture_score),
             "edge_map": edges,
             "variance_map": local_var,
         }

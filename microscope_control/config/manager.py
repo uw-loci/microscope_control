@@ -180,7 +180,8 @@ class ConfigManager:
 
         return None
 
-    def _merge_settings(self, defaults: Dict[str, Any], specific: Dict[str, Any]) -> Dict[str, Any]:
+    @staticmethod
+    def _merge_settings(defaults: Dict[str, Any], specific: Dict[str, Any]) -> Dict[str, Any]:
         """
         Merge default settings with specific settings.
         Specific settings override defaults.
@@ -188,7 +189,7 @@ class ConfigManager:
         result = deepcopy(defaults)
         for key, value in specific.items():
             if isinstance(value, dict) and key in result and isinstance(result[key], dict):
-                result[key] = self._merge_settings(result[key], value)
+                result[key] = ConfigManager._merge_settings(result[key], value)
             else:
                 result[key] = value
         return result
@@ -299,7 +300,8 @@ class ConfigManager:
         ppm_config = config.get("modalities", {}).get("ppm", {})
         return ppm_config.get("rotation_angles")
 
-    def validate_config(self, config: Dict[str, Any]) -> List[str]:
+    @staticmethod
+    def validate_config(config: Dict[str, Any]) -> List[str]:
         """
         Validate configuration structure and return list of errors.
 

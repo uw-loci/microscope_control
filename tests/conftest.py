@@ -164,3 +164,81 @@ def sample_autofocus_config():
             'max_peak_width': 0.7
         }
     }
+
+
+@pytest.fixture
+def temp_output_directory(tmp_path):
+    """
+    Create a temporary directory for test output files.
+
+    Returns:
+        Path: Path to temporary directory
+    """
+    return tmp_path
+
+
+@pytest.fixture
+def sample_microscope_config():
+    """
+    Sample microscope configuration for testing.
+
+    Returns:
+        dict: Complete microscope configuration dictionary
+    """
+    return {
+        'microscope': {
+            'name': 'Test Microscope',
+            'type': 'PPM'
+        },
+        'modalities': {
+            'ppm': {
+                'rotation_angles': [0, 45, 90, 135]
+            },
+            'brightfield': {}
+        },
+        'acq_profiles': {
+            'defaults': [
+                {
+                    'objective': '10x',
+                    'settings': {
+                        'pixel_size_xy_um': {'camera1': 0.645}
+                    }
+                }
+            ],
+            'profiles': [
+                {
+                    'modality': 'ppm',
+                    'objective': '10x',
+                    'detector': 'camera1'
+                }
+            ]
+        },
+        'stage': {
+            'limits': {
+                'x_um': {'low': 0.0, 'high': 100000.0},
+                'y_um': {'low': 0.0, 'high': 75000.0},
+                'z_um': {'low': 0.0, 'high': 10000.0}
+            }
+        },
+        'objectives': {
+            '10x': {
+                'magnification': 10,
+                'na': 0.3,
+                'pixel_size_um': 0.645
+            },
+            '20x': {
+                'magnification': 20,
+                'na': 0.5,
+                'pixel_size_um': 0.3225
+            }
+        },
+        'autofocus': {
+            'n_steps': 21,
+            'search_range': 200.0,
+            'interp_strength': 10,
+            'interp_kind': 'cubic',
+            'score_metric': 'tenenbaum_gradient',
+            'min_peak_prominence': 0.15,
+            'max_peak_width': 0.7
+        }
+    }

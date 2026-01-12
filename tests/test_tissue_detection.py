@@ -17,40 +17,42 @@ class TestRefinedEntropy:
         self, synthetic_empty_image, synthetic_tissue_image
     ):
         """Empty regions should have lower entropy than tissue regions."""
-        empty_entropy = EmptyRegionDetector.refined_entropy(synthetic_empty_image)
-        tissue_entropy = EmptyRegionDetector.refined_entropy(synthetic_tissue_image)
+        empty_result = EmptyRegionDetector.refined_entropy(synthetic_empty_image)
+        tissue_result = EmptyRegionDetector.refined_entropy(synthetic_tissue_image)
 
         # Tissue has more texture/variation, so higher entropy
-        assert tissue_entropy > empty_entropy
+        assert tissue_result["mean_entropy"] > empty_result["mean_entropy"]
 
     def test_refined_entropy_is_empty_detection(self, synthetic_empty_image):
         """Empty image should be detected as empty using refined entropy."""
-        is_empty = EmptyRegionDetector.refined_entropy(
-            synthetic_empty_image, threshold=0.5, return_bool=True
+        # Synthetic empty image has entropy ~2.1 due to added noise
+        result = EmptyRegionDetector.refined_entropy(
+            synthetic_empty_image, entropy_threshold=3.0
         )
-        assert is_empty is True
+        assert result["is_empty"] == True
 
     def test_refined_entropy_tissue_not_empty(self, synthetic_tissue_image):
         """Tissue image should NOT be detected as empty."""
-        is_empty = EmptyRegionDetector.refined_entropy(
-            synthetic_tissue_image, threshold=0.5, return_bool=True
+        # Synthetic tissue image has entropy ~4.5 due to texture/variation
+        result = EmptyRegionDetector.refined_entropy(
+            synthetic_tissue_image, entropy_threshold=3.0
         )
-        assert is_empty is False
+        assert result["is_empty"] == False
 
     def test_refined_entropy_with_different_window_sizes(self, synthetic_tissue_image):
         """Different window sizes should affect entropy calculation."""
-        entropy_small = EmptyRegionDetector.refined_entropy(
+        result_small = EmptyRegionDetector.refined_entropy(
             synthetic_tissue_image, window_size=5
         )
-        entropy_large = EmptyRegionDetector.refined_entropy(
+        result_large = EmptyRegionDetector.refined_entropy(
             synthetic_tissue_image, window_size=15
         )
 
         # Both should be valid positive numbers
-        assert entropy_small > 0
-        assert entropy_large > 0
+        assert result_small["mean_entropy"] > 0
+        assert result_large["mean_entropy"] > 0
         # Values will differ due to different spatial scales
-        assert entropy_small != entropy_large
+        assert result_small["mean_entropy"] != result_large["mean_entropy"]
 
 
 class TestSaturationWithContext:
@@ -60,32 +62,38 @@ class TestSaturationWithContext:
         self, synthetic_empty_image, synthetic_tissue_image
     ):
         """Empty regions typically have high saturation (uniform white)."""
-        empty_score = EmptyRegionDetector.saturation_with_context(synthetic_empty_image)
-        tissue_score = EmptyRegionDetector.saturation_with_context(synthetic_tissue_image)
+        # Use threshold appropriate for synthetic images (~245)
+        empty_result = EmptyRegionDetector.saturation_with_context(
+            synthetic_empty_image, saturation_threshold=240
+        )
+        tissue_result = EmptyRegionDetector.saturation_with_context(
+            synthetic_tissue_image, saturation_threshold=240
+        )
 
-        # Empty (white) should have higher saturation score
-        assert empty_score > tissue_score
+        # Empty (white) should have higher saturation ratio
+        assert empty_result["empty_ratio"] > tissue_result["empty_ratio"]
 
     def test_saturation_pure_white_image(self):
         """Pure white image should have very high saturation score."""
         white_image = np.full((256, 256, 3), 255, dtype=np.uint8)
-        score = EmptyRegionDetector.saturation_with_context(white_image)
+        result = EmptyRegionDetector.saturation_with_context(white_image)
 
         # Should be close to 1.0 (highly saturated white)
-        assert score > 0.8
+        assert result["empty_ratio"] > 0.8
+        assert result["is_empty"] == True
 
     def test_saturation_with_roi_context(self, synthetic_tissue_image):
         """Saturation detection should work with different window sizes."""
-        score_small = EmptyRegionDetector.saturation_with_context(
+        result_small = EmptyRegionDetector.saturation_with_context(
             synthetic_tissue_image, window_size=10
         )
-        score_large = EmptyRegionDetector.saturation_with_context(
+        result_large = EmptyRegionDetector.saturation_with_context(
             synthetic_tissue_image, window_size=30
         )
 
         # Both should be valid
-        assert np.isfinite(score_small)
-        assert np.isfinite(score_large)
+        assert np.isfinite(result_small["empty_ratio"])
+        assert np.isfinite(result_large["empty_ratio"])
 
 
 class TestMultiScaleAnalysis:
@@ -105,8 +113,9 @@ class TestMultiScaleAnalysis:
         """Multi-scale analysis should return valid numeric score."""
         result = EmptyRegionDetector.multi_scale_analysis(synthetic_tissue_image)
 
-        assert np.isfinite(result)
-        assert result >= 0  # Assuming score is non-negative
+        assert isinstance(result, dict)
+        assert np.isfinite(result["mean_variance"])
+        assert result["mean_variance"] >= 0  # Assuming score is non-negative
 
 
 class TestColorSpaceAnalysis:
@@ -116,20 +125,23 @@ class TestColorSpaceAnalysis:
         self, synthetic_empty_image, synthetic_tissue_image
     ):
         """Color space analysis should distinguish empty (white) from colored tissue."""
-        empty_score = EmptyRegionDetector.color_space_analysis(synthetic_empty_image)
-        tissue_score = EmptyRegionDetector.color_space_analysis(synthetic_tissue_image)
+        empty_result = EmptyRegionDetector.color_space_analysis(synthetic_empty_image)
+        tissue_result = EmptyRegionDetector.color_space_analysis(synthetic_tissue_image)
 
         # Empty (white) should have different characteristics in HSV space
         # High V (value), low S (saturation) for white background
-        assert empty_score != tissue_score
+        assert empty_result["mean_brightness"] > tissue_result["mean_brightness"]
+        assert empty_result["mean_saturation"] < tissue_result["mean_saturation"]
 
     def test_color_space_white_image(self):
         """Pure white image should have characteristic HSV properties."""
         white_image = np.full((256, 256, 3), 255, dtype=np.uint8)
-        score = EmptyRegionDetector.color_space_analysis(white_image)
+        result = EmptyRegionDetector.color_space_analysis(white_image)
 
         # White has high V, low S - should be detected as empty-like
-        assert np.isfinite(score)
+        assert result["is_empty"] == True
+        assert result["mean_brightness"] > 240
+        assert result["mean_saturation"] < 0.1
 
     def test_color_space_colored_image(self):
         """Colored image should have different HSV properties than white."""
@@ -139,8 +151,10 @@ class TestColorSpaceAnalysis:
         colored_image[:, :, 1] = 100  # Green
         colored_image[:, :, 2] = 100  # Blue
 
-        score = EmptyRegionDetector.color_space_analysis(colored_image)
-        assert np.isfinite(score)
+        result = EmptyRegionDetector.color_space_analysis(colored_image)
+        assert isinstance(result, dict)
+        assert np.isfinite(result["mean_brightness"])
+        assert np.isfinite(result["mean_saturation"])
 
 
 class TestRecommendedCombo:
@@ -148,41 +162,35 @@ class TestRecommendedCombo:
 
     def test_recommended_combo_empty_detection(self, synthetic_empty_image):
         """Recommended combo should correctly identify empty regions."""
-        is_empty = EmptyRegionDetector.recommended_combo(
-            synthetic_empty_image, return_bool=True
-        )
+        result = EmptyRegionDetector.recommended_combo(synthetic_empty_image)
 
         # Empty image should be detected as empty
-        assert is_empty is True
+        assert result["is_empty"] == True
 
     def test_recommended_combo_tissue_detection(self, synthetic_tissue_image):
         """Recommended combo should correctly identify tissue regions."""
-        is_empty = EmptyRegionDetector.recommended_combo(
-            synthetic_tissue_image, return_bool=True
-        )
+        result = EmptyRegionDetector.recommended_combo(synthetic_tissue_image)
 
         # Tissue image should NOT be detected as empty
-        assert is_empty is False
+        assert result["is_empty"] == False
 
     def test_recommended_combo_returns_score(self, synthetic_tissue_image):
-        """Recommended combo should return numeric score when return_bool=False."""
-        score = EmptyRegionDetector.recommended_combo(
-            synthetic_tissue_image, return_bool=False
-        )
+        """Recommended combo should return dict with numeric scores."""
+        result = EmptyRegionDetector.recommended_combo(synthetic_tissue_image)
 
-        assert np.isfinite(score)
-        assert isinstance(score, (int, float))
+        assert isinstance(result, dict)
+        assert np.isfinite(result["mean_variance"])
+        assert np.isfinite(result["edge_density"])
+        assert np.isfinite(result["brightness_ratio"])
+        assert np.isfinite(result["texture_score"])
 
     def test_recommended_combo_consistency(self, synthetic_empty_image):
         """Multiple calls should return consistent results."""
-        result1 = EmptyRegionDetector.recommended_combo(
-            synthetic_empty_image, return_bool=True
-        )
-        result2 = EmptyRegionDetector.recommended_combo(
-            synthetic_empty_image, return_bool=True
-        )
+        result1 = EmptyRegionDetector.recommended_combo(synthetic_empty_image)
+        result2 = EmptyRegionDetector.recommended_combo(synthetic_empty_image)
 
-        assert result1 == result2
+        assert result1["is_empty"] == result2["is_empty"]
+        assert result1["mean_variance"] == result2["mean_variance"]
 
 
 class TestEdgeCases:
@@ -207,10 +215,9 @@ class TestEdgeCases:
 
         # Should not crash with small images
         try:
-            is_empty = EmptyRegionDetector.recommended_combo(
-                small_image, return_bool=True
-            )
-            assert isinstance(is_empty, bool)
+            result = EmptyRegionDetector.recommended_combo(small_image)
+            assert isinstance(result, dict)
+            assert isinstance(result["is_empty"], bool)
         except Exception as e:
             pytest.fail(f"Detection failed on small image: {e}")
 
@@ -220,8 +227,9 @@ class TestEdgeCases:
 
         # refined_entropy should work with grayscale
         try:
-            score = EmptyRegionDetector.refined_entropy(grayscale)
-            assert np.isfinite(score)
+            result = EmptyRegionDetector.refined_entropy(grayscale)
+            assert isinstance(result, dict)
+            assert np.isfinite(result["mean_entropy"])
         except Exception as e:
             # Some methods may require RGB
             if "color" not in str(e).lower():
@@ -234,13 +242,15 @@ class TestEdgeCases:
 
         try:
             # Convert to uint8 if needed or handle directly
-            score = EmptyRegionDetector.refined_entropy(uint16_image)
-            assert np.isfinite(score)
+            result = EmptyRegionDetector.refined_entropy(uint16_image)
+            assert isinstance(result, dict)
+            assert np.isfinite(result["mean_entropy"])
         except Exception:
             # May need conversion to uint8 for some methods
             uint8_image = (uint16_image // 256).astype(np.uint8)
-            score = EmptyRegionDetector.refined_entropy(uint8_image)
-            assert np.isfinite(score)
+            result = EmptyRegionDetector.refined_entropy(uint8_image)
+            assert isinstance(result, dict)
+            assert np.isfinite(result["mean_entropy"])
 
 
 class TestThresholdTuning:
@@ -249,37 +259,41 @@ class TestThresholdTuning:
     def test_entropy_different_thresholds(self, synthetic_empty_image):
         """Different thresholds should affect empty detection results."""
         # Very strict threshold
-        is_empty_strict = EmptyRegionDetector.refined_entropy(
-            synthetic_empty_image, threshold=0.9, return_bool=True
+        result_strict = EmptyRegionDetector.refined_entropy(
+            synthetic_empty_image, entropy_threshold=0.9
         )
 
         # Very lenient threshold
-        is_empty_lenient = EmptyRegionDetector.refined_entropy(
-            synthetic_empty_image, threshold=0.1, return_bool=True
+        result_lenient = EmptyRegionDetector.refined_entropy(
+            synthetic_empty_image, entropy_threshold=0.1
         )
 
-        # Both should be boolean
-        assert isinstance(is_empty_strict, bool)
-        assert isinstance(is_empty_lenient, bool)
+        # Both should return dict with is_empty boolean
+        assert isinstance(result_strict["is_empty"], bool)
+        assert isinstance(result_lenient["is_empty"], bool)
+        # Different thresholds may give different results
+        # (lenient threshold more likely to mark as empty)
 
     def test_threshold_boundary_behavior(self, synthetic_tissue_image):
         """Threshold should create clear decision boundary."""
         # Get raw score
-        raw_score = EmptyRegionDetector.refined_entropy(
-            synthetic_tissue_image, return_bool=False
-        )
+        result = EmptyRegionDetector.refined_entropy(synthetic_tissue_image)
+        raw_score = result["mean_entropy"]
 
         # Test threshold just above and below raw score
-        is_empty_below = EmptyRegionDetector.refined_entropy(
-            synthetic_tissue_image, threshold=raw_score - 0.1, return_bool=True
+        result_below = EmptyRegionDetector.refined_entropy(
+            synthetic_tissue_image, entropy_threshold=raw_score - 0.1
         )
-        is_empty_above = EmptyRegionDetector.refined_entropy(
-            synthetic_tissue_image, threshold=raw_score + 0.1, return_bool=True
+        result_above = EmptyRegionDetector.refined_entropy(
+            synthetic_tissue_image, entropy_threshold=raw_score + 0.1
         )
 
         # Results should differ based on threshold position
-        assert isinstance(is_empty_below, bool)
-        assert isinstance(is_empty_above, bool)
+        assert isinstance(result_below["is_empty"], bool)
+        assert isinstance(result_above["is_empty"], bool)
+        # Below threshold should mark as empty (entropy < threshold)
+        # Above threshold should NOT mark as empty (entropy > threshold)
+        assert result_below["is_empty"] != result_above["is_empty"]
 
 
 if __name__ == "__main__":

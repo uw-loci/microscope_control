@@ -104,8 +104,9 @@ class TestConfigValidation:
     def test_validate_valid_config(self, sample_microscope_config):
         """Test validation of valid configuration."""
         try:
-            is_valid = ConfigManager.validate_config(sample_microscope_config)
-            assert is_valid is True or is_valid is None
+            errors = ConfigManager.validate_config(sample_microscope_config)
+            # Should return empty list for valid config
+            assert errors == [] or errors is None
         except AttributeError:
             pytest.skip("validate_config not available")
 
@@ -119,9 +120,9 @@ class TestConfigValidation:
         }
 
         try:
-            is_valid = ConfigManager.validate_config(incomplete_config)
-            # Should return False or raise ValueError
-            assert is_valid is False or is_valid is None
+            errors = ConfigManager.validate_config(incomplete_config)
+            # Should return non-empty list of errors
+            assert len(errors) > 0
         except (ValueError, KeyError):
             # Expected to raise error
             pass
@@ -133,8 +134,9 @@ class TestConfigValidation:
         empty_config = {}
 
         try:
-            is_valid = ConfigManager.validate_config(empty_config)
-            assert is_valid is False or is_valid is None
+            errors = ConfigManager.validate_config(empty_config)
+            # Should return errors for missing required keys
+            assert len(errors) > 0
         except (ValueError, KeyError):
             pass
         except AttributeError:
@@ -154,8 +156,9 @@ class TestConfigValidation:
         }
 
         try:
-            is_valid = ConfigManager.validate_config(invalid_config)
-            assert is_valid is False or is_valid is None
+            errors = ConfigManager.validate_config(invalid_config)
+            # Should return errors for missing required keys
+            assert len(errors) > 0
         except (ValueError, TypeError, KeyError):
             pass
         except AttributeError:
@@ -197,12 +200,16 @@ class TestConfigManagerInit:
 
     def test_init_with_malformed_yaml(self, temp_output_directory):
         """Test initialization with malformed YAML file."""
+        # Create a malformed YAML file in the directory
         config_path = temp_output_directory / "malformed.yml"
         config_path.write_text("{ invalid yaml content: [")
 
         try:
-            with pytest.raises(yaml.YAMLError):
-                ConfigManager(str(config_path))
+            # ConfigManager catches YAML errors internally and logs them
+            # It doesn't raise, just logs the error and continues
+            manager = ConfigManager(str(temp_output_directory))
+            # The config should not be loaded due to YAML error
+            assert "malformed" not in manager.list_configs()
         except Exception:
             pytest.skip("ConfigManager YAML error handling differs")
 

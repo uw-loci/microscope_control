@@ -355,8 +355,9 @@ class AutofocusMetrics:
 
         return p95 - p5
 
+    @staticmethod
     def calculate_metric(
-        self, image: np.ndarray, metric: str = "tenenbaum_gradient", **kwargs
+        image: np.ndarray, metric: str = "tenenbaum_gradient", **kwargs
     ) -> Dict[str, Any]:
         """
         Calculate specified autofocus metric with additional diagnostics.
@@ -370,25 +371,26 @@ class AutofocusMetrics:
             Dict with metric value and additional information
         """
         metrics = {
-            "variance": self.variance,
-            "normalized_variance": self.normalized_variance,
-            "laplacian_variance": self.laplacian_variance,
-            "modified_laplacian": self.modified_laplacian,
-            "brenner_gradient": self.brenner_gradient,
-            "tenenbaum_gradient": self.tenenbaum_gradient,
-            "energy_laplace": self.energy_laplace,
-            "vollath_f4": self.vollath_f4,
-            "vollath_f5": self.vollath_f5,
-            "entropy": self.entropy,
-            "dct_energy": self.dct_energy,
-            "wavelet_energy": self.wavelet_energy,
-            "histogram_range": self.histogram_range,
+            "variance": AutofocusMetrics.variance,
+            "normalized_variance": AutofocusMetrics.normalized_variance,
+            "laplacian_variance": AutofocusMetrics.laplacian_variance,
+            "modified_laplacian": AutofocusMetrics.modified_laplacian,
+            "brenner_gradient": AutofocusMetrics.brenner_gradient,
+            "tenenbaum_gradient": AutofocusMetrics.tenenbaum_gradient,
+            "energy_laplace": AutofocusMetrics.energy_laplace,
+            "vollath_f4": AutofocusMetrics.vollath_f4,
+            "vollath_f5": AutofocusMetrics.vollath_f5,
+            "entropy": AutofocusMetrics.entropy,
+            "dct_energy": AutofocusMetrics.dct_energy,
+            "wavelet_energy": AutofocusMetrics.wavelet_energy,
+            "histogram_range": AutofocusMetrics.histogram_range,
         }
 
         if metric not in metrics:
             raise ValueError(f"Unknown metric: {metric}. Available: {list(metrics.keys())}")
 
-        self.logger.info(f"Calculating autofocus metric: {metric}")
+        logger = logging.getLogger(__name__)
+        logger.info(f"Calculating autofocus metric: {metric}")
 
         # Calculate metric
         value = metrics[metric](image, **kwargs)
@@ -402,12 +404,12 @@ class AutofocusMetrics:
         }
 
         # Log result
-        self.logger.debug(f"Autofocus {metric}: {value:.4f}")
+        logger.debug(f"Autofocus {metric}: {value:.4f}")
 
         return result
 
+    @staticmethod
     def multi_metric_analysis(
-        self,
         image: np.ndarray,
         metrics: list = ["tenenbaum_gradient", "laplacian_variance", "brenner_gradient"],
     ) -> Dict[str, Any]:
@@ -425,7 +427,7 @@ class AutofocusMetrics:
         values = []
 
         for metric in metrics:
-            result = self.calculate_metric(image, metric)
+            result = AutofocusMetrics.calculate_metric(image, metric)
             results[metric] = result["value"]
             values.append(result["value"])
 
