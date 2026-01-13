@@ -80,11 +80,10 @@ class JAICameraProperties:
     MODE_OFF = "Off"
 
     # Hardware limits (discovered 2026-01-13 from JAI AP-3200T-USB)
-    # Note: Max exposure depends on frame rate. At 38 Hz -> ~25.85ms max.
-    # At min frame rate (0.125 Hz) -> ~7900ms max.
-    # The _adjust_frame_rate_for_exposure() method handles this automatically.
+    # Per-channel exposure (Exposure_Red/Green/Blue) is FIXED at 25.85ms max
+    # regardless of frame rate. This is a hardware limitation.
     EXPOSURE_MIN_MS = 0.001
-    EXPOSURE_MAX_MS_AT_MAX_FRAMERATE = 25.85  # Reference only
+    EXPOSURE_MAX_MS = 25.85  # Fixed hardware limit for per-channel exposure
     FRAME_RATE_MIN = 0.125
     FRAME_RATE_MAX = 39.21
 
@@ -268,10 +267,10 @@ class JAICameraProperties:
         if auto_enable and not self.is_individual_exposure_enabled():
             self.enable_individual_exposure()
 
-        # Clamp minimum exposure (max is handled by frame rate adjustment)
-        red = max(self.EXPOSURE_MIN_MS, red)
-        green = max(self.EXPOSURE_MIN_MS, green)
-        blue = max(self.EXPOSURE_MIN_MS, blue)
+        # Clamp to hardware limits (per-channel max is fixed at 25.85ms)
+        red = max(self.EXPOSURE_MIN_MS, min(self.EXPOSURE_MAX_MS, red))
+        green = max(self.EXPOSURE_MIN_MS, min(self.EXPOSURE_MAX_MS, green))
+        blue = max(self.EXPOSURE_MIN_MS, min(self.EXPOSURE_MAX_MS, blue))
 
         # Adjust frame rate for longest exposure
         max_exposure = max(red, green, blue)

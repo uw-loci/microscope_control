@@ -94,9 +94,8 @@ class CalibrationConfig:
     min_exposure_ms: float = 0.1
 
     # Maximum exposure time in milliseconds
-    # Note: Actual limit depends on frame rate. At min frame rate (0.125 Hz),
-    # max exposure is ~7900ms. Keep this reasonable for calibration speed.
-    max_exposure_ms: float = 200.0
+    # Hardware limit for per-channel exposure is 25.85ms (fixed, not frame rate dependent)
+    max_exposure_ms: float = 25.85
 
     # Exposure ratio threshold before applying gain compensation
     # If brightest_channel_exposure / darkest_channel_exposure > this, use gain
