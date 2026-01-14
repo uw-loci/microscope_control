@@ -30,9 +30,9 @@ props.set_channel_exposures(red=50.0, green=60.0, blue=70.0)
 props.run_auto_white_balance()  # One-shot calibration
 # Or use presets: props.set_white_balance_preset(5000)  # 5000K preset
 
-# Automated calibration with saved settings
+# Automated calibration with saved settings (default tolerance=2 for 2-level precision)
 calibrator = JAIWhiteBalanceCalibrator(hardware)
-result = calibrator.calibrate(target_value=180, tolerance=5)
+result = calibrator.calibrate(target_value=180)  # tolerance=2 by default
 
 Note:
     Requires Micro-Manager with JAI camera device adapter supporting
@@ -44,6 +44,8 @@ from microscope_control.jai.calibration import (
     JAIWhiteBalanceCalibrator,
     WhiteBalanceResult,
     CalibrationConfig,
+    db_to_linear,
+    linear_to_db,
 )
 
 __all__ = [
@@ -52,4 +54,6 @@ __all__ = [
     "JAIWhiteBalanceCalibrator",
     "WhiteBalanceResult",
     "CalibrationConfig",
+    "db_to_linear",
+    "linear_to_db",
 ]

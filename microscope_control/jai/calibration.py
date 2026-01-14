@@ -51,6 +51,34 @@ from microscope_control.jai.properties import JAICameraProperties
 logger = logging.getLogger(__name__)
 
 
+def db_to_linear(db: float) -> float:
+    """
+    Convert decibels to linear gain multiplier.
+
+    Args:
+        db: Gain in decibels
+
+    Returns:
+        Linear gain multiplier (e.g., 3 dB -> 1.41, 6 dB -> 2.0)
+    """
+    return 10 ** (db / 20.0)
+
+
+def linear_to_db(linear: float) -> float:
+    """
+    Convert linear gain multiplier to decibels.
+
+    Args:
+        linear: Linear gain multiplier
+
+    Returns:
+        Gain in decibels (e.g., 1.41 -> 3 dB, 2.0 -> 6 dB)
+    """
+    if linear <= 0:
+        return float('-inf')
+    return 20.0 * np.log10(linear)
+
+
 @dataclass
 class WhiteBalanceResult:
     """Results from white balance calibration."""
@@ -85,10 +113,11 @@ class CalibrationConfig:
     target_value: float = 180.0
 
     # Acceptable deviation from target (channels within tolerance are considered balanced)
-    tolerance: float = 5.0
+    # Default of 2.0 achieves within 2 intensity levels precision
+    tolerance: float = 2.0
 
     # Maximum iterations before giving up
-    max_iterations: int = 20
+    max_iterations: int = 30
 
     # Minimum exposure time in milliseconds
     min_exposure_ms: float = 0.1
@@ -103,8 +132,20 @@ class CalibrationConfig:
     # If brightest_channel_exposure / darkest_channel_exposure > this, use gain
     gain_threshold_ratio: float = 2.0
 
+    # Maximum analog gain in dB (JAI supports 0-36.13 dB, but keep low to minimize noise)
+    # 3 dB = 1.41x linear gain (sqrt(2))
+    max_analog_gain_db: float = 3.0
+
+    # Whether to avoid digital gain (digital gain adds more noise than analog)
+    # Digital gain range is very narrow anyway: 0.9-1.1 linear (-0.915 to 0.828 dB)
+    avoid_digital_gain: bool = True
+
     # Damping factor for exposure adjustments (prevents oscillation)
+    # Use lower damping for fine-tuning phase when close to target
     damping_factor: float = 0.7
+
+    # Fine-tuning damping factor (used when within 2x tolerance of target)
+    fine_damping_factor: float = 0.5
 
     # Whether to perform black level calibration
     calibrate_black_level: bool = True
@@ -309,6 +350,9 @@ class JAIWhiteBalanceCalibrator:
             )
 
             # Step 5: Iterative refinement
+            # Define fine-tuning threshold (switch to finer adjustments when within 2x tolerance)
+            fine_tune_threshold = config.tolerance * 2
+
             for iteration in range(1, config.max_iterations + 1):
                 # Apply current exposures
                 self.jai_props.set_channel_exposures(**exposures, auto_enable=False)
@@ -317,50 +361,81 @@ class JAIWhiteBalanceCalibrator:
                 # Capture and analyze
                 means = self._capture_and_analyze()
 
-                # Check convergence
+                # Check convergence (strict: within tolerance of target)
                 converged_flags = self._check_convergence(means, target, config.tolerance)
                 all_converged = all(converged_flags.values())
 
+                # Calculate max deviation for logging
+                deviations = {ch: abs(means[ch] - target) for ch in ["red", "green", "blue"]}
+                max_deviation = max(deviations.values())
+
                 # Log this iteration
+                notes = "Converged" if all_converged else f"max_dev={max_deviation:.1f}"
                 self._convergence_log.add_iteration(
-                    iteration, means, exposures, gains, converged_flags,
-                    "Converged" if all_converged else "Adjusting"
+                    iteration, means, exposures, gains, converged_flags, notes
                 )
 
+                # Log with precision info
                 logger.debug(
-                    f"Iteration {iteration}: R={means['red']:.1f} ({exposures['red']:.1f}ms), "
-                    f"G={means['green']:.1f} ({exposures['green']:.1f}ms), "
-                    f"B={means['blue']:.1f} ({exposures['blue']:.1f}ms)"
+                    f"Iter {iteration}: R={means['red']:.1f} (exp={exposures['red']:.2f}ms), "
+                    f"G={means['green']:.1f} (exp={exposures['green']:.2f}ms), "
+                    f"B={means['blue']:.1f} (exp={exposures['blue']:.2f}ms) "
+                    f"| max_dev={max_deviation:.1f} (target +/-{config.tolerance})"
                 )
 
                 if all_converged:
-                    logger.info(f"Calibration converged after {iteration} iterations")
+                    logger.info(
+                        f"Calibration converged after {iteration} iterations "
+                        f"(all channels within {config.tolerance} of target {target:.0f})"
+                    )
                     break
 
-                # Calculate adjustments with damping
+                # Calculate adjustments with adaptive damping
+                # Use finer damping when close to target for better precision
                 for channel in ["red", "green", "blue"]:
                     if not converged_flags[channel] and means[channel] > 0:
+                        deviation = abs(means[channel] - target)
                         ratio = target / means[channel]
+
+                        # Use fine damping when close to target
+                        if deviation <= fine_tune_threshold:
+                            damping = config.fine_damping_factor
+                        else:
+                            damping = config.damping_factor
+
                         # Apply damping to prevent oscillation
-                        damped_ratio = 1.0 + (ratio - 1.0) * config.damping_factor
+                        damped_ratio = 1.0 + (ratio - 1.0) * damping
                         new_exposure = exposures[channel] * damped_ratio
                         exposures[channel] = self._clamp_exposure(new_exposure, config)
 
-                # Check if we need gain compensation
-                exposures, gains = self._check_gain_compensation(
-                    exposures, gains, config
-                )
+                # Check if we need gain compensation (only check periodically, not every iteration)
+                if iteration % 5 == 0 or iteration == 1:
+                    exposures, gains = self._check_gain_compensation(
+                        exposures, gains, config
+                    )
 
             # Step 6: Final validation
             final_means = self._capture_and_analyze()
             final_converged = self._check_convergence(final_means, target, config.tolerance)
             all_converged = all(final_converged.values())
 
-            if not all_converged:
+            # Calculate final deviations
+            final_deviations = {ch: abs(final_means[ch] - target) for ch in ["red", "green", "blue"]}
+            max_final_deviation = max(final_deviations.values())
+
+            if all_converged:
+                logger.info(
+                    f"White balance achieved within {config.tolerance} intensity levels. "
+                    f"Final: R={final_means['red']:.1f}, G={final_means['green']:.1f}, "
+                    f"B={final_means['blue']:.1f} (target: {target:.0f}, max_dev: {max_final_deviation:.1f})"
+                )
+            else:
                 logger.warning(
-                    "Calibration did not fully converge. "
-                    f"Final means: R={final_means['red']:.1f}, G={final_means['green']:.1f}, "
-                    f"B={final_means['blue']:.1f} (target: {target:.1f})"
+                    f"Calibration did not achieve target precision of +/-{config.tolerance}. "
+                    f"Final means: R={final_means['red']:.1f} (dev={final_deviations['red']:.1f}), "
+                    f"G={final_means['green']:.1f} (dev={final_deviations['green']:.1f}), "
+                    f"B={final_means['blue']:.1f} (dev={final_deviations['blue']:.1f}) "
+                    f"(target: {target:.0f}, max_dev: {max_final_deviation:.1f})"
                 )
 
             # Build result
@@ -525,8 +600,11 @@ class JAIWhiteBalanceCalibrator:
         """
         Check if gain compensation is needed and apply if necessary.
 
-        If the ratio between max and min exposure exceeds the threshold,
-        use gain to compensate for the longer exposures.
+        Strategy:
+        1. Only use gain when exposure ratio between channels exceeds threshold (2x)
+        2. Limit analog gain to max_analog_gain_db (default 3 dB = 1.41x linear)
+        3. Avoid digital gain unless absolutely necessary (adds more noise)
+        4. If gain cannot fully compensate, allow some exposure imbalance
 
         Returns:
             Updated (exposures, gains) tuple
@@ -542,9 +620,12 @@ class JAIWhiteBalanceCalibrator:
         if ratio <= config.gain_threshold_ratio:
             return exposures, gains
 
+        # Convert max gain from dB to linear multiplier
+        max_linear_gain = db_to_linear(config.max_analog_gain_db)
+
         logger.info(
             f"Exposure ratio {ratio:.2f} exceeds threshold {config.gain_threshold_ratio}. "
-            "Applying gain compensation."
+            f"Applying gain compensation (max {config.max_analog_gain_db} dB = {max_linear_gain:.3f}x linear)."
         )
 
         # Enable individual gain mode
@@ -554,22 +635,37 @@ class JAIWhiteBalanceCalibrator:
             logger.warning(f"Failed to enable individual gain: {e}")
             return exposures, gains
 
-        # Target: bring all exposures within threshold of each other
+        # Strategy: reduce the longer exposures and compensate with gain
+        # Target exposure is min_exp * threshold, but we're limited by max gain
         target_max_exp = min_exp * config.gain_threshold_ratio
         new_exposures = exposures.copy()
         new_gains = gains.copy()
 
         for channel, exp in exposures.items():
             if exp > target_max_exp:
-                gain_factor = exp / target_max_exp
-                new_gains[channel] = gain_factor
-                new_exposures[channel] = target_max_exp
-                logger.info(
-                    f"  {channel}: exposure {exp:.1f}ms -> {target_max_exp:.1f}ms, "
-                    f"gain 1.0 -> {gain_factor:.2f}"
-                )
+                # Calculate required gain
+                required_gain = exp / target_max_exp
 
-        # Apply gains
+                if required_gain <= max_linear_gain:
+                    # Full compensation possible within gain limit
+                    new_gains[channel] = required_gain
+                    new_exposures[channel] = target_max_exp
+                    logger.info(
+                        f"  {channel}: exposure {exp:.2f}ms -> {target_max_exp:.2f}ms, "
+                        f"gain 1.0 -> {required_gain:.3f}x ({linear_to_db(required_gain):.1f} dB)"
+                    )
+                else:
+                    # Gain-limited: apply max gain and keep some exposure imbalance
+                    new_gains[channel] = max_linear_gain
+                    # New exposure = exp / max_linear_gain (partial compensation)
+                    new_exposure = exp / max_linear_gain
+                    new_exposures[channel] = new_exposure
+                    logger.warning(
+                        f"  {channel}: gain-limited! exposure {exp:.2f}ms -> {new_exposure:.2f}ms, "
+                        f"gain capped at {max_linear_gain:.3f}x ({config.max_analog_gain_db} dB)"
+                    )
+
+        # Apply analog gains
         try:
             self.jai_props.set_analog_gains(
                 red=new_gains["red"],
@@ -577,9 +673,18 @@ class JAIWhiteBalanceCalibrator:
                 blue=new_gains["blue"],
                 auto_enable=False,
             )
+            logger.info(
+                f"Applied analog gains: R={new_gains['red']:.3f}x, "
+                f"G={new_gains['green']:.3f}x, B={new_gains['blue']:.3f}x"
+            )
         except Exception as e:
             logger.warning(f"Failed to set analog gains: {e}")
             return exposures, gains
+
+        # Note: We intentionally avoid digital gain per config.avoid_digital_gain
+        # Digital gain range is very narrow (0.9-1.1x) and adds more noise than analog
+        if not config.avoid_digital_gain:
+            logger.debug("Digital gain is enabled but not currently used in this implementation")
 
         return new_exposures, new_gains
 
@@ -803,3 +908,135 @@ class JAIWhiteBalanceCalibrator:
             )
 
         logger.info("Applied white balance calibration to camera")
+
+    def calibrate_simple(
+        self,
+        initial_exposure_ms: float,
+        target: float = 180.0,
+        tolerance: float = 5.0,
+        output_path: Optional[Path] = None,
+    ) -> WhiteBalanceResult:
+        """
+        Run simple white balance calibration at a single exposure.
+
+        This is a convenience method for basic white balance calibration
+        at the current PPM angle (no rotation). Use this for non-PPM imaging
+        or when you want to calibrate at the current angle only.
+
+        Args:
+            initial_exposure_ms: Starting exposure time for all channels (ms)
+            target: Target intensity (0-255 for 8-bit)
+            tolerance: Acceptable deviation from target
+            output_path: Optional path to save calibration results
+
+        Returns:
+            WhiteBalanceResult with calibrated per-channel exposures
+        """
+        logger.info(f"Starting simple white balance calibration (initial exp={initial_exposure_ms}ms)")
+
+        # Set initial exposure on all channels
+        self.jai_props.set_channel_exposures(
+            red=initial_exposure_ms,
+            green=initial_exposure_ms,
+            blue=initial_exposure_ms,
+        )
+
+        # Build config
+        config = CalibrationConfig(
+            target_value=target,
+            tolerance=tolerance,
+        )
+
+        # Run calibration without PPM rotation
+        return self.calibrate(
+            config=config,
+            output_path=output_path,
+            ppm_rotation_callback=None,
+            defocus_callback=None,
+        )
+
+    def calibrate_ppm(
+        self,
+        angle_exposures: Dict[str, Tuple[float, float]],
+        target: float = 180.0,
+        tolerance: float = 5.0,
+        output_path: Optional[Path] = None,
+        ppm_rotation_callback: Optional[Callable[[float], None]] = None,
+    ) -> Dict[str, WhiteBalanceResult]:
+        """
+        Run white balance calibration for each PPM angle.
+
+        Calibrates the camera at each of the specified PPM angles, using
+        different initial exposures for each angle. This is useful for
+        PPM imaging where different polarization angles require different
+        exposure settings.
+
+        Args:
+            angle_exposures: Dictionary mapping angle names to (angle, exposure_ms) tuples.
+                           Standard names are 'positive', 'negative', 'crossed', 'uncrossed'.
+                           Example: {'positive': (7.0, 50.0), 'uncrossed': (90.0, 1.2)}
+            target: Target intensity (0-255 for 8-bit)
+            tolerance: Acceptable deviation from target
+            output_path: Optional base path to save calibration results.
+                        Results are saved to {output_path}/{angle_name}/ subdirectories.
+            ppm_rotation_callback: Callback function to rotate PPM stage.
+                                  Takes angle in degrees as argument.
+
+        Returns:
+            Dictionary mapping angle names to WhiteBalanceResult objects
+        """
+        logger.info(f"Starting PPM white balance calibration for {len(angle_exposures)} angles")
+
+        if output_path is not None:
+            output_path = Path(output_path)
+            output_path.mkdir(parents=True, exist_ok=True)
+
+        config = CalibrationConfig(
+            target_value=target,
+            tolerance=tolerance,
+        )
+
+        results = {}
+        for name, (angle, exposure) in angle_exposures.items():
+            logger.info(f"PPM WB: Calibrating '{name}' at {angle} deg, initial exp={exposure}ms")
+
+            # Rotate to target angle
+            if ppm_rotation_callback is not None:
+                try:
+                    ppm_rotation_callback(angle)
+                    time.sleep(0.5)  # Allow rotation to stabilize
+                except Exception as e:
+                    logger.warning(f"Failed to rotate PPM to {angle} deg: {e}")
+
+            # Set initial exposure
+            self.jai_props.set_channel_exposures(
+                red=exposure, green=exposure, blue=exposure
+            )
+
+            # Determine output path for this angle
+            angle_output = None
+            if output_path is not None:
+                angle_output = output_path / name
+
+            # Run calibration at this angle (no further rotation)
+            result = self.calibrate(
+                config=config,
+                output_path=angle_output,
+                ppm_rotation_callback=None,  # Already at target angle
+                defocus_callback=None,
+            )
+            results[name] = result
+
+            logger.info(
+                f"PPM WB '{name}' complete: "
+                f"R={result.exposures_ms['red']:.2f}ms, "
+                f"G={result.exposures_ms['green']:.2f}ms, "
+                f"B={result.exposures_ms['blue']:.2f}ms, "
+                f"converged={result.converged}"
+            )
+
+        # Summary
+        all_converged = all(r.converged for r in results.values())
+        logger.info(f"PPM white balance complete: all_converged={all_converged}")
+
+        return results
