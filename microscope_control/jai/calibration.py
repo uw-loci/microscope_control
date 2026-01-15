@@ -353,6 +353,9 @@ class JAIWhiteBalanceCalibrator:
             # Define fine-tuning threshold (switch to finer adjustments when within 2x tolerance)
             fine_tune_threshold = config.tolerance * 2
 
+            # Track if we converged in the loop (to avoid re-capture noise in final validation)
+            converged_means = None
+
             for iteration in range(1, config.max_iterations + 1):
                 # Apply current exposures
                 self.jai_props.set_channel_exposures(**exposures, auto_enable=False)
@@ -388,6 +391,9 @@ class JAIWhiteBalanceCalibrator:
                         f"Calibration converged after {iteration} iterations "
                         f"(all channels within {config.tolerance} of target {target:.0f})"
                     )
+                    # Store the converged means - don't re-capture for final validation
+                    # as noise could push values slightly out of tolerance
+                    converged_means = means.copy()
                     break
 
                 # Calculate adjustments with adaptive damping
@@ -415,9 +421,15 @@ class JAIWhiteBalanceCalibrator:
                     )
 
             # Step 6: Final validation
-            final_means = self._capture_and_analyze()
-            final_converged = self._check_convergence(final_means, target, config.tolerance)
-            all_converged = all(final_converged.values())
+            # If we converged in the loop, use those means (avoid re-capture noise)
+            # If we didn't converge, capture again to see final state
+            if converged_means is not None:
+                final_means = converged_means
+                all_converged = True
+            else:
+                final_means = self._capture_and_analyze()
+                final_converged = self._check_convergence(final_means, target, config.tolerance)
+                all_converged = all(final_converged.values())
 
             # Calculate final deviations
             final_deviations = {ch: abs(final_means[ch] - target) for ch in ["red", "green", "blue"]}
@@ -734,6 +746,9 @@ class JAIWhiteBalanceCalibrator:
         output_path: Path,
     ) -> None:
         """Generate histogram visualization."""
+        # Use non-interactive backend to avoid Tkinter threading issues
+        import matplotlib
+        matplotlib.use('Agg')
         import matplotlib.pyplot as plt
 
         fig, axes = plt.subplots(2, 3, figsize=(12, 8))
