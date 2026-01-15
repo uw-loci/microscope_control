@@ -57,16 +57,43 @@ class ConfigManager:
 
     def load_config_file(self, config_path: str) -> Dict[str, Any]:
         """
-        Load a single configuration file.
+        Load a single configuration file and merge with resources file.
+
+        The resources file (resources/resources_LOCI.yml) contains hardware
+        specifications (id_detector, id_stage, id_objective_lens, etc.) that
+        are referenced by LOCI IDs in the main config.
 
         Args:
             config_path: Path to YAML configuration file
 
         Returns:
-            Dictionary containing configuration data
+            Dictionary containing merged configuration data
         """
         with open(config_path, "r") as file:
             data = yaml.safe_load(file)
+
+        # Load and merge resources file if it exists
+        config_dir = Path(config_path).parent
+        resources_path = config_dir / "resources" / "resources_LOCI.yml"
+
+        if resources_path.exists():
+            try:
+                with open(resources_path, "r") as file:
+                    resources_data = yaml.safe_load(file)
+
+                if resources_data:
+                    # Merge resource sections (id_detector, id_stage, etc.) into config
+                    for key, value in resources_data.items():
+                        if key.startswith("id_") or key.startswith("ID_"):
+                            data[key] = value
+                            logger.debug(f"Merged resource section: {key}")
+
+                    logger.info(f"Loaded resources from: {resources_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load resources file {resources_path}: {e}")
+        else:
+            logger.debug(f"No resources file found at: {resources_path}")
+
         return data
 
     def get_config(self, name: Optional[str] = None) -> Optional[Dict[str, Any]]:
