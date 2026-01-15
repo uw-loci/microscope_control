@@ -1091,6 +1091,7 @@ class JAIWhiteBalanceCalibrator:
         tolerance: float = 5.0,
         output_path: Optional[Path] = None,
         ppm_rotation_callback: Optional[Callable[[float], None]] = None,
+        per_angle_targets: Optional[Dict[str, float]] = None,
     ) -> Dict[str, WhiteBalanceResult]:
         """
         Run white balance calibration for each PPM angle.
@@ -1104,17 +1105,23 @@ class JAIWhiteBalanceCalibrator:
             angle_exposures: Dictionary mapping angle names to (angle, exposure_ms) tuples.
                            Standard names are 'positive', 'negative', 'crossed', 'uncrossed'.
                            Example: {'positive': (7.0, 50.0), 'uncrossed': (90.0, 1.2)}
-            target: Target intensity (0-255 for 8-bit)
+            target: Default target intensity (0-255 for 8-bit), used when per_angle_targets
+                   doesn't specify a value for the angle.
             tolerance: Acceptable deviation from target
             output_path: Optional base path to save calibration results.
                         Results are saved to {output_path}/{angle_name}/ subdirectories.
             ppm_rotation_callback: Callback function to rotate PPM stage.
                                   Takes angle in degrees as argument.
+            per_angle_targets: Optional dictionary mapping angle names to target intensities.
+                              Example: {'crossed': 125.0, 'positive': 160.0, 'negative': 160.0, 'uncrossed': 245.0}
+                              If not provided or angle not found, uses the 'target' parameter.
 
         Returns:
             Dictionary mapping angle names to WhiteBalanceResult objects
         """
         logger.info(f"Starting PPM white balance calibration for {len(angle_exposures)} angles")
+        if per_angle_targets:
+            logger.info(f"Using per-angle targets: {per_angle_targets}")
 
         # Stop live mode if running - camera properties cannot be changed during live streaming
         if self.hardware.core.is_sequence_running():
@@ -1126,14 +1133,23 @@ class JAIWhiteBalanceCalibrator:
             output_path = Path(output_path)
             output_path.mkdir(parents=True, exist_ok=True)
 
-        config = CalibrationConfig(
-            target_value=target,
-            tolerance=tolerance,
-        )
-
         results = {}
         for name, (angle, exposure) in angle_exposures.items():
-            logger.info(f"PPM WB: Calibrating '{name}' at {angle} deg, initial exp={exposure}ms")
+            # Determine target for this angle
+            angle_target = target  # Default
+            if per_angle_targets and name in per_angle_targets:
+                angle_target = per_angle_targets[name]
+
+            logger.info(
+                f"PPM WB: Calibrating '{name}' at {angle} deg, "
+                f"initial exp={exposure}ms, target={angle_target}"
+            )
+
+            # Create config for this angle with its specific target
+            config = CalibrationConfig(
+                target_value=angle_target,
+                tolerance=tolerance,
+            )
 
             # Rotate to target angle
             if ppm_rotation_callback is not None:
@@ -1163,7 +1179,7 @@ class JAIWhiteBalanceCalibrator:
             results[name] = result
 
             logger.info(
-                f"PPM WB '{name}' complete: "
+                f"PPM WB '{name}' complete (target={angle_target}): "
                 f"R={result.exposures_ms['red']:.2f}ms, "
                 f"G={result.exposures_ms['green']:.2f}ms, "
                 f"B={result.exposures_ms['blue']:.2f}ms, "
