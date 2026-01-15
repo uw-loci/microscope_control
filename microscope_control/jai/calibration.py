@@ -934,6 +934,12 @@ class JAIWhiteBalanceCalibrator:
         """
         logger.info(f"Starting simple white balance calibration (initial exp={initial_exposure_ms}ms)")
 
+        # Stop live mode if running - camera properties cannot be changed during live streaming
+        if self.hardware.core.is_sequence_running():
+            if self.hardware.studio is not None:
+                self.hardware.studio.live().set_live_mode(False)
+                logger.info("Stopped live mode before calibration")
+
         # Set initial exposure on all channels
         self.jai_props.set_channel_exposures(
             red=initial_exposure_ms,
@@ -986,6 +992,12 @@ class JAIWhiteBalanceCalibrator:
             Dictionary mapping angle names to WhiteBalanceResult objects
         """
         logger.info(f"Starting PPM white balance calibration for {len(angle_exposures)} angles")
+
+        # Stop live mode if running - camera properties cannot be changed during live streaming
+        if self.hardware.core.is_sequence_running():
+            if self.hardware.studio is not None:
+                self.hardware.studio.live().set_live_mode(False)
+                logger.info("Stopped live mode before calibration")
 
         if output_path is not None:
             output_path = Path(output_path)
