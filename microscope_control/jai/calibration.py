@@ -1038,6 +1038,10 @@ class JAIWhiteBalanceCalibrator:
         target: float = 180.0,
         tolerance: float = 5.0,
         output_path: Optional[Path] = None,
+        max_gain_db: Optional[float] = None,
+        gain_threshold_ratio: Optional[float] = None,
+        max_iterations: Optional[int] = None,
+        calibrate_black_level: Optional[bool] = None,
     ) -> WhiteBalanceResult:
         """
         Run simple white balance calibration at a single exposure.
@@ -1051,6 +1055,10 @@ class JAIWhiteBalanceCalibrator:
             target: Target intensity (0-255 for 8-bit)
             tolerance: Acceptable deviation from target
             output_path: Optional path to save calibration results
+            max_gain_db: Optional max analog gain in dB (default 3.0)
+            gain_threshold_ratio: Optional exposure ratio before using gain (default 2.0)
+            max_iterations: Optional max calibration iterations (default 30)
+            calibrate_black_level: Optional whether to calibrate black level (default True)
 
         Returns:
             WhiteBalanceResult with calibrated per-channel exposures
@@ -1070,10 +1078,26 @@ class JAIWhiteBalanceCalibrator:
             blue=initial_exposure_ms,
         )
 
-        # Build config
-        config = CalibrationConfig(
-            target_value=target,
-            tolerance=tolerance,
+        # Build config with optional advanced settings
+        config_kwargs = {
+            "target_value": target,
+            "tolerance": tolerance,
+        }
+        if max_gain_db is not None:
+            config_kwargs["max_analog_gain_db"] = max_gain_db
+        if gain_threshold_ratio is not None:
+            config_kwargs["gain_threshold_ratio"] = gain_threshold_ratio
+        if max_iterations is not None:
+            config_kwargs["max_iterations"] = max_iterations
+        if calibrate_black_level is not None:
+            config_kwargs["calibrate_black_level"] = calibrate_black_level
+
+        config = CalibrationConfig(**config_kwargs)
+
+        logger.info(
+            f"Simple WB config: target={target}, tolerance={tolerance}, "
+            f"max_gain_db={config.max_analog_gain_db}, gain_threshold={config.gain_threshold_ratio}, "
+            f"max_iter={config.max_iterations}, calibrate_bl={config.calibrate_black_level}"
         )
 
         # Run calibration without PPM rotation
@@ -1092,6 +1116,10 @@ class JAIWhiteBalanceCalibrator:
         output_path: Optional[Path] = None,
         ppm_rotation_callback: Optional[Callable[[float], None]] = None,
         per_angle_targets: Optional[Dict[str, float]] = None,
+        max_gain_db: Optional[float] = None,
+        gain_threshold_ratio: Optional[float] = None,
+        max_iterations: Optional[int] = None,
+        calibrate_black_level: Optional[bool] = None,
     ) -> Dict[str, WhiteBalanceResult]:
         """
         Run white balance calibration for each PPM angle.
@@ -1115,6 +1143,10 @@ class JAIWhiteBalanceCalibrator:
             per_angle_targets: Optional dictionary mapping angle names to target intensities.
                               Example: {'crossed': 125.0, 'positive': 160.0, 'negative': 160.0, 'uncrossed': 245.0}
                               If not provided or angle not found, uses the 'target' parameter.
+            max_gain_db: Optional max analog gain in dB (default 3.0)
+            gain_threshold_ratio: Optional exposure ratio before using gain (default 2.0)
+            max_iterations: Optional max calibration iterations (default 30)
+            calibrate_black_level: Optional whether to calibrate black level (default True)
 
         Returns:
             Dictionary mapping angle names to WhiteBalanceResult objects
@@ -1122,6 +1154,10 @@ class JAIWhiteBalanceCalibrator:
         logger.info(f"Starting PPM white balance calibration for {len(angle_exposures)} angles")
         if per_angle_targets:
             logger.info(f"Using per-angle targets: {per_angle_targets}")
+        logger.info(
+            f"PPM WB advanced settings: max_gain_db={max_gain_db}, gain_threshold={gain_threshold_ratio}, "
+            f"max_iter={max_iterations}, calibrate_bl={calibrate_black_level}"
+        )
 
         # Stop live mode if running - camera properties cannot be changed during live streaming
         if self.hardware.core.is_sequence_running():
@@ -1154,11 +1190,21 @@ class JAIWhiteBalanceCalibrator:
             )
 
             # Create config for this angle with its specific target and max exposure
-            config = CalibrationConfig(
-                target_value=angle_target,
-                tolerance=tolerance,
-                max_exposure_ms=max_exp,
-            )
+            config_kwargs = {
+                "target_value": angle_target,
+                "tolerance": tolerance,
+                "max_exposure_ms": max_exp,
+            }
+            if max_gain_db is not None:
+                config_kwargs["max_analog_gain_db"] = max_gain_db
+            if gain_threshold_ratio is not None:
+                config_kwargs["gain_threshold_ratio"] = gain_threshold_ratio
+            if max_iterations is not None:
+                config_kwargs["max_iterations"] = max_iterations
+            if calibrate_black_level is not None:
+                config_kwargs["calibrate_black_level"] = calibrate_black_level
+
+            config = CalibrationConfig(**config_kwargs)
 
             # Rotate to target angle
             if ppm_rotation_callback is not None:
