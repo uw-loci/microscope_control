@@ -868,6 +868,111 @@ class JAIWhiteBalanceCalibrator:
 
         logger.info(f"Saved white balance calibration to: {output_path}")
 
+    def update_imageprocessing_config(
+        self,
+        config_path: Path,
+        result: WhiteBalanceResult,
+        calibration_type: str = "simple",
+        angle_name: Optional[str] = None,
+    ) -> bool:
+        """
+        Update the imageprocessing YAML file with calibration results.
+
+        The imageprocessing file is derived from the config path:
+        config_PPM.yml -> imageprocessing_PPM.yml
+
+        Args:
+            config_path: Path to the main config file (e.g., config_PPM.yml)
+            result: Calibration results to save
+            calibration_type: 'simple' for single calibration, 'ppm' for per-angle
+            angle_name: For PPM calibration, the angle name (e.g., 'negative', 'crossed')
+
+        Returns:
+            True if successfully updated, False otherwise
+        """
+        config_path = Path(config_path)
+
+        # Derive imageprocessing file path from config path
+        # config_PPM.yml -> imageprocessing_PPM.yml
+        config_name = config_path.stem  # e.g., "config_PPM"
+        if config_name.startswith("config_"):
+            microscope_name = config_name[7:]  # e.g., "PPM"
+            imageprocessing_name = f"imageprocessing_{microscope_name}.yml"
+        else:
+            imageprocessing_name = f"imageprocessing_{config_name}.yml"
+
+        imageprocessing_path = config_path.parent / imageprocessing_name
+
+        try:
+            # Load existing imageprocessing file or create empty dict
+            if imageprocessing_path.exists():
+                with open(imageprocessing_path, "r") as f:
+                    ip_data = yaml.safe_load(f) or {}
+            else:
+                ip_data = {}
+
+            # Ensure white_balance_calibration section exists
+            if "white_balance_calibration" not in ip_data:
+                ip_data["white_balance_calibration"] = {}
+
+            wb_cal = ip_data["white_balance_calibration"]
+
+            # Structure for JAI camera calibration
+            if calibration_type == "simple":
+                # Simple WB - same settings for all angles
+                wb_cal["jai_simple"] = {
+                    "calibrated": datetime.now().isoformat(),
+                    "converged": result.converged,
+                    "target": result.target_value,
+                    "exposures_ms": {
+                        "r": round(result.exposures_ms["red"], 2),
+                        "g": round(result.exposures_ms["green"], 2),
+                        "b": round(result.exposures_ms["blue"], 2),
+                    },
+                    "gains": {
+                        "r": round(result.gains["red"], 3),
+                        "g": round(result.gains["green"], 3),
+                        "b": round(result.gains["blue"], 3),
+                    },
+                    "final_means": {
+                        "r": round(result.final_means["red"], 1),
+                        "g": round(result.final_means["green"], 1),
+                        "b": round(result.final_means["blue"], 1),
+                    },
+                }
+            elif calibration_type == "ppm" and angle_name:
+                # PPM WB - per-angle settings
+                if "jai_ppm" not in wb_cal:
+                    wb_cal["jai_ppm"] = {
+                        "calibrated": datetime.now().isoformat(),
+                        "angles": {},
+                    }
+                wb_cal["jai_ppm"]["calibrated"] = datetime.now().isoformat()
+                wb_cal["jai_ppm"]["angles"][angle_name] = {
+                    "converged": result.converged,
+                    "exposures_ms": {
+                        "r": round(result.exposures_ms["red"], 2),
+                        "g": round(result.exposures_ms["green"], 2),
+                        "b": round(result.exposures_ms["blue"], 2),
+                    },
+                    "gains": {
+                        "r": round(result.gains["red"], 3),
+                        "g": round(result.gains["green"], 3),
+                        "b": round(result.gains["blue"], 3),
+                    },
+                }
+
+            # Save updated imageprocessing file
+            with open(imageprocessing_path, "w") as f:
+                yaml.dump(ip_data, f, default_flow_style=False, sort_keys=False)
+
+            logger.info(f"Updated imageprocessing config: {imageprocessing_path}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to update imageprocessing config: {e}")
+            return False
+
     def load_calibration(self, input_path: Path) -> WhiteBalanceResult:
         """
         Load calibration results from YAML file.
