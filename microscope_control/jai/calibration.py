@@ -1140,15 +1140,24 @@ class JAIWhiteBalanceCalibrator:
             if per_angle_targets and name in per_angle_targets:
                 angle_target = per_angle_targets[name]
 
+            # Crossed polarizers need much longer exposures since most light is blocked
+            # Hardware supports up to ~7900ms at min frame rate (0.125 Hz)
+            # Use 2000ms limit for crossed (dim), 500ms for others (reasonable calibration speed)
+            if name == "crossed":
+                max_exp = 2000.0
+            else:
+                max_exp = 500.0
+
             logger.info(
                 f"PPM WB: Calibrating '{name}' at {angle} deg, "
-                f"initial exp={exposure}ms, target={angle_target}"
+                f"initial exp={exposure}ms, target={angle_target}, max_exp={max_exp}ms"
             )
 
-            # Create config for this angle with its specific target
+            # Create config for this angle with its specific target and max exposure
             config = CalibrationConfig(
                 target_value=angle_target,
                 tolerance=tolerance,
+                max_exposure_ms=max_exp,
             )
 
             # Rotate to target angle
