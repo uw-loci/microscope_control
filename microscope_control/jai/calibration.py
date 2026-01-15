@@ -706,19 +706,22 @@ class JAIWhiteBalanceCalibrator:
         config: CalibrationConfig,
         output_path: Path,
     ) -> None:
-        """Save diagnostic output files."""
+        """Save diagnostic output files to a subfolder to keep config folder clean."""
         output_path = Path(output_path)
-        output_path.mkdir(parents=True, exist_ok=True)
+
+        # Create subfolder for white balance calibration diagnostics
+        diagnostics_folder = output_path / "white_balance_calibration"
+        diagnostics_folder.mkdir(parents=True, exist_ok=True)
 
         # Save convergence log
-        self._convergence_log.save_csv(output_path / "convergence_log.csv")
+        self._convergence_log.save_csv(diagnostics_folder / "convergence_log.csv")
 
-        # Save settings YAML
-        self.save_calibration(result, output_path / "white_balance_settings.yml")
+        # Save settings YAML (in diagnostics folder for reference)
+        self.save_calibration(result, diagnostics_folder / "white_balance_settings.yml")
 
         # Generate histogram plot if matplotlib is available
         try:
-            self._save_histogram_plot(result, config, output_path / "intensity_histograms.png")
+            self._save_histogram_plot(result, config, diagnostics_folder / "intensity_histograms.png")
         except Exception as e:
             logger.warning(f"Failed to generate histogram plot: {e}")
 
@@ -736,7 +739,7 @@ class JAIWhiteBalanceCalibrator:
                     "blue": {"mean": self._black_levels["blue"]},
                 },
             }
-            with open(output_path / "black_level_calibration.yml", "w") as f:
+            with open(diagnostics_folder / "black_level_calibration.yml", "w") as f:
                 yaml.dump(black_level_data, f, default_flow_style=False)
 
     def _save_histogram_plot(
