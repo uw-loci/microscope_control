@@ -629,7 +629,12 @@ class JAIWhiteBalanceCalibrator:
             return exposures, gains
 
         ratio = max_exp / min_exp
-        if ratio <= config.gain_threshold_ratio:
+        if ratio < config.gain_threshold_ratio:
+            logger.debug(
+                f"Exposure ratio {ratio:.2f} below threshold {config.gain_threshold_ratio}, "
+                f"no gain compensation needed (exp: R={exposures['red']:.2f}, "
+                f"G={exposures['green']:.2f}, B={exposures['blue']:.2f})"
+            )
             return exposures, gains
 
         # Convert max gain from dB to linear multiplier
