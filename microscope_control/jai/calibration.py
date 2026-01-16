@@ -420,7 +420,12 @@ class JAIWhiteBalanceCalibrator:
                         exposures, gains, config
                     )
 
-            # Step 6: Final validation
+            # Step 6: Final gain compensation check
+            # This ensures gain compensation is applied even if we converged on a
+            # non-check iteration (2, 3, 4, 6, 7, 8, 9, etc.)
+            exposures, gains = self._check_gain_compensation(exposures, gains, config)
+
+            # Step 7: Final validation
             # If we converged in the loop, use those means (avoid re-capture noise)
             # If we didn't converge, capture again to see final state
             if converged_means is not None:
