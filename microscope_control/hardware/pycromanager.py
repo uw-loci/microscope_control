@@ -477,7 +477,7 @@ class PycromanagerHardware(MicroscopeHardware):
                 plt.bar(z_steps, scores)
                 plt.plot(interp_x, interp_y, "k")
                 plt.plot(interp_x[np.argmax(interp_y)], interp_y.max(), "or")
-                plt.xlabel("Z-axis (µm)")
+                plt.xlabel("Z-axis (um)")
                 plt.title(f"Autofocus at X={current_pos.x:.1f}, Y={current_pos.y:.1f}")
                 plt.show()
 
@@ -592,7 +592,7 @@ class PycromanagerHardware(MicroscopeHardware):
         z_max = z_limits.get("high", 1000)
 
         # Sampling parameters
-        sample_range = initial_step_size * 0.8  # e.g., 10um -> 8um range (±4um)
+        sample_range = initial_step_size * 0.8  # e.g., 10um -> 8um range (+/-4um)
         n_samples = 5
         move_threshold = min_step_size / 2.0  # e.g., 2um -> 1um threshold
 
@@ -648,7 +648,7 @@ class PycromanagerHardware(MicroscopeHardware):
         best_z_discrete = z_positions[best_idx]
 
         # Refine with symmetric interpolation
-        # CRITICAL FIX: Symmetric window (±2 positions, not +3)
+        # CRITICAL FIX: Symmetric window (+/-2 positions, not +3)
         start_idx = max(0, best_idx - 2)
         end_idx = min(len(z_positions), best_idx + 2)  # SYMMETRIC: +2 not +3
 
@@ -772,12 +772,12 @@ class PycromanagerHardware(MicroscopeHardware):
             theta_pistage = self.ppm_rlpangle_to_PIStage(theta)
             self.core.set_position(rotation_device, theta_pistage)
             self.core.wait_for_device(rotation_device)
-            logger.debug(f"Set rotation angle to {theta}° (Thor position: {theta_pistage})")
+            logger.debug(f"Set rotation angle to {theta} deg (Thor position: {theta_pistage})")
         elif rotation_device == "KBD101_Thor_Rotation":
             theta_thor = ppm_psgticks_to_thor(theta)
             self.core.set_position(rotation_device, theta_thor)
             self.core.wait_for_device(rotation_device)
-            logger.debug(f"Set rotation angle to {theta}° (Thor position: {theta_thor})")
+            logger.debug(f"Set rotation angle to {theta} deg (Thor position: {theta_thor})")
         else:
             logger.error(f"Unknown rotation device: {rotation_device} in config")
             raise ValueError(

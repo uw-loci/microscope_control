@@ -437,7 +437,7 @@ if __name__ == "__main__":
         pixel_size = cm.get_pixel_size(
             objective="LOCI_OBJECTIVE_OLYMPUS_10X_001", detector="LOCI_DETECTOR_TELEDYNE_001"
         )
-        print(f"\nPixel size: {pixel_size} µm")
+        print(f"\nPixel size: {pixel_size} um")
 
         # Get stage limits
         limits = cm.get_stage_limits()
