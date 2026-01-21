@@ -25,8 +25,12 @@ __all__ = [
 
 # Optional: Export PycromanagerHardware if pycromanager is installed
 try:
-    from microscope_control.hardware.pycromanager import PycromanagerHardware, init_pycromanager
-    __all__.extend(["PycromanagerHardware", "init_pycromanager"])
+    from microscope_control.hardware.pycromanager import (
+        PycromanagerHardware,
+        init_pycromanager,
+        MicroManagerConnectionError,
+    )
+    __all__.extend(["PycromanagerHardware", "init_pycromanager", "MicroManagerConnectionError"])
 except ImportError:
     # pycromanager not installed, skip these exports
     pass

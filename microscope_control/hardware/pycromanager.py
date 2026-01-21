@@ -24,15 +24,66 @@ def obj_2_list(name):
     return [name.get(i) for i in range(name.size())]
 
 
-def init_pycromanager():
-    """Initialize Pycromanager connection."""
+class MicroManagerConnectionError(Exception):
+    """Raised when connection to Micro-Manager fails."""
+    pass
+
+
+def init_pycromanager(timeout_seconds: float = 30.0):
+    """
+    Initialize Pycromanager connection to Micro-Manager.
+
+    Args:
+        timeout_seconds: Maximum time to wait for connection (default 30s)
+
+    Returns:
+        Tuple of (core, studio) if successful, (None, None) if failed
+
+    Raises:
+        MicroManagerConnectionError: If connection fails with details about the failure
+    """
+    # Check if MM process is running
     if not is_mm_running():
-        print("Micro-Manager is not running. Please start Micro-Manager before initializing.")
-        return None, None
-    core = Core()
-    studio = Studio()
-    core.set_timeout_ms(20000)
-    return core, studio
+        error_msg = (
+            "Micro-Manager is not running.\n"
+            "Please start Micro-Manager before starting the server."
+        )
+        logger.error(error_msg)
+        raise MicroManagerConnectionError(error_msg)
+
+    # Try to connect to Micro-Manager
+    logger.info("Connecting to Micro-Manager...")
+    try:
+        # Core() can hang if MM is locked - pycromanager doesn't have a timeout option
+        # so we just try and catch any exceptions
+        core = Core()
+        studio = Studio()
+        core.set_timeout_ms(20000)
+
+        # Verify connection is working by getting a simple property
+        try:
+            _ = core.get_version_info()
+            logger.info("Successfully connected to Micro-Manager")
+        except Exception as e:
+            logger.warning(f"Connected but version check failed: {e}")
+
+        return core, studio
+
+    except Exception as e:
+        error_type = type(e).__name__
+        error_msg = (
+            f"Failed to connect to Micro-Manager.\n"
+            f"Error type: {error_type}\n"
+            f"Error: {e}\n"
+            f"\n"
+            f"Possible causes:\n"
+            f"  1. Micro-Manager is frozen/locked - restart Micro-Manager\n"
+            f"  2. Another application is using Micro-Manager\n"
+            f"  3. Micro-Manager crashed - check for error dialogs\n"
+            f"  4. ZMQ port conflict - restart Micro-Manager"
+        )
+        logger.error(error_msg)
+        raise MicroManagerConnectionError(error_msg) from e
 
 
 def ppm_psgticks_to_thor(bi_angle: float) -> float:
