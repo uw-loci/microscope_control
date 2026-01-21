@@ -716,11 +716,15 @@ class JAIWhiteBalanceCalibrator:
         config: CalibrationConfig,
         output_path: Path,
     ) -> None:
-        """Save diagnostic output files to a subfolder to keep config folder clean."""
+        """Save diagnostic output files to output folder.
+
+        Note: QuPath already includes 'white_balance_calibration' in the output path,
+        so we use the output_path directly without adding another subfolder.
+        """
         output_path = Path(output_path)
 
-        # Create subfolder for white balance calibration diagnostics
-        diagnostics_folder = output_path / "white_balance_calibration"
+        # Use output_path directly - QuPath already includes the subfolder structure
+        diagnostics_folder = output_path
         diagnostics_folder.mkdir(parents=True, exist_ok=True)
 
         # Save convergence log
