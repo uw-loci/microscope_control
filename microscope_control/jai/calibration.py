@@ -737,6 +737,32 @@ class JAIWhiteBalanceCalibrator:
         # Save settings YAML (in diagnostics folder for reference)
         self.save_calibration(result, diagnostics_folder / "white_balance_settings.yml")
 
+        # Save verification image with calibrated white balance settings
+        try:
+            img, _ = self.hardware.snap_image()
+            if img is not None:
+                verification_path = diagnostics_folder / "white_balance_verification.tif"
+                try:
+                    import tifffile
+                    tifffile.imwrite(str(verification_path), img)
+                except ImportError:
+                    # Fallback to numpy save if tifffile not available
+                    verification_path = diagnostics_folder / "white_balance_verification.npy"
+                    np.save(str(verification_path), img)
+                logger.info(f"Saved verification image to {verification_path}")
+
+                # Log per-channel means of verification image
+                if len(img.shape) == 3 and img.shape[2] == 3:
+                    r_mean = float(np.mean(img[:, :, 0]))
+                    g_mean = float(np.mean(img[:, :, 1]))
+                    b_mean = float(np.mean(img[:, :, 2]))
+                    logger.info(
+                        f"Verification image channel means: "
+                        f"R={r_mean:.1f}, G={g_mean:.1f}, B={b_mean:.1f}"
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to save verification image: {e}")
+
         # Generate histogram plot if matplotlib is available
         try:
             self._save_histogram_plot(result, config, diagnostics_folder / "intensity_histograms.png")
