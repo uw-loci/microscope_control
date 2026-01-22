@@ -888,6 +888,9 @@ class JAIWhiteBalanceCalibrator:
         result: WhiteBalanceResult,
         calibration_type: str = "simple",
         angle_name: Optional[str] = None,
+        modality: Optional[str] = None,
+        objective: Optional[str] = None,
+        detector: Optional[str] = None,
     ) -> bool:
         """
         Update the imageprocessing YAML file with calibration results.
@@ -895,11 +898,18 @@ class JAIWhiteBalanceCalibrator:
         The imageprocessing file is derived from the config path:
         config_PPM.yml -> imageprocessing_PPM.yml
 
+        Saves to two locations:
+        1. white_balance_calibration section (for reference/audit trail)
+        2. imaging_profiles.{modality}.{objective}.{detector}.exposures_ms (for actual use)
+
         Args:
             config_path: Path to the main config file (e.g., config_PPM.yml)
             result: Calibration results to save
             calibration_type: 'simple' for single calibration, 'ppm' for per-angle
             angle_name: For PPM calibration, the angle name (e.g., 'negative', 'crossed')
+            modality: Modality name (e.g., 'ppm') for imaging_profiles update
+            objective: Objective ID for imaging_profiles update
+            detector: Detector ID for imaging_profiles update
 
         Returns:
             True if successfully updated, False otherwise
@@ -975,6 +985,45 @@ class JAIWhiteBalanceCalibrator:
                         "b": round(result.gains["blue"], 3),
                     },
                 }
+
+            # Also update imaging_profiles section if modality/objective/detector provided
+            # This is where BackgroundCollectionController reads the values from
+            if modality and objective and detector and angle_name:
+                if "imaging_profiles" not in ip_data:
+                    ip_data["imaging_profiles"] = {}
+                if modality not in ip_data["imaging_profiles"]:
+                    ip_data["imaging_profiles"][modality] = {}
+                if objective not in ip_data["imaging_profiles"][modality]:
+                    ip_data["imaging_profiles"][modality][objective] = {}
+                if detector not in ip_data["imaging_profiles"][modality][objective]:
+                    ip_data["imaging_profiles"][modality][objective][detector] = {}
+
+                profile = ip_data["imaging_profiles"][modality][objective][detector]
+
+                # Ensure exposures_ms section exists
+                if "exposures_ms" not in profile:
+                    profile["exposures_ms"] = {}
+
+                # Update the per-channel exposures for this angle
+                profile["exposures_ms"][angle_name] = {
+                    "all": round(result.exposures_ms["green"], 2),  # Use green as 'all' reference
+                    "r": round(result.exposures_ms["red"], 2),
+                    "g": round(result.exposures_ms["green"], 2),
+                    "b": round(result.exposures_ms["blue"], 2),
+                }
+
+                # Also update gains if present
+                if "gains" not in profile:
+                    profile["gains"] = {}
+                profile["gains"][angle_name] = {
+                    "r": round(result.gains["red"], 3),
+                    "g": round(result.gains["green"], 3),
+                    "b": round(result.gains["blue"], 3),
+                }
+
+                logger.info(
+                    f"Updated imaging_profiles.{modality}.{objective}.{detector}.exposures_ms.{angle_name}"
+                )
 
             # Save updated imageprocessing file
             with open(imageprocessing_path, "w") as f:
