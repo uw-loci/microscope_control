@@ -284,10 +284,15 @@ class PycromanagerHardware(MicroscopeHardware):
         if needs_debayer:
             self.core.set_property("MicroPublisher6", "Color", "OFF")
 
-        # Handle white balance for JAI
+        # Handle white balance for JAI - disable auto WB to prevent camera
+        # from adjusting colors during acquisition. This node may be non-writable
+        # when individual gain/exposure mode properties are being changed.
         if camera == "JAICamera":
             t_wb_start = time.perf_counter()
-            self.core.set_property("JAICamera", "WhiteBalance", "Off")
+            try:
+                self.core.set_property("JAICamera", "WhiteBalance", "Off")
+            except Exception as e:
+                logger.debug(f"    WhiteBalance property not writable (non-fatal): {e}")
             t_wb_end = time.perf_counter()
             logger.debug(f"    [TIMING-INTERNAL] Set WhiteBalance property: {(t_wb_end - t_wb_start)*1000:.1f}ms")
 
