@@ -1264,6 +1264,15 @@ class JAIWhiteBalanceCalibrator:
 
         results = {}
         for name, (angle, exposure) in angle_exposures.items():
+            # CRITICAL: Reset gain mode before each angle to ensure clean state.
+            # Without this, gain settings from a previous angle (e.g., B=1.78x from
+            # positive angle) persist and corrupt calibration of subsequent angles.
+            try:
+                self.jai_props.disable_individual_gain()
+                logger.debug(f"Reset individual gain mode before calibrating '{name}'")
+            except Exception as e:
+                logger.warning(f"Could not reset gain mode before '{name}': {e}")
+
             # Determine target for this angle
             angle_target = target  # Default
             if per_angle_targets and name in per_angle_targets:
