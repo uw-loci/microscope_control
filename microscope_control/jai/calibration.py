@@ -134,7 +134,28 @@ class CalibrationConfig:
 
     # Maximum analog gain in dB (JAI supports 0-36.13 dB, but keep low to minimize noise)
     # 3 dB = 1.41x linear gain (sqrt(2))
+    # This is the "soft cap" used when exposures are below exposure_soft_cap_ms
     max_analog_gain_db: float = 3.0
+
+    # Base gain to start calibration with (reduces initial exposure requirements)
+    # NOTE: JAI analog gain limits are per-channel:
+    #   Red:   0.47 - 4.0 linear
+    #   Green: 1.0 - 64.0 linear
+    #   Blue:  0.47 - 4.0 linear
+    # Default 3.0 is safe for all channels. Values above 4.0 will be clamped for R/B.
+    base_gain: float = 3.0
+
+    # Exposure soft cap threshold in milliseconds
+    # When any channel's exposure exceeds this value, the gain can increase past
+    # max_analog_gain_db up to boosted_max_gain_db. This prevents extremely long
+    # exposure times while still allowing precision at lower intensities.
+    exposure_soft_cap_ms: float = 50.0
+
+    # Maximum analog gain in dB when exposure exceeds exposure_soft_cap_ms
+    # 12 dB = 4x linear gain (exactly the R/B channel hardware limit)
+    # For Green, hardware allows up to 64x (~36 dB), but we cap at 4x for uniformity
+    # This "boosted" mode is only activated when exposures get too long
+    boosted_max_gain_db: float = 12.0
 
     # Whether to avoid digital gain (digital gain adds more noise than analog)
     # Digital gain range is very narrow anyway: 0.9-1.1 linear (-0.915 to 0.828 dB)
@@ -335,7 +356,29 @@ class JAIWhiteBalanceCalibrator:
                 exposures = {"red": 50.0, "green": 50.0, "blue": 50.0}
                 self.jai_props.set_channel_exposures(**exposures)
 
-            gains = {"red": 1.0, "green": 1.0, "blue": 1.0}
+            # Start with base_gain applied to all channels (reduces exposure requirements)
+            # Default base_gain is 5.0 (~14 dB), which allows ~5x shorter exposures
+            gains = {
+                "red": config.base_gain,
+                "green": config.base_gain,
+                "blue": config.base_gain
+            }
+            if config.base_gain != 1.0:
+                logger.info(
+                    f"Starting with base gain of {config.base_gain:.1f}x "
+                    f"({linear_to_db(config.base_gain):.1f} dB) on all channels"
+                )
+                try:
+                    self.jai_props.enable_individual_gain()
+                    self.jai_props.set_analog_gains(
+                        red=config.base_gain,
+                        green=config.base_gain,
+                        blue=config.base_gain,
+                        auto_enable=False
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to set base gain: {e}. Starting with gain=1.0")
+                    gains = {"red": 1.0, "green": 1.0, "blue": 1.0}
 
             # Initial exposure estimation
             for channel in ["red", "green", "blue"]:
@@ -624,8 +667,9 @@ class JAIWhiteBalanceCalibrator:
         Strategy:
         1. Only use gain when exposure ratio between channels exceeds threshold (2x)
         2. Limit analog gain to max_analog_gain_db (default 3 dB = 1.41x linear)
-        3. Avoid digital gain unless absolutely necessary (adds more noise)
-        4. If gain cannot fully compensate, allow some exposure imbalance
+        3. If any exposure exceeds exposure_soft_cap_ms, allow gain up to boosted_max_gain_db
+        4. Avoid digital gain unless absolutely necessary (adds more noise)
+        5. If gain cannot fully compensate, allow some exposure imbalance
 
         Returns:
             Updated (exposures, gains) tuple
@@ -646,12 +690,24 @@ class JAIWhiteBalanceCalibrator:
             )
             return exposures, gains
 
-        # Convert max gain from dB to linear multiplier
-        max_linear_gain = db_to_linear(config.max_analog_gain_db)
+        # Determine if we should use boosted gain mode
+        # Boost mode activates when any exposure exceeds the soft cap threshold
+        use_boosted_gain = max_exp > config.exposure_soft_cap_ms
+
+        if use_boosted_gain:
+            max_gain_db = config.boosted_max_gain_db
+            max_linear_gain = db_to_linear(config.boosted_max_gain_db)
+            logger.info(
+                f"Exposure {max_exp:.2f}ms exceeds soft cap {config.exposure_soft_cap_ms}ms. "
+                f"Using BOOSTED gain mode (max {max_gain_db} dB = {max_linear_gain:.3f}x linear)."
+            )
+        else:
+            max_gain_db = config.max_analog_gain_db
+            max_linear_gain = db_to_linear(config.max_analog_gain_db)
 
         logger.info(
             f"Exposure ratio {ratio:.2f} exceeds threshold {config.gain_threshold_ratio}. "
-            f"Applying gain compensation (max {config.max_analog_gain_db} dB = {max_linear_gain:.3f}x linear)."
+            f"Applying gain compensation (max {max_gain_db} dB = {max_linear_gain:.3f}x linear)."
         )
 
         # Enable individual gain mode
@@ -1135,6 +1191,9 @@ class JAIWhiteBalanceCalibrator:
         gain_threshold_ratio: Optional[float] = None,
         max_iterations: Optional[int] = None,
         calibrate_black_level: Optional[bool] = None,
+        base_gain: Optional[float] = None,
+        exposure_soft_cap_ms: Optional[float] = None,
+        boosted_max_gain_db: Optional[float] = None,
     ) -> WhiteBalanceResult:
         """
         Run simple white balance calibration at a single exposure.
@@ -1184,13 +1243,21 @@ class JAIWhiteBalanceCalibrator:
             config_kwargs["max_iterations"] = max_iterations
         if calibrate_black_level is not None:
             config_kwargs["calibrate_black_level"] = calibrate_black_level
+        if base_gain is not None:
+            config_kwargs["base_gain"] = base_gain
+        if exposure_soft_cap_ms is not None:
+            config_kwargs["exposure_soft_cap_ms"] = exposure_soft_cap_ms
+        if boosted_max_gain_db is not None:
+            config_kwargs["boosted_max_gain_db"] = boosted_max_gain_db
 
         config = CalibrationConfig(**config_kwargs)
 
         logger.info(
             f"Simple WB config: target={target}, tolerance={tolerance}, "
             f"max_gain_db={config.max_analog_gain_db}, gain_threshold={config.gain_threshold_ratio}, "
-            f"max_iter={config.max_iterations}, calibrate_bl={config.calibrate_black_level}"
+            f"max_iter={config.max_iterations}, calibrate_bl={config.calibrate_black_level}, "
+            f"base_gain={config.base_gain}, exp_soft_cap={config.exposure_soft_cap_ms}ms, "
+            f"boosted_max_gain={config.boosted_max_gain_db}dB"
         )
 
         # Run calibration without PPM rotation
@@ -1213,6 +1280,9 @@ class JAIWhiteBalanceCalibrator:
         gain_threshold_ratio: Optional[float] = None,
         max_iterations: Optional[int] = None,
         calibrate_black_level: Optional[bool] = None,
+        base_gain: Optional[float] = None,
+        exposure_soft_cap_ms: Optional[float] = None,
+        boosted_max_gain_db: Optional[float] = None,
     ) -> Dict[str, WhiteBalanceResult]:
         """
         Run white balance calibration for each PPM angle.
@@ -1249,7 +1319,8 @@ class JAIWhiteBalanceCalibrator:
             logger.info(f"Using per-angle targets: {per_angle_targets}")
         logger.info(
             f"PPM WB advanced settings: max_gain_db={max_gain_db}, gain_threshold={gain_threshold_ratio}, "
-            f"max_iter={max_iterations}, calibrate_bl={calibrate_black_level}"
+            f"max_iter={max_iterations}, calibrate_bl={calibrate_black_level}, "
+            f"base_gain={base_gain}, exp_soft_cap={exposure_soft_cap_ms}ms, boosted_max={boosted_max_gain_db}dB"
         )
 
         # Stop live mode if running - camera properties cannot be changed during live streaming
@@ -1305,6 +1376,12 @@ class JAIWhiteBalanceCalibrator:
                 config_kwargs["max_iterations"] = max_iterations
             if calibrate_black_level is not None:
                 config_kwargs["calibrate_black_level"] = calibrate_black_level
+            if base_gain is not None:
+                config_kwargs["base_gain"] = base_gain
+            if exposure_soft_cap_ms is not None:
+                config_kwargs["exposure_soft_cap_ms"] = exposure_soft_cap_ms
+            if boosted_max_gain_db is not None:
+                config_kwargs["boosted_max_gain_db"] = boosted_max_gain_db
 
             config = CalibrationConfig(**config_kwargs)
 
