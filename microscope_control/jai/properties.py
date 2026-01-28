@@ -354,6 +354,11 @@ class JAICameraProperties:
         """
         Set per-channel analog gain values.
 
+        Values are clamped to valid hardware ranges:
+        - Red: 0.47 - 4.0
+        - Green: 1.0 - 64.0
+        - Blue: 0.47 - 4.0
+
         Args:
             red: Red channel analog gain
             green: Green channel analog gain
@@ -363,11 +368,37 @@ class JAICameraProperties:
         if auto_enable and not self.is_individual_gain_enabled():
             self.enable_individual_gain()
 
-        self._set_property(self.GAIN_ANALOG_RED, red)
-        self._set_property(self.GAIN_ANALOG_GREEN, green)
-        self._set_property(self.GAIN_ANALOG_BLUE, blue)
+        # Validate and clamp gain values to hardware limits
+        red_min, red_max = self.GAIN_ANALOG_RED_RANGE
+        green_min, green_max = self.GAIN_ANALOG_GREEN_RANGE
+        blue_min, blue_max = self.GAIN_ANALOG_BLUE_RANGE
 
-        logger.info(f"Set analog gains: R={red:.2f}, G={green:.2f}, B={blue:.2f}")
+        red_clamped = max(red_min, min(red_max, red))
+        green_clamped = max(green_min, min(green_max, green))
+        blue_clamped = max(blue_min, min(blue_max, blue))
+
+        # Log warnings if values were clamped
+        if red_clamped != red:
+            logger.warning(
+                f"Red gain {red:.2f} outside valid range ({red_min}-{red_max}), "
+                f"clamped to {red_clamped:.2f}"
+            )
+        if green_clamped != green:
+            logger.warning(
+                f"Green gain {green:.2f} outside valid range ({green_min}-{green_max}), "
+                f"clamped to {green_clamped:.2f}"
+            )
+        if blue_clamped != blue:
+            logger.warning(
+                f"Blue gain {blue:.2f} outside valid range ({blue_min}-{blue_max}), "
+                f"clamped to {blue_clamped:.2f}"
+            )
+
+        self._set_property(self.GAIN_ANALOG_RED, red_clamped)
+        self._set_property(self.GAIN_ANALOG_GREEN, green_clamped)
+        self._set_property(self.GAIN_ANALOG_BLUE, blue_clamped)
+
+        logger.info(f"Set analog gains: R={red_clamped:.2f}, G={green_clamped:.2f}, B={blue_clamped:.2f}")
 
     def get_analog_gains(self) -> Dict[str, float]:
         """
@@ -386,16 +417,34 @@ class JAICameraProperties:
         """
         Set per-channel digital gain values.
 
+        Values are clamped to valid hardware range: 0.9 - 1.1
+
         Note: Green digital gain is not available per PR #781.
 
         Args:
             red: Red channel digital gain
             blue: Blue channel digital gain
         """
-        self._set_property(self.GAIN_DIGITAL_RED, red)
-        self._set_property(self.GAIN_DIGITAL_BLUE, blue)
+        dig_min, dig_max = self.GAIN_DIGITAL_RANGE
 
-        logger.info(f"Set digital gains: R={red:.2f}, B={blue:.2f}")
+        red_clamped = max(dig_min, min(dig_max, red))
+        blue_clamped = max(dig_min, min(dig_max, blue))
+
+        if red_clamped != red:
+            logger.warning(
+                f"Red digital gain {red:.2f} outside valid range ({dig_min}-{dig_max}), "
+                f"clamped to {red_clamped:.2f}"
+            )
+        if blue_clamped != blue:
+            logger.warning(
+                f"Blue digital gain {blue:.2f} outside valid range ({dig_min}-{dig_max}), "
+                f"clamped to {blue_clamped:.2f}"
+            )
+
+        self._set_property(self.GAIN_DIGITAL_RED, red_clamped)
+        self._set_property(self.GAIN_DIGITAL_BLUE, blue_clamped)
+
+        logger.info(f"Set digital gains: R={red_clamped:.2f}, B={blue_clamped:.2f}")
 
     def get_digital_gains(self) -> Dict[str, float]:
         """
