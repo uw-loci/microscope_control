@@ -122,11 +122,18 @@ class CalibrationConfig:
     # Minimum exposure time in milliseconds
     min_exposure_ms: float = 0.1
 
-    # Maximum exposure time in milliseconds
+    # Maximum exposure time in milliseconds (soft limit, can be auto-extended)
     # Per-channel exposure limit depends on frame rate (lower frame rate = longer exposure)
     # At min frame rate (0.125 Hz), theoretical max is ~7900ms
     # Keep reasonable for calibration speed; gain compensation handles bright scenes
+    # This limit may be automatically extended up to hardware_max_exposure_ms when
+    # channels are stuck at ceiling with maxed gain.
     max_exposure_ms: float = 200.0
+
+    # Absolute hardware ceiling for exposure time in milliseconds
+    # This is the maximum that max_exposure_ms can be extended to when the algorithm
+    # detects channels stuck at ceiling. Based on min frame rate 0.125 Hz with margin.
+    hardware_max_exposure_ms: float = 7900.0
 
     # Exposure ratio threshold before applying gain compensation
     # If brightest_channel_exposure / darkest_channel_exposure > this, use gain
@@ -376,6 +383,18 @@ class JAIWhiteBalanceCalibrator:
                         blue=config.base_gain,
                         auto_enable=False
                     )
+                    # Update gains to reflect actual clamped values from hardware
+                    # (e.g., base_gain=5.0 gets clamped to 4.0 for R/B channels)
+                    gains = {
+                        "red": min(config.base_gain, JAICameraProperties.GAIN_ANALOG_RED_RANGE[1]),
+                        "green": min(config.base_gain, JAICameraProperties.GAIN_ANALOG_GREEN_RANGE[1]),
+                        "blue": min(config.base_gain, JAICameraProperties.GAIN_ANALOG_BLUE_RANGE[1]),
+                    }
+                    if gains != {"red": config.base_gain, "green": config.base_gain, "blue": config.base_gain}:
+                        logger.info(
+                            f"Actual gains after hardware clamping: "
+                            f"R={gains['red']:.2f}x, G={gains['green']:.2f}x, B={gains['blue']:.2f}x"
+                        )
                 except Exception as e:
                     logger.warning(f"Failed to set base gain: {e}. Starting with gain=1.0")
                     gains = {"red": 1.0, "green": 1.0, "blue": 1.0}
@@ -398,6 +417,9 @@ class JAIWhiteBalanceCalibrator:
 
             # Track if we converged in the loop (to avoid re-capture noise in final validation)
             converged_means = None
+
+            # Track consecutive checks where hardware limits are fully reached
+            hw_limit_checks = 0
 
             for iteration in range(1, config.max_iterations + 1):
                 # Apply current exposures
@@ -462,6 +484,37 @@ class JAIWhiteBalanceCalibrator:
                     exposures, gains = self._check_gain_compensation(
                         exposures, gains, config
                     )
+                    # Check if stuck at ceiling and need to extend limits
+                    exposures, gains, ceiling_extended = self._handle_stuck_at_ceiling(
+                        means, exposures, gains, config, target
+                    )
+
+                    # Early termination: detect truly stuck at hardware limits
+                    hw_gain_max = {
+                        "red": JAICameraProperties.GAIN_ANALOG_RED_RANGE[1],
+                        "green": JAICameraProperties.GAIN_ANALOG_GREEN_RANGE[1],
+                        "blue": JAICameraProperties.GAIN_ANALOG_BLUE_RANGE[1],
+                    }
+                    stuck_channels = []
+                    for ch in ["red", "green", "blue"]:
+                        at_hw_exp = abs(exposures[ch] - config.hardware_max_exposure_ms) < 0.01
+                        at_hw_gain = abs(gains[ch] - hw_gain_max[ch]) < 0.01
+                        below_target = means[ch] < (target - config.tolerance)
+                        if at_hw_exp and at_hw_gain and below_target:
+                            stuck_channels.append(ch)
+
+                    if stuck_channels:
+                        hw_limit_checks += 1
+                        if hw_limit_checks >= 3:
+                            logger.warning(
+                                f"Calibration stopping early: hardware limits reached. "
+                                f"Channels {stuck_channels} at max gain and max exposure "
+                                f"({config.hardware_max_exposure_ms:.0f}ms). "
+                                f"Cannot reach target intensity."
+                            )
+                            break
+                    else:
+                        hw_limit_checks = 0
 
             # Step 6: Final gain compensation check
             # This ensures gain compensation is applied even if we converged on a
@@ -682,13 +735,26 @@ class JAIWhiteBalanceCalibrator:
             return exposures, gains
 
         ratio = max_exp / min_exp
-        if ratio < config.gain_threshold_ratio:
+
+        # Check for absolute underexposure: channels at max exposure need gain help
+        # even if the channel ratio is below threshold (all channels uniformly dim)
+        channels_at_ceiling = [ch for ch, exp in exposures.items()
+                               if abs(exp - config.max_exposure_ms) < 0.01]
+
+        if not channels_at_ceiling and ratio < config.gain_threshold_ratio:
             logger.debug(
                 f"Exposure ratio {ratio:.2f} below threshold {config.gain_threshold_ratio}, "
                 f"no gain compensation needed (exp: R={exposures['red']:.2f}, "
                 f"G={exposures['green']:.2f}, B={exposures['blue']:.2f})"
             )
             return exposures, gains
+
+        if channels_at_ceiling and ratio < config.gain_threshold_ratio:
+            logger.info(
+                f"Exposure ratio {ratio:.2f} below threshold but channels "
+                f"{channels_at_ceiling} at max exposure ({config.max_exposure_ms}ms). "
+                f"Proceeding with gain compensation for underexposed channels."
+            )
 
         # Determine if we should use boosted gain mode
         # Boost mode activates when any exposure exceeds the soft cap threshold
@@ -769,6 +835,122 @@ class JAIWhiteBalanceCalibrator:
             logger.debug("Digital gain is enabled but not currently used in this implementation")
 
         return new_exposures, new_gains
+
+    def _handle_stuck_at_ceiling(
+        self,
+        means: Dict[str, float],
+        exposures: Dict[str, float],
+        gains: Dict[str, float],
+        config: CalibrationConfig,
+        target: float,
+    ) -> Tuple[Dict[str, float], Dict[str, float], bool]:
+        """
+        Detect channels stuck at max exposure with insufficient signal and take
+        corrective action: first try gain boost, then try exposure extension.
+
+        Args:
+            means: Current per-channel mean intensities
+            exposures: Current per-channel exposures in ms
+            gains: Current per-channel gain values (linear)
+            config: Calibration configuration (may be modified if exposure extended)
+            target: Target intensity value
+
+        Returns:
+            Tuple of (updated_exposures, updated_gains, ceiling_extended)
+            where ceiling_extended indicates if config.max_exposure_ms was raised
+        """
+        ceiling_extended = False
+        new_exposures = exposures.copy()
+        new_gains = gains.copy()
+
+        # Hardware gain limits per channel
+        hw_gain_max = {
+            "red": JAICameraProperties.GAIN_ANALOG_RED_RANGE[1],
+            "green": JAICameraProperties.GAIN_ANALOG_GREEN_RANGE[1],
+            "blue": JAICameraProperties.GAIN_ANALOG_BLUE_RANGE[1],
+        }
+
+        for channel in ["red", "green", "blue"]:
+            at_ceiling = abs(exposures[channel] - config.max_exposure_ms) < 0.01
+            below_target = means[channel] < (target - config.tolerance)
+
+            if not (at_ceiling and below_target):
+                continue
+
+            if means[channel] <= 0:
+                logger.warning(
+                    f"Channel {channel} at max exposure with zero signal - "
+                    f"cannot compensate"
+                )
+                continue
+
+            ch_hw_max = hw_gain_max[channel]
+            current_gain = gains[channel]
+
+            # First try gain boost if headroom exists
+            if current_gain < ch_hw_max - 0.01:
+                needed_gain_factor = target / means[channel]
+                desired_gain = current_gain * needed_gain_factor
+                actual_gain = min(desired_gain, ch_hw_max)
+
+                # Reduce exposure proportionally to the gain increase
+                gain_increase = actual_gain / current_gain
+                new_exposures[channel] = exposures[channel] / gain_increase
+                new_gains[channel] = actual_gain
+
+                logger.info(
+                    f"Channel {channel} stuck at ceiling ({exposures[channel]:.0f}ms, "
+                    f"mean={means[channel]:.0f}/{target:.0f}). "
+                    f"Boosting gain: {current_gain:.2f}x -> {actual_gain:.2f}x, "
+                    f"exposure: {exposures[channel]:.1f}ms -> {new_exposures[channel]:.1f}ms"
+                )
+                continue
+
+            # Gain already at hardware max - try extending exposure ceiling
+            needed_exp = exposures[channel] * (target / means[channel])
+            clamped_exp = min(needed_exp, config.hardware_max_exposure_ms)
+
+            if clamped_exp > config.max_exposure_ms:
+                old_max = config.max_exposure_ms
+                config.max_exposure_ms = clamped_exp
+                new_exposures[channel] = clamped_exp
+                ceiling_extended = True
+
+                logger.warning(
+                    f"Channel {channel} at max gain ({current_gain:.1f}x) and "
+                    f"max exposure ({old_max:.0f}ms) but only reaching "
+                    f"{means[channel]:.0f}/{target:.0f}. "
+                    f"Extending max exposure to {clamped_exp:.0f}ms."
+                )
+
+                # Check if even hardware max is insufficient
+                if needed_exp > config.hardware_max_exposure_ms:
+                    estimate = means[channel] * (config.hardware_max_exposure_ms / exposures[channel])
+                    logger.warning(
+                        f"Channel {channel} cannot reach target {target:.0f} even at "
+                        f"hardware limits (gain={current_gain:.1f}x, "
+                        f"exposure={config.hardware_max_exposure_ms:.0f}ms). "
+                        f"Best achievable: ~{estimate:.0f}"
+                    )
+
+        # Apply gains to hardware if any changed
+        gains_changed = any(
+            abs(new_gains[ch] - gains[ch]) > 0.001
+            for ch in ["red", "green", "blue"]
+        )
+        if gains_changed:
+            try:
+                self.jai_props.set_analog_gains(
+                    red=new_gains["red"],
+                    green=new_gains["green"],
+                    blue=new_gains["blue"],
+                    auto_enable=False,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to apply ceiling-escape gains: {e}")
+                return exposures, gains, False
+
+        return new_exposures, new_gains, ceiling_extended
 
     def _save_diagnostics(
         self,

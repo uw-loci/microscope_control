@@ -89,6 +89,9 @@ class JAICameraProperties:
     FRAME_RATE_MIN = 0.125
     FRAME_RATE_MAX = 39.21
 
+    # Hardware max exposure (at min frame rate 0.125 Hz, with margin)
+    HARDWARE_MAX_EXPOSURE_MS = 7900.0
+
     # Analog gain ranges per channel (vary by channel!)
     GAIN_ANALOG_RED_RANGE = (0.47, 4.0)
     GAIN_ANALOG_GREEN_RANGE = (1.0, 64.0)  # Green has wider range
@@ -221,6 +224,18 @@ class JAICameraProperties:
             logger.warning(f"Failed to get limits for {property_name}: {e}")
             return None
 
+    @classmethod
+    def get_hardware_max_exposure_ms(cls) -> float:
+        """
+        Compute the maximum exposure time from the minimum frame rate.
+
+        Returns:
+            Maximum exposure time in milliseconds based on FRAME_RATE_MIN.
+        """
+        # max exposure = 1/min_frame_rate (in seconds), converted to ms, with margin
+        margin = 0.99  # Small margin below theoretical max
+        return (1.0 / cls.FRAME_RATE_MIN) * 1000.0 * margin
+
     # ========== Exposure Mode Control ==========
 
     def is_individual_exposure_enabled(self) -> bool:
@@ -269,10 +284,22 @@ class JAICameraProperties:
         if auto_enable and not self.is_individual_exposure_enabled():
             self.enable_individual_exposure()
 
-        # Clamp minimum (max is handled by frame rate adjustment)
+        # Clamp minimum and validate against hardware maximum
+        hw_max = self.HARDWARE_MAX_EXPOSURE_MS
         red = max(self.EXPOSURE_MIN_MS, red)
         green = max(self.EXPOSURE_MIN_MS, green)
         blue = max(self.EXPOSURE_MIN_MS, blue)
+
+        # Clamp to hardware max and warn if exceeded
+        for ch_name, ch_val in [("Red", red), ("Green", green), ("Blue", blue)]:
+            if ch_val > hw_max:
+                logger.warning(
+                    f"{ch_name} exposure {ch_val:.2f}ms exceeds hardware max "
+                    f"{hw_max:.0f}ms, clamping"
+                )
+        red = min(red, hw_max)
+        green = min(green, hw_max)
+        blue = min(blue, hw_max)
 
         # Adjust frame rate for longest exposure
         max_exposure = max(red, green, blue)
