@@ -92,17 +92,20 @@ class WhiteBalanceResult:
     # Black level offsets per channel (for dark frame subtraction)
     black_levels: Dict[str, float]
 
-    # Whether calibration converged successfully
-    converged: bool
-
-    # Number of iterations to converge
-    iterations: int
-
     # Final channel means after calibration
     final_means: Dict[str, float]
 
     # Target value that was used
     target_value: float
+
+    # Unified gain value (1.0 means not used / individual mode)
+    unified_gain: float = 1.0
+
+    # Whether calibration converged successfully
+    converged: bool = False
+
+    # Number of iterations to converge
+    iterations: int = 0
 
 
 @dataclass
@@ -144,13 +147,20 @@ class CalibrationConfig:
     # This is the "soft cap" used when exposures are below exposure_soft_cap_ms
     max_analog_gain_db: float = 3.0
 
+    # Whether to use unified gain mode (GainIsIndividual=Off, "Gain" property)
+    # Unified gain supports 1.0-8.0x on ALL channels equally, giving 2x more
+    # headroom for R/B compared to per-channel analog gain (max 4.0x for R/B).
+    # When True, base_gain is applied as unified gain and per-channel gains stay at 1.0.
+    # When False, base_gain is applied as per-channel analog gain (legacy behavior).
+    use_unified_gain: bool = True
+
     # Base gain to start calibration with (reduces initial exposure requirements)
-    # NOTE: JAI analog gain limits are per-channel:
-    #   Red:   0.47 - 4.0 linear
-    #   Green: 1.0 - 64.0 linear
-    #   Blue:  0.47 - 4.0 linear
-    # Default 3.0 is safe for all channels. Values above 4.0 will be clamped for R/B.
-    base_gain: float = 3.0
+    # When use_unified_gain=True: applied as unified gain (1.0-8.0 range)
+    # When use_unified_gain=False: applied as per-channel analog gain
+    #   NOTE: Per-channel limits are R: 0.47-4.0, G: 1.0-64.0, B: 0.47-4.0
+    #   Values above 4.0 will be clamped for R/B in per-channel mode.
+    # Default 5.0 provides strong initial boost (only valid in unified mode).
+    base_gain: float = 5.0
 
     # Exposure soft cap threshold in milliseconds
     # When any channel's exposure exceeds this value, the gain can increase past
@@ -202,6 +212,7 @@ class ConvergenceLog:
         gains: Dict[str, float],
         converged: Dict[str, bool],
         notes: str = "",
+        unified_gain: float = 1.0,
     ) -> None:
         """Add an iteration to the log."""
         self.iterations.append(
@@ -214,6 +225,7 @@ class ConvergenceLog:
                 "red_exposure_ms": exposures.get("red", 0),
                 "green_exposure_ms": exposures.get("green", 0),
                 "blue_exposure_ms": exposures.get("blue", 0),
+                "unified_gain": unified_gain,
                 "red_gain": gains.get("red", 1.0),
                 "green_gain": gains.get("green", 1.0),
                 "blue_gain": gains.get("blue", 1.0),
@@ -363,41 +375,64 @@ class JAIWhiteBalanceCalibrator:
                 exposures = {"red": 50.0, "green": 50.0, "blue": 50.0}
                 self.jai_props.set_channel_exposures(**exposures)
 
-            # Start with base_gain applied to all channels (reduces exposure requirements)
-            # Default base_gain is 5.0 (~14 dB), which allows ~5x shorter exposures
-            gains = {
-                "red": config.base_gain,
-                "green": config.base_gain,
-                "blue": config.base_gain
-            }
-            if config.base_gain != 1.0:
-                logger.info(
-                    f"Starting with base gain of {config.base_gain:.1f}x "
-                    f"({linear_to_db(config.base_gain):.1f} dB) on all channels"
+            # Setup gain mode and apply base gain
+            gains = {"red": 1.0, "green": 1.0, "blue": 1.0}
+            unified_gain = 1.0
+
+            if config.use_unified_gain:
+                # Unified gain mode: single gain value for all channels (1.0-8.0x)
+                # Provides 2x more headroom for R/B vs per-channel mode (max 4.0x)
+                unified_gain = max(
+                    JAICameraProperties.GAIN_UNIFIED_RANGE[0],
+                    min(config.base_gain, JAICameraProperties.GAIN_UNIFIED_RANGE[1])
                 )
-                try:
-                    self.jai_props.enable_individual_gain()
-                    self.jai_props.set_analog_gains(
-                        red=config.base_gain,
-                        green=config.base_gain,
-                        blue=config.base_gain,
-                        auto_enable=False
+                if config.base_gain != 1.0:
+                    logger.info(
+                        f"Using UNIFIED gain mode: base gain {unified_gain:.1f}x "
+                        f"({linear_to_db(unified_gain):.1f} dB) applied to all channels"
                     )
-                    # Update gains to reflect actual clamped values from hardware
-                    # (e.g., base_gain=5.0 gets clamped to 4.0 for R/B channels)
-                    gains = {
-                        "red": min(config.base_gain, JAICameraProperties.GAIN_ANALOG_RED_RANGE[1]),
-                        "green": min(config.base_gain, JAICameraProperties.GAIN_ANALOG_GREEN_RANGE[1]),
-                        "blue": min(config.base_gain, JAICameraProperties.GAIN_ANALOG_BLUE_RANGE[1]),
-                    }
-                    if gains != {"red": config.base_gain, "green": config.base_gain, "blue": config.base_gain}:
-                        logger.info(
-                            f"Actual gains after hardware clamping: "
-                            f"R={gains['red']:.2f}x, G={gains['green']:.2f}x, B={gains['blue']:.2f}x"
+                    try:
+                        self.jai_props.set_unified_gain(unified_gain)
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to set unified gain: {e}. Starting with gain=1.0"
                         )
-                except Exception as e:
-                    logger.warning(f"Failed to set base gain: {e}. Starting with gain=1.0")
-                    gains = {"red": 1.0, "green": 1.0, "blue": 1.0}
+                        unified_gain = 1.0
+                # Per-channel gains stay at 1.0 in unified mode
+            else:
+                # Legacy per-channel gain mode
+                if config.base_gain != 1.0:
+                    gains = {
+                        "red": config.base_gain,
+                        "green": config.base_gain,
+                        "blue": config.base_gain
+                    }
+                    logger.info(
+                        f"Using per-channel gain mode: base gain {config.base_gain:.1f}x "
+                        f"({linear_to_db(config.base_gain):.1f} dB) on all channels"
+                    )
+                    try:
+                        self.jai_props.enable_individual_gain()
+                        self.jai_props.set_analog_gains(
+                            red=config.base_gain,
+                            green=config.base_gain,
+                            blue=config.base_gain,
+                            auto_enable=False
+                        )
+                        # Update gains to reflect actual clamped values from hardware
+                        gains = {
+                            "red": min(config.base_gain, JAICameraProperties.GAIN_ANALOG_RED_RANGE[1]),
+                            "green": min(config.base_gain, JAICameraProperties.GAIN_ANALOG_GREEN_RANGE[1]),
+                            "blue": min(config.base_gain, JAICameraProperties.GAIN_ANALOG_BLUE_RANGE[1]),
+                        }
+                        if gains != {"red": config.base_gain, "green": config.base_gain, "blue": config.base_gain}:
+                            logger.info(
+                                f"Actual gains after hardware clamping: "
+                                f"R={gains['red']:.2f}x, G={gains['green']:.2f}x, B={gains['blue']:.2f}x"
+                            )
+                    except Exception as e:
+                        logger.warning(f"Failed to set base gain: {e}. Starting with gain=1.0")
+                        gains = {"red": 1.0, "green": 1.0, "blue": 1.0}
 
             # Initial exposure estimation
             for channel in ["red", "green", "blue"]:
@@ -408,7 +443,8 @@ class JAIWhiteBalanceCalibrator:
             # Log initial state
             converged_flags = self._check_convergence(means, target, config.tolerance)
             self._convergence_log.add_iteration(
-                0, means, exposures, gains, converged_flags, "Initial capture"
+                0, means, exposures, gains, converged_flags, "Initial capture",
+                unified_gain=unified_gain
             )
 
             # Step 5: Iterative refinement
@@ -440,7 +476,8 @@ class JAIWhiteBalanceCalibrator:
                 # Log this iteration
                 notes = "Converged" if all_converged else f"max_dev={max_deviation:.1f}"
                 self._convergence_log.add_iteration(
-                    iteration, means, exposures, gains, converged_flags, notes
+                    iteration, means, exposures, gains, converged_flags, notes,
+                    unified_gain=unified_gain
                 )
 
                 # Log with precision info
@@ -481,27 +518,45 @@ class JAIWhiteBalanceCalibrator:
 
                 # Check if we need gain compensation (only check periodically, not every iteration)
                 if iteration % 5 == 0 or iteration == 1:
-                    exposures, gains = self._check_gain_compensation(
-                        exposures, gains, config
-                    )
+                    if config.use_unified_gain:
+                        # Unified gain mode: boost unified gain if channels are stuck
+                        exposures, unified_gain, boosted = self._boost_unified_gain(
+                            means, exposures, unified_gain, config, target
+                        )
+                    else:
+                        # Legacy per-channel gain mode
+                        exposures, gains = self._check_gain_compensation(
+                            exposures, gains, config
+                        )
+
                     # Check if stuck at ceiling and need to extend limits
-                    exposures, gains, ceiling_extended = self._handle_stuck_at_ceiling(
-                        means, exposures, gains, config, target
+                    exposures, gains, unified_gain, ceiling_extended = self._handle_stuck_at_ceiling(
+                        means, exposures, gains, config, target, unified_gain
                     )
 
                     # Early termination: detect truly stuck at hardware limits
-                    hw_gain_max = {
-                        "red": JAICameraProperties.GAIN_ANALOG_RED_RANGE[1],
-                        "green": JAICameraProperties.GAIN_ANALOG_GREEN_RANGE[1],
-                        "blue": JAICameraProperties.GAIN_ANALOG_BLUE_RANGE[1],
-                    }
-                    stuck_channels = []
-                    for ch in ["red", "green", "blue"]:
-                        at_hw_exp = abs(exposures[ch] - config.hardware_max_exposure_ms) < 0.01
-                        at_hw_gain = abs(gains[ch] - hw_gain_max[ch]) < 0.01
-                        below_target = means[ch] < (target - config.tolerance)
-                        if at_hw_exp and at_hw_gain and below_target:
-                            stuck_channels.append(ch)
+                    if config.use_unified_gain:
+                        ug_max = JAICameraProperties.GAIN_UNIFIED_RANGE[1]
+                        stuck_channels = []
+                        for ch in ["red", "green", "blue"]:
+                            at_hw_exp = abs(exposures[ch] - config.hardware_max_exposure_ms) < 0.01
+                            at_ug_max = abs(unified_gain - ug_max) < 0.01
+                            below_target = means[ch] < (target - config.tolerance)
+                            if at_hw_exp and at_ug_max and below_target:
+                                stuck_channels.append(ch)
+                    else:
+                        hw_gain_max = {
+                            "red": JAICameraProperties.GAIN_ANALOG_RED_RANGE[1],
+                            "green": JAICameraProperties.GAIN_ANALOG_GREEN_RANGE[1],
+                            "blue": JAICameraProperties.GAIN_ANALOG_BLUE_RANGE[1],
+                        }
+                        stuck_channels = []
+                        for ch in ["red", "green", "blue"]:
+                            at_hw_exp = abs(exposures[ch] - config.hardware_max_exposure_ms) < 0.01
+                            at_hw_gain = abs(gains[ch] - hw_gain_max[ch]) < 0.01
+                            below_target = means[ch] < (target - config.tolerance)
+                            if at_hw_exp and at_hw_gain and below_target:
+                                stuck_channels.append(ch)
 
                     if stuck_channels:
                         hw_limit_checks += 1
@@ -522,8 +577,9 @@ class JAIWhiteBalanceCalibrator:
             # IMPORTANT: Only apply if no gains were already applied during the loop.
             # If gains were applied mid-loop, the subsequent iterations converged WITH
             # those gains active, so re-compressing would double-compress the exposures.
-            if all(abs(g - 1.0) < 0.001 for g in gains.values()):
-                exposures, gains = self._check_gain_compensation(exposures, gains, config)
+            if not config.use_unified_gain:
+                if all(abs(g - 1.0) < 0.001 for g in gains.values()):
+                    exposures, gains = self._check_gain_compensation(exposures, gains, config)
 
             # Step 7: Final validation
             # If we converged in the loop, use those means (avoid re-capture noise)
@@ -559,6 +615,7 @@ class JAIWhiteBalanceCalibrator:
             result = WhiteBalanceResult(
                 exposures_ms=exposures,
                 gains=gains,
+                unified_gain=unified_gain,
                 black_levels=self._black_levels.copy(),
                 converged=all_converged,
                 iterations=iteration if all_converged else config.max_iterations,
@@ -836,6 +893,79 @@ class JAIWhiteBalanceCalibrator:
 
         return new_exposures, new_gains
 
+    def _boost_unified_gain(
+        self,
+        means: Dict[str, float],
+        exposures: Dict[str, float],
+        unified_gain: float,
+        config: CalibrationConfig,
+        target: float,
+    ) -> Tuple[Dict[str, float], float, bool]:
+        """
+        Check if unified gain should be boosted when channels are stuck at max exposure.
+
+        When any channel is at max_exposure AND below target, boost the unified gain
+        and proportionally reduce ALL channel exposures.
+
+        Args:
+            means: Current per-channel mean intensities
+            exposures: Current per-channel exposures in ms
+            unified_gain: Current unified gain value
+            config: Calibration configuration
+            target: Target intensity value
+
+        Returns:
+            Tuple of (updated_exposures, updated_unified_gain, was_boosted)
+        """
+        ug_max = JAICameraProperties.GAIN_UNIFIED_RANGE[1]
+
+        # Already at max unified gain
+        if unified_gain >= ug_max - 0.01:
+            return exposures, unified_gain, False
+
+        # Find channels stuck at ceiling and below target
+        stuck_channels = []
+        for ch in ["red", "green", "blue"]:
+            at_ceiling = abs(exposures[ch] - config.max_exposure_ms) < 0.01
+            below_target = means[ch] < (target - config.tolerance)
+            if at_ceiling and below_target and means[ch] > 0:
+                stuck_channels.append(ch)
+
+        if not stuck_channels:
+            return exposures, unified_gain, False
+
+        # Calculate gain factor needed based on the dimmest stuck channel
+        stuck_means = [means[ch] for ch in stuck_channels]
+        min_stuck_mean = min(stuck_means)
+        gain_factor = target / min_stuck_mean
+
+        # Compute new unified gain
+        old_gain = unified_gain
+        new_gain = min(unified_gain * gain_factor, ug_max)
+        actual_factor = new_gain / old_gain
+
+        # Proportionally reduce ALL channel exposures
+        new_exposures = {}
+        for ch in ["red", "green", "blue"]:
+            new_exposures[ch] = self._clamp_exposure(
+                exposures[ch] / actual_factor, config
+            )
+
+        # Apply to hardware
+        try:
+            self.jai_props.set_unified_gain(new_gain)
+        except Exception as e:
+            logger.warning(f"Failed to boost unified gain: {e}")
+            return exposures, unified_gain, False
+
+        logger.info(
+            f"Boosting unified gain: {old_gain:.1f}x -> {new_gain:.1f}x, "
+            f"reducing all exposures by {actual_factor:.1f}x "
+            f"(stuck channels: {stuck_channels})"
+        )
+
+        return new_exposures, new_gain, True
+
     def _handle_stuck_at_ceiling(
         self,
         means: Dict[str, float],
@@ -843,7 +973,8 @@ class JAIWhiteBalanceCalibrator:
         gains: Dict[str, float],
         config: CalibrationConfig,
         target: float,
-    ) -> Tuple[Dict[str, float], Dict[str, float], bool]:
+        unified_gain: float = 1.0,
+    ) -> Tuple[Dict[str, float], Dict[str, float], float, bool]:
         """
         Detect channels stuck at max exposure with insufficient signal and take
         corrective action: first try gain boost, then try exposure extension.
@@ -854,16 +985,75 @@ class JAIWhiteBalanceCalibrator:
             gains: Current per-channel gain values (linear)
             config: Calibration configuration (may be modified if exposure extended)
             target: Target intensity value
+            unified_gain: Current unified gain value (used when config.use_unified_gain=True)
 
         Returns:
-            Tuple of (updated_exposures, updated_gains, ceiling_extended)
+            Tuple of (updated_exposures, updated_gains, updated_unified_gain, ceiling_extended)
             where ceiling_extended indicates if config.max_exposure_ms was raised
         """
         ceiling_extended = False
         new_exposures = exposures.copy()
         new_gains = gains.copy()
+        new_unified_gain = unified_gain
 
-        # Hardware gain limits per channel
+        if config.use_unified_gain:
+            # Unified gain mode: boost unified gain for ALL channels
+            ug_max = JAICameraProperties.GAIN_UNIFIED_RANGE[1]
+
+            # Check if any channel is stuck
+            any_stuck = False
+            for channel in ["red", "green", "blue"]:
+                at_ceiling = abs(exposures[channel] - config.max_exposure_ms) < 0.01
+                below_target = means[channel] < (target - config.tolerance)
+                if at_ceiling and below_target and means[channel] > 0:
+                    any_stuck = True
+                    break
+
+            if any_stuck and unified_gain < ug_max - 0.01:
+                # Boost unified gain and reduce all exposures
+                # Already handled by _boost_unified_gain in the main loop,
+                # but this catches cases where we need more aggressive boosting
+                pass  # _boost_unified_gain handles this
+
+            elif any_stuck and unified_gain >= ug_max - 0.01:
+                # Unified gain maxed out - try extending exposure ceiling
+                for channel in ["red", "green", "blue"]:
+                    at_ceiling = abs(exposures[channel] - config.max_exposure_ms) < 0.01
+                    below_target = means[channel] < (target - config.tolerance)
+
+                    if not (at_ceiling and below_target):
+                        continue
+                    if means[channel] <= 0:
+                        continue
+
+                    needed_exp = exposures[channel] * (target / means[channel])
+                    clamped_exp = min(needed_exp, config.hardware_max_exposure_ms)
+
+                    if clamped_exp > config.max_exposure_ms:
+                        old_max = config.max_exposure_ms
+                        config.max_exposure_ms = clamped_exp
+                        new_exposures[channel] = clamped_exp
+                        ceiling_extended = True
+
+                        logger.warning(
+                            f"Channel {channel} at max unified gain ({unified_gain:.1f}x) "
+                            f"and max exposure ({old_max:.0f}ms) but only reaching "
+                            f"{means[channel]:.0f}/{target:.0f}. "
+                            f"Extending max exposure to {clamped_exp:.0f}ms."
+                        )
+
+                        if needed_exp > config.hardware_max_exposure_ms:
+                            estimate = means[channel] * (config.hardware_max_exposure_ms / exposures[channel])
+                            logger.warning(
+                                f"Channel {channel} cannot reach target {target:.0f} even at "
+                                f"hardware limits (unified gain={unified_gain:.1f}x, "
+                                f"exposure={config.hardware_max_exposure_ms:.0f}ms). "
+                                f"Best achievable: ~{estimate:.0f}"
+                            )
+
+            return new_exposures, new_gains, new_unified_gain, ceiling_extended
+
+        # Legacy per-channel gain mode
         hw_gain_max = {
             "red": JAICameraProperties.GAIN_ANALOG_RED_RANGE[1],
             "green": JAICameraProperties.GAIN_ANALOG_GREEN_RANGE[1],
@@ -948,9 +1138,9 @@ class JAIWhiteBalanceCalibrator:
                 )
             except Exception as e:
                 logger.warning(f"Failed to apply ceiling-escape gains: {e}")
-                return exposures, gains, False
+                return exposures, gains, unified_gain, False
 
-        return new_exposures, new_gains, ceiling_extended
+        return new_exposures, new_gains, new_unified_gain, ceiling_extended
 
     def _save_diagnostics(
         self,
@@ -1117,12 +1307,15 @@ class JAIWhiteBalanceCalibrator:
                 "exposure_mode": "individual",
             },
             "per_channel_gains": {
+                "unified_gain": round(result.unified_gain, 3),
                 "analog": {
                     "red": round(result.gains["red"], 3),
                     "green": round(result.gains["green"], 3),
                     "blue": round(result.gains["blue"], 3),
                 },
-                "gain_mode": "individual" if any(g != 1.0 for g in result.gains.values()) else "unified",
+                "gain_mode": "unified" if result.unified_gain > 1.0 else (
+                    "individual" if any(g != 1.0 for g in result.gains.values()) else "none"
+                ),
             },
             "black_levels": result.black_levels,
             "combined_settings": {
@@ -1138,8 +1331,13 @@ class JAIWhiteBalanceCalibrator:
             ],
         }
 
-        # Add gain settings to combined if gains were adjusted
-        if any(g != 1.0 for g in result.gains.values()):
+        # Add gain settings to combined
+        if result.unified_gain > 1.0:
+            # Unified gain mode
+            data["combined_settings"]["GainIsIndividual"] = "Off"
+            data["combined_settings"]["Gain"] = round(result.unified_gain, 3)
+        elif any(g != 1.0 for g in result.gains.values()):
+            # Per-channel gain mode
             data["combined_settings"]["GainIsIndividual"] = "On"
             data["combined_settings"]["Gain_AnalogRed"] = round(result.gains["red"], 3)
             data["combined_settings"]["Gain_AnalogGreen"] = round(result.gains["green"], 3)
@@ -1242,6 +1440,7 @@ class JAIWhiteBalanceCalibrator:
                 wb_cal["jai_ppm"]["calibrated"] = datetime.now().isoformat()
                 wb_cal["jai_ppm"]["angles"][angle_name] = {
                     "converged": result.converged,
+                    "unified_gain": round(result.unified_gain, 3),
                     "exposures_ms": {
                         "r": round(result.exposures_ms["red"], 2),
                         "g": round(result.exposures_ms["green"], 2),
@@ -1284,6 +1483,7 @@ class JAIWhiteBalanceCalibrator:
                 if "gains" not in profile:
                     profile["gains"] = {}
                 profile["gains"][angle_name] = {
+                    "unified_gain": round(result.unified_gain, 3),
                     "r": round(result.gains["red"], 3),
                     "g": round(result.gains["green"], 3),
                     "b": round(result.gains["blue"], 3),
@@ -1320,7 +1520,9 @@ class JAIWhiteBalanceCalibrator:
             data = yaml.safe_load(f)
 
         exposures = data.get("per_channel_exposures_ms", {})
-        gains = data.get("per_channel_gains", {}).get("analog", {})
+        gain_data = data.get("per_channel_gains", {})
+        gains = gain_data.get("analog", {})
+        unified_gain = gain_data.get("unified_gain", 1.0)
         cal_params = data.get("calibration_parameters", {})
 
         return WhiteBalanceResult(
@@ -1334,6 +1536,7 @@ class JAIWhiteBalanceCalibrator:
                 "green": gains.get("green", 1.0),
                 "blue": gains.get("blue", 1.0),
             },
+            unified_gain=unified_gain,
             black_levels=data.get("black_levels", {"red": 0, "green": 0, "blue": 0}),
             converged=cal_params.get("converged", True),
             iterations=cal_params.get("iterations_used", 0),
@@ -1354,7 +1557,12 @@ class JAIWhiteBalanceCalibrator:
             blue=result.exposures_ms["blue"],
         )
 
-        if any(g != 1.0 for g in result.gains.values()):
+        if result.unified_gain > 1.0:
+            # Unified gain mode
+            self.jai_props.set_unified_gain(result.unified_gain)
+            logger.info(f"Applied unified gain: {result.unified_gain:.2f}x")
+        elif any(g != 1.0 for g in result.gains.values()):
+            # Per-channel gain mode
             self.jai_props.set_analog_gains(
                 red=result.gains["red"],
                 green=result.gains["green"],
@@ -1521,8 +1729,10 @@ class JAIWhiteBalanceCalibrator:
             # Without this, gain settings from a previous angle (e.g., B=1.78x from
             # positive angle) persist and corrupt calibration of subsequent angles.
             try:
+                # Reset unified gain to 1.0 first (if it was boosted)
+                self.jai_props.set_unified_gain(1.0)
                 self.jai_props.disable_individual_gain()
-                logger.debug(f"Reset individual gain mode before calibrating '{name}'")
+                logger.debug(f"Reset gain mode before calibrating '{name}'")
             except Exception as e:
                 logger.warning(f"Could not reset gain mode before '{name}': {e}")
 

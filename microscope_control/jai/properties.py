@@ -92,6 +92,11 @@ class JAICameraProperties:
     # Hardware max exposure (at min frame rate 0.125 Hz, with margin)
     HARDWARE_MAX_EXPOSURE_MS = 7900.0
 
+    # Unified gain property (when GainIsIndividual = Off)
+    # Supports 1.0-8.0x range, applied equally to all channels
+    GAIN_UNIFIED = "Gain"
+    GAIN_UNIFIED_RANGE = (1.0, 8.0)
+
     # Analog gain ranges per channel (vary by channel!)
     GAIN_ANALOG_RED_RANGE = (0.47, 4.0)
     GAIN_ANALOG_GREEN_RANGE = (1.0, 64.0)  # Green has wider range
@@ -370,6 +375,45 @@ class JAICameraProperties:
         if self._property_exists(self.GAIN_INDIVIDUAL):
             self._set_property(self.GAIN_INDIVIDUAL, self.MODE_OFF)
             logger.info("Disabled individual gain mode")
+
+    def set_unified_gain(self, gain: float) -> None:
+        """
+        Set unified (non-individual) gain applied to all channels equally.
+
+        This disables individual gain mode and sets the single "Gain" property.
+        The unified gain supports 1.0-8.0x range, providing 2x more headroom
+        for R/B channels compared to per-channel analog gain (max 4.0x).
+
+        Args:
+            gain: Unified gain value (clamped to 1.0-8.0)
+        """
+        gain_min, gain_max = self.GAIN_UNIFIED_RANGE
+        clamped = max(gain_min, min(gain_max, gain))
+
+        if clamped != gain:
+            logger.warning(
+                f"Unified gain {gain:.2f} outside valid range "
+                f"({gain_min}-{gain_max}), clamped to {clamped:.2f}"
+            )
+
+        # Disable individual gain mode first
+        self.disable_individual_gain()
+
+        # Set unified gain property
+        self._set_property(self.GAIN_UNIFIED, clamped)
+        logger.info(f"Set unified gain: {clamped:.2f}x")
+
+    def get_unified_gain(self) -> float:
+        """
+        Get current unified gain value.
+
+        Returns:
+            Current unified gain value (1.0-8.0)
+        """
+        try:
+            return float(self._get_property(self.GAIN_UNIFIED))
+        except Exception:
+            return 1.0
 
     def set_analog_gains(
         self,
