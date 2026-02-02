@@ -101,6 +101,10 @@ class WhiteBalanceResult:
     # Unified gain value (1.0 means not used / individual mode)
     unified_gain: float = 1.0
 
+    # White balance method that produced these settings.
+    # Values: "manual_simple", "manual_ppm", "continuous", "once", "unknown"
+    wb_method: str = "unknown"
+
     # Whether calibration converged successfully
     converged: bool = False
 
@@ -1285,6 +1289,8 @@ class JAIWhiteBalanceCalibrator:
                 "generated": datetime.now().isoformat(),
                 "version": "1.0",
                 "description": "QPSC White Balance Settings - Per-channel exposure and gain for color balance",
+                "wb_method": result.wb_method,
+                "reproducible": result.wb_method.startswith("manual_"),
             },
             "hardware": {
                 "camera": "JAICamera",
@@ -1487,6 +1493,7 @@ class JAIWhiteBalanceCalibrator:
                     "r": round(result.gains["red"], 3),
                     "g": round(result.gains["green"], 3),
                     "b": round(result.gains["blue"], 3),
+                    "wb_method": result.wb_method,
                 }
 
                 logger.info(
@@ -1524,6 +1531,7 @@ class JAIWhiteBalanceCalibrator:
         gains = gain_data.get("analog", {})
         unified_gain = gain_data.get("unified_gain", 1.0)
         cal_params = data.get("calibration_parameters", {})
+        metadata = data.get("metadata", {})
 
         return WhiteBalanceResult(
             exposures_ms={
@@ -1537,6 +1545,7 @@ class JAIWhiteBalanceCalibrator:
                 "blue": gains.get("blue", 1.0),
             },
             unified_gain=unified_gain,
+            wb_method=metadata.get("wb_method", "unknown"),
             black_levels=data.get("black_levels", {"red": 0, "green": 0, "blue": 0}),
             converged=cal_params.get("converged", True),
             iterations=cal_params.get("iterations_used", 0),
@@ -1651,12 +1660,14 @@ class JAIWhiteBalanceCalibrator:
         )
 
         # Run calibration without PPM rotation
-        return self.calibrate(
+        result = self.calibrate(
             config=config,
             output_path=output_path,
             ppm_rotation_callback=None,
             defocus_callback=None,
         )
+        result.wb_method = "manual_simple"
+        return result
 
     def calibrate_ppm(
         self,
@@ -1802,6 +1813,7 @@ class JAIWhiteBalanceCalibrator:
                 ppm_rotation_callback=None,  # Already at target angle
                 defocus_callback=None,
             )
+            result.wb_method = "manual_ppm"
             results[name] = result
 
             logger.info(
