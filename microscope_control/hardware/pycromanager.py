@@ -255,21 +255,25 @@ class PycromanagerHardware(MicroscopeHardware):
         import time
         t_snap_start = time.perf_counter()
 
-        if self.core.is_sequence_running() and self.studio is not None:
+        if self.core.is_sequence_running():
+            # Stop any running sequence (core-level continuous acquisition or studio live mode)
+            # Try core-level stop first (works for both cases), then studio as fallback
             try:
-                self.studio.live().set_live_mode(False)
-                # Allow MicroManager time to fully stop live acquisition before
+                self.core.stop_sequence_acquisition()
+                # Allow MicroManager time to fully stop acquisition before
                 # we proceed with snap. Without this, the camera may still be
                 # mid-frame when snap_image() is called, causing a JVM crash.
                 time.sleep(0.1)
+                logger.debug("Stopped sequence acquisition via core before snap")
             except Exception as e:
-                logger.warning(f"Failed to stop live mode via studio (non-fatal): {e}")
-                # Fall back to stopping the sequence directly through core
-                try:
-                    self.core.stop_sequence_acquisition()
-                    time.sleep(0.1)
-                except Exception as e2:
-                    logger.warning(f"Failed to stop sequence acquisition via core: {e2}")
+                logger.warning(f"Failed to stop sequence via core: {e}")
+                # Try studio live mode stop as fallback
+                if self.studio is not None:
+                    try:
+                        self.studio.live().set_live_mode(False)
+                        time.sleep(0.1)
+                    except Exception as e2:
+                        logger.warning(f"Failed to stop live mode via studio: {e2}")
         t_live_check = time.perf_counter()
         logger.debug(f"    [TIMING-INTERNAL] Check/stop live mode: {(t_live_check - t_snap_start)*1000:.1f}ms")
 
@@ -437,12 +441,55 @@ class PycromanagerHardware(MicroscopeHardware):
 
         return pixels
 
+    def start_continuous_acquisition(self):
+        """
+        Start continuous sequence acquisition at the Core level.
+
+        Uses core.start_continuous_sequence_acquisition() to fill the circular
+        buffer with frames at the camera's native frame rate. This bypasses
+        MM's studio/live mode entirely -- no MM live window interaction.
+
+        Call stop_continuous_acquisition() to stop, or get_live_frame() to
+        read frames from the buffer.
+        """
+        try:
+            if self.core.is_sequence_running():
+                logger.debug("Sequence already running, not starting another")
+                return
+
+            # Clear any stale frames from previous runs
+            self.core.clear_circular_buffer()
+
+            # Start continuous acquisition with 0ms interval (camera native rate)
+            self.core.start_continuous_sequence_acquisition(0)
+            logger.info("Continuous sequence acquisition started (core-level)")
+        except Exception as e:
+            logger.error(f"Failed to start continuous acquisition: {e}")
+            raise
+
+    def stop_continuous_acquisition(self):
+        """
+        Stop continuous sequence acquisition at the Core level.
+
+        Safe to call even if no sequence is running.
+        """
+        try:
+            if self.core.is_sequence_running():
+                self.core.stop_sequence_acquisition()
+                logger.info("Continuous sequence acquisition stopped")
+            else:
+                logger.debug("No sequence running, nothing to stop")
+        except Exception as e:
+            logger.error(f"Failed to stop continuous acquisition: {e}")
+            raise
+
     def get_live_frame(self):
         """
-        Get the latest frame from MM's circular buffer without stopping live mode.
+        Get the latest frame from MM's circular buffer.
 
         This reads from the circular buffer (near-instant) rather than triggering
-        a new exposure. Camera must be in live mode for frames to be available.
+        a new exposure. Works with both core-level continuous acquisition
+        (start_continuous_acquisition) and studio live mode.
 
         Returns:
             Tuple of (image_array, metadata_dict) or (None, None) if no frame available.
@@ -455,7 +502,7 @@ class PycromanagerHardware(MicroscopeHardware):
             if remaining == 0:
                 return None, None
 
-            # Read from circular buffer - does NOT stop live mode
+            # Read from circular buffer
             pixels = self.core.get_last_image()
             if pixels is None:
                 return None, None
