@@ -256,7 +256,20 @@ class PycromanagerHardware(MicroscopeHardware):
         t_snap_start = time.perf_counter()
 
         if self.core.is_sequence_running() and self.studio is not None:
-            self.studio.live().set_live_mode(False)
+            try:
+                self.studio.live().set_live_mode(False)
+                # Allow MicroManager time to fully stop live acquisition before
+                # we proceed with snap. Without this, the camera may still be
+                # mid-frame when snap_image() is called, causing a JVM crash.
+                time.sleep(0.1)
+            except Exception as e:
+                logger.warning(f"Failed to stop live mode via studio (non-fatal): {e}")
+                # Fall back to stopping the sequence directly through core
+                try:
+                    self.core.stop_sequence_acquisition()
+                    time.sleep(0.1)
+                except Exception as e2:
+                    logger.warning(f"Failed to stop sequence acquisition via core: {e2}")
         t_live_check = time.perf_counter()
         logger.debug(f"    [TIMING-INTERNAL] Check/stop live mode: {(t_live_check - t_snap_start)*1000:.1f}ms")
 
@@ -364,6 +377,110 @@ class PycromanagerHardware(MicroscopeHardware):
             return None, None
 
         return pixels, tags
+
+    def _process_raw_image(self, pixels, width, height, nchannels, debayering="auto"):
+        """
+        Shared post-processing for raw pixel data from snap or live buffer.
+
+        Handles debayering (MicroPublisher6), channel reordering (BGRA->RGB),
+        and alpha removal.
+
+        Args:
+            pixels: Raw pixel array from MM (flat or already shaped)
+            width: Image width in pixels
+            height: Image height in pixels
+            nchannels: Number of channels (1=grayscale, 3/4=color)
+            debayering: Debayering mode ("auto", True, False)
+
+        Returns:
+            Processed numpy array (H, W) for grayscale or (H, W, 3) for RGB
+        """
+        camera = self._camera_name
+
+        # Reshape if flat
+        if pixels.ndim == 1:
+            if nchannels > 1:
+                pixels = pixels.reshape(height, width, nchannels)
+            else:
+                pixels = pixels.reshape(height, width)
+
+        # Determine debayering
+        needs_debayer = False
+        if debayering == "auto":
+            needs_debayer = (camera == "MicroPublisher6")
+        elif debayering:
+            needs_debayer = (camera == "MicroPublisher6")
+
+        # Apply debayering for MicroPublisher6
+        if needs_debayer:
+            debayerx = CPUDebayer(
+                pattern="GRBG",
+                image_bit_clipmax=(2**14) - 1,
+                image_dtype=np.uint16,
+                convolution_mode="wrap",
+            )
+            pixels = debayerx.debayer(pixels)
+            pixels = ((pixels.astype(np.float32) / ((2**14) - 1)) * 65535).astype(np.uint16)
+            pixels = np.clip(pixels, 0, 65535).astype(np.uint16)
+            return pixels
+
+        # Handle channel reordering for color cameras
+        if camera in ["QCamera", "MicroPublisher6", "JAICamera"]:
+            if nchannels > 1 and pixels.ndim == 3:
+                pixels = pixels[:, :, ::-1]  # BGRA to ARGB
+                if camera != "QCamera" and pixels.shape[2] == 4:
+                    pixels = pixels[:, :, 1:]  # Remove alpha channel
+        elif camera == "OSc-LSM":
+            pass
+        else:
+            logger.warning(f"Unrecognized camera for post-processing: {camera}")
+
+        return pixels
+
+    def get_live_frame(self):
+        """
+        Get the latest frame from MM's circular buffer without stopping live mode.
+
+        This reads from the circular buffer (near-instant) rather than triggering
+        a new exposure. Camera must be in live mode for frames to be available.
+
+        Returns:
+            Tuple of (image_array, metadata_dict) or (None, None) if no frame available.
+            image_array is (H, W) for grayscale or (H, W, 3) for RGB.
+            metadata_dict contains width, height, channels, bytesPerPixel.
+        """
+        try:
+            # Check if there are frames available
+            remaining = self.core.get_remaining_image_count()
+            if remaining == 0:
+                return None, None
+
+            # Read from circular buffer - does NOT stop live mode
+            pixels = self.core.get_last_image()
+            if pixels is None:
+                return None, None
+
+            width = self.core.get_image_width()
+            height = self.core.get_image_height()
+            nchannels = self.core.get_number_of_components()
+            bpp = self.core.get_bytes_per_pixel()
+
+            # Process the raw image (debayering, channel reorder, etc.)
+            processed = self._process_raw_image(pixels, width, height, nchannels)
+
+            # Build metadata
+            meta = {
+                "width": processed.shape[1],
+                "height": processed.shape[0],
+                "channels": 1 if processed.ndim == 2 else processed.shape[2],
+                "bytesPerPixel": processed.dtype.itemsize,
+            }
+
+            return processed, meta
+
+        except Exception as e:
+            logger.error(f"get_live_frame failed: {e}")
+            return None, None
 
     def get_fov(self) -> Tuple[float, float]:
         """

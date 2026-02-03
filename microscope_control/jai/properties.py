@@ -376,16 +376,19 @@ class JAICameraProperties:
             self._set_property(self.GAIN_INDIVIDUAL, self.MODE_OFF)
             logger.info("Disabled individual gain mode")
 
-    def set_unified_gain(self, gain: float) -> None:
+    def set_unified_gain(self, gain: float, max_retries: int = 3) -> None:
         """
         Set unified (non-individual) gain applied to all channels equally.
 
-        This disables individual gain mode and sets the single "Gain" property.
+        This disables individual gain mode (if not already off) and sets
+        the single "Gain" property with read-back verification.
         The unified gain supports 1.0-8.0x range, providing 2x more headroom
         for R/B channels compared to per-channel analog gain (max 4.0x).
 
         Args:
             gain: Unified gain value (clamped to 1.0-8.0)
+            max_retries: Number of times to retry if read-back verification
+                         fails (default 3)
         """
         gain_min, gain_max = self.GAIN_UNIFIED_RANGE
         clamped = max(gain_min, min(gain_max, gain))
@@ -396,12 +399,32 @@ class JAICameraProperties:
                 f"({gain_min}-{gain_max}), clamped to {clamped:.2f}"
             )
 
-        # Disable individual gain mode first
-        self.disable_individual_gain()
+        # Only toggle GainIsIndividual if it's currently on -- avoid
+        # redundant writes that can confuse some camera firmware and
+        # cause the Gain value to be reset.
+        if self.is_individual_gain_enabled():
+            self.disable_individual_gain()
 
-        # Set unified gain property
-        self._set_property(self.GAIN_UNIFIED, clamped)
-        logger.info(f"Set unified gain: {clamped:.2f}x")
+        # Set unified gain property with read-back verification
+        for attempt in range(1, max_retries + 1):
+            self._set_property(self.GAIN_UNIFIED, clamped)
+
+            # Read back and verify
+            actual = self.get_unified_gain()
+            if abs(actual - clamped) < 0.01:
+                logger.info(f"Set unified gain: {clamped:.2f}x (verified)")
+                return
+
+            logger.warning(
+                f"Unified gain verification failed (attempt {attempt}/{max_retries}): "
+                f"wrote {clamped:.2f}, read back {actual:.2f}"
+            )
+
+        # Final attempt failed -- log error but continue
+        logger.error(
+            f"Unified gain could not be verified after {max_retries} attempts: "
+            f"target {clamped:.2f}, actual {self.get_unified_gain():.2f}"
+        )
 
     def get_unified_gain(self) -> float:
         """
