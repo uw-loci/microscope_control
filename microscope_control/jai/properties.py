@@ -438,6 +438,60 @@ class JAICameraProperties:
         except Exception:
             return 1.0
 
+    def set_rb_analog_gains(self, red: float, blue: float) -> None:
+        """
+        Set R/B analog gains WITHOUT enabling individual gain mode.
+
+        Hardware discovery: Gain_AnalogRed and Gain_AnalogBlue are writable
+        even when GainIsIndividual=Off. This allows fine R/B color balance
+        correction on top of the unified gain, without the side effects of
+        individual gain mode.
+
+        Green is the reference channel and is not adjusted by this method.
+
+        Args:
+            red: Red channel analog gain (clamped to 0.47-4.0)
+            blue: Blue channel analog gain (clamped to 0.47-4.0)
+        """
+        red_min, red_max = self.GAIN_ANALOG_RED_RANGE
+        blue_min, blue_max = self.GAIN_ANALOG_BLUE_RANGE
+
+        red_clamped = max(red_min, min(red_max, red))
+        blue_clamped = max(blue_min, min(blue_max, blue))
+
+        if red_clamped != red:
+            logger.warning(
+                f"Red analog gain {red:.2f} outside valid range "
+                f"({red_min}-{red_max}), clamped to {red_clamped:.2f}"
+            )
+        if blue_clamped != blue:
+            logger.warning(
+                f"Blue analog gain {blue:.2f} outside valid range "
+                f"({blue_min}-{blue_max}), clamped to {blue_clamped:.2f}"
+            )
+
+        # Set R/B analog gains directly - these work without individual gain mode
+        self._set_property(self.GAIN_ANALOG_RED, red_clamped)
+        self._set_property(self.GAIN_ANALOG_BLUE, blue_clamped)
+
+        logger.info(
+            f"Set R/B analog gains (unified mode): "
+            f"R={red_clamped:.2f}, B={blue_clamped:.2f}"
+        )
+
+    def get_rb_analog_gains(self) -> Dict[str, float]:
+        """
+        Get current R/B analog gain values.
+
+        Returns:
+            Dictionary with 'red' and 'blue' keys and gain values.
+            Green is the reference channel (not returned).
+        """
+        return {
+            "red": float(self._get_property(self.GAIN_ANALOG_RED)),
+            "blue": float(self._get_property(self.GAIN_ANALOG_BLUE)),
+        }
+
     def set_analog_gains(
         self,
         red: float,

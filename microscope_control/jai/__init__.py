@@ -47,6 +47,7 @@ from microscope_control.jai.calibration import (
     db_to_linear,
     linear_to_db,
 )
+from microscope_control.jai.noise import JAINoiseMeasurement, NoiseStats
 
 __all__ = [
     "JAICameraProperties",
@@ -56,4 +57,6 @@ __all__ = [
     "CalibrationConfig",
     "db_to_linear",
     "linear_to_db",
+    "JAINoiseMeasurement",
+    "NoiseStats",
 ]
