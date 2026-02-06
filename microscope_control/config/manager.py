@@ -29,8 +29,9 @@ class ConfigManager:
                        subdirectory relative to this file.
         """
         if config_dir is None:
-            # configurations folder is at smart_wsi_scanner/configurations/, not config/configurations/
-            package_dir = Path(__file__).parent.parent  # smart_wsi_scanner/
+            # Default fallback - in practice, config_dir is always provided explicitly
+            # via the server's --yaml argument pointing to microscope_configurations/
+            package_dir = Path(__file__).parent.parent
             self.config_dir = package_dir / "configurations"
         else:
             self.config_dir = Path(config_dir)
