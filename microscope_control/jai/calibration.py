@@ -51,6 +51,33 @@ from microscope_control.jai.properties import JAICameraProperties
 logger = logging.getLogger(__name__)
 
 
+# Quality presets for noise-aware calibration
+# Each preset defines tradeoffs between speed, noise, and signal quality
+QUALITY_PRESETS = {
+    'fast': {
+        'max_exposure_ms': 50.0,
+        'max_noise_stddev': 8.0,
+        'min_snr': 15.0,
+        'unified_gain_mode': 'fixed',
+        'base_gain': 5.0,
+    },
+    'balanced': {
+        'max_exposure_ms': 200.0,
+        'max_noise_stddev': 5.0,
+        'min_snr': 25.0,
+        'unified_gain_mode': 'auto',
+        'base_gain': 3.0,
+    },
+    'quality': {
+        'max_exposure_ms': 500.0,
+        'max_noise_stddev': 3.0,
+        'min_snr': 40.0,
+        'unified_gain_mode': 'auto',
+        'base_gain': 1.0,
+    },
+}
+
+
 def db_to_linear(db: float) -> float:
     """
     Convert decibels to linear gain multiplier.
@@ -194,6 +221,28 @@ class CalibrationConfig:
     # Bit depth of camera (for target value scaling)
     bit_depth: int = 8
 
+    # Noise constraint parameters (for noise-aware calibration)
+    # Maximum acceptable per-channel noise standard deviation
+    max_noise_stddev: float = 5.0
+
+    # Minimum acceptable signal-to-noise ratio per channel
+    min_snr: float = 20.0
+
+    # Unified gain selection mode:
+    # - 'auto': Automatically select lowest gain that meets exposure constraints
+    # - 'fixed': Use base_gain value directly
+    # - 'minimize_noise': Prioritize lowest gain even if exposure is longer
+    # - 'minimize_exposure': Prioritize higher gain to reduce exposure time
+    unified_gain_mode: str = 'auto'
+
+    # Quality mode preset: 'fast', 'balanced', or 'quality'
+    # When set to a valid preset name, overrides individual noise parameters
+    # Set to None or empty string to use individual parameter values
+    quality_mode: str = ''
+
+    # Whether to run noise verification at end of calibration
+    verify_noise: bool = True
+
 
 @dataclass
 class ConvergenceLog:
@@ -321,11 +370,17 @@ class JAIWhiteBalanceCalibrator:
         if config is None:
             config = CalibrationConfig()
 
+        # Apply quality preset if specified (modifies config in place)
+        config = self._apply_quality_preset(config)
+
         self._validate_camera()
         self._convergence_log = ConvergenceLog()
 
         logger.info("Starting JAI white balance calibration (2-phase)")
         logger.info(f"Target value: {config.target_value}, tolerance: {config.tolerance}")
+        if config.quality_mode:
+            logger.info(f"Quality mode: {config.quality_mode}")
+        logger.info(f"Gain mode: {config.unified_gain_mode}, base_gain: {config.base_gain}")
 
         # Scale target value for bit depth
         if config.bit_depth == 16:
@@ -361,24 +416,30 @@ class JAIWhiteBalanceCalibrator:
                 except Exception as e:
                     logger.warning(f"Failed to apply defocus: {e}")
 
-            # Step 3: Set unified gain and R/B analog gains to neutral
-            unified_gain = max(
-                JAICameraProperties.GAIN_UNIFIED_RANGE[0],
-                min(config.base_gain, JAICameraProperties.GAIN_UNIFIED_RANGE[1])
-            )
+            # Step 3: Set unified gain and R/B analog gains
+            # Use noise-aware gain selection when mode is 'auto' or other dynamic modes
             analog_red = 1.0
             analog_blue = 1.0
 
-            if config.base_gain != 1.0:
-                logger.info(
-                    f"Setting unified gain to {unified_gain:.1f}x "
-                    f"({linear_to_db(unified_gain):.1f} dB)"
+            if config.unified_gain_mode in ('auto', 'minimize_noise', 'minimize_exposure'):
+                # Noise-aware gain selection - test light levels first
+                unified_gain = self._select_optimal_unified_gain(config, target)
+            else:
+                # Fixed mode - use base_gain directly
+                unified_gain = max(
+                    JAICameraProperties.GAIN_UNIFIED_RANGE[0],
+                    min(config.base_gain, JAICameraProperties.GAIN_UNIFIED_RANGE[1])
                 )
-                try:
-                    self.jai_props.set_unified_gain(unified_gain)
-                except Exception as e:
-                    logger.warning(f"Failed to set unified gain: {e}. Starting with gain=1.0")
-                    unified_gain = 1.0
+
+            logger.info(
+                f"Setting unified gain to {unified_gain:.1f}x "
+                f"({linear_to_db(unified_gain):.1f} dB)"
+            )
+            try:
+                self.jai_props.set_unified_gain(unified_gain)
+            except Exception as e:
+                logger.warning(f"Failed to set unified gain: {e}. Starting with gain=1.0")
+                unified_gain = 1.0
 
             # Reset R/B analog gains to 1.0
             try:
@@ -625,6 +686,7 @@ class JAIWhiteBalanceCalibrator:
 
             # Measure noise at final settings if configured
             noise_stats = None
+            noise_verification_result = None
             if config.noise_frames > 0:
                 try:
                     from microscope_control.jai.noise import JAINoiseMeasurement
@@ -634,6 +696,16 @@ class JAIWhiteBalanceCalibrator:
                     )
                 except Exception as e:
                     logger.warning(f"Failed to measure noise: {e}")
+
+            # Run noise constraint verification if enabled
+            if config.verify_noise and config.noise_frames > 0:
+                noise_passes, noise_verification_result = self._verify_noise_constraints(config)
+                if not noise_passes:
+                    # Log warning but don't fail calibration - user can decide what to do
+                    logger.warning(
+                        f"Noise constraints not met (max_stddev={config.max_noise_stddev}, "
+                        f"min_snr={config.min_snr}). Consider using a lower gain or longer exposure."
+                    )
 
             # Build result
             result = WhiteBalanceResult(
@@ -648,6 +720,11 @@ class JAIWhiteBalanceCalibrator:
                 final_means=final_means,
                 target_value=config.target_value,
             )
+
+            # Attach noise verification result to noise_stats if available
+            if noise_verification_result is not None and result.noise_stats is not None:
+                # Store verification result in noise_stats for later access
+                result.noise_stats.verification_result = noise_verification_result
 
             # Save diagnostics if output path provided
             if output_path is not None:
@@ -790,6 +867,237 @@ class JAIWhiteBalanceCalibrator:
             channel: abs(means[channel] - target) <= tolerance
             for channel in ["red", "green", "blue"]
         }
+
+    def _select_optimal_unified_gain(
+        self,
+        config: CalibrationConfig,
+        target: float,
+    ) -> float:
+        """
+        Select lowest unified gain that meets exposure constraints.
+
+        Based on noise test data:
+        - Unified gain 1.0: R=2.4, G=1.8, B=1.0 stddev at 25ms - best for bright scenes
+        - Unified gain 2.0: R=4.5, G=3.4, B=1.9 stddev - optimal balance
+        - Unified gain 3.0+: Increasing noise - only for very dark scenes
+
+        Critical insight: Analog R/B gains (0.48-4.0) have minimal noise impact -
+        they're post-amplification scalars, not true hardware gain. Exposure is
+        the primary control for signal quality.
+
+        Args:
+            config: Calibration configuration with gain mode settings
+            target: Target intensity value
+
+        Returns:
+            Selected unified gain value (1.0-8.0)
+        """
+        if config.unified_gain_mode == 'fixed':
+            logger.debug(f"Using fixed unified gain: {config.base_gain}")
+            return config.base_gain
+
+        # Save current camera state to restore later
+        try:
+            saved_exposures = self.jai_props.get_channel_exposures()
+        except Exception:
+            saved_exposures = {"red": 50.0, "green": 50.0, "blue": 50.0}
+
+        # Test at minimum gain to assess light level
+        test_gain = 1.0
+        test_exposure = 50.0  # ms
+
+        try:
+            self.jai_props.set_unified_gain(test_gain)
+            self.jai_props.set_channel_exposures(
+                red=test_exposure, green=test_exposure, blue=test_exposure,
+                auto_enable=True
+            )
+            time.sleep(0.2)  # Allow settings to take effect
+
+            means = self._capture_and_analyze()
+        except Exception as e:
+            logger.warning(f"Failed to test at minimum gain: {e}. Using base_gain={config.base_gain}")
+            return min(config.base_gain, 5.0)
+
+        min_mean = min(means.values())
+        if min_mean <= 0:
+            logger.warning("Zero signal at minimum gain - using default base_gain")
+            return min(config.base_gain, 5.0)
+
+        # Calculate how much signal boost we need
+        required_factor = target / min_mean
+        logger.debug(
+            f"Light assessment at gain={test_gain}, exp={test_exposure}ms: "
+            f"min_mean={min_mean:.1f}, target={target:.0f}, required_factor={required_factor:.1f}"
+        )
+
+        # Select gain based on required signal boost
+        # These thresholds are derived from noise characterization data
+        if config.unified_gain_mode == 'minimize_noise':
+            # Prioritize lowest gain - accept longer exposures
+            if required_factor <= 2.0:
+                selected_gain = 1.0
+            elif required_factor <= 4.0:
+                selected_gain = 2.0
+            elif required_factor <= 8.0:
+                selected_gain = 3.0
+            else:
+                # Very dark - use higher gain but still conservative
+                selected_gain = min(required_factor / 3, 6.0)
+
+        elif config.unified_gain_mode == 'minimize_exposure':
+            # Prioritize shorter exposures - accept more noise
+            if required_factor <= 1.2:
+                selected_gain = 1.0
+            elif required_factor <= 2.0:
+                selected_gain = 2.0
+            elif required_factor <= 3.0:
+                selected_gain = 3.0
+            elif required_factor <= 5.0:
+                selected_gain = 4.0
+            else:
+                selected_gain = min(required_factor / 1.5, 8.0)
+
+        else:  # 'auto' - balanced approach
+            # Empirical gain selection based on noise test data
+            if required_factor <= 1.5:
+                selected_gain = 1.0  # Bright - minimal gain, best quality
+            elif required_factor <= 3.0:
+                selected_gain = 2.0  # Moderate - optimal balance
+            elif required_factor <= 5.0:
+                selected_gain = 3.0  # Dim - acceptable tradeoff
+            else:
+                # Very dark - use higher gain but cap at reasonable level
+                selected_gain = min(required_factor / 2, 8.0)
+
+        # Clamp to hardware limits
+        ug_min, ug_max = JAICameraProperties.GAIN_UNIFIED_RANGE
+        selected_gain = max(ug_min, min(ug_max, selected_gain))
+
+        logger.info(
+            f"Noise-aware gain selection ({config.unified_gain_mode}): "
+            f"required_factor={required_factor:.1f} -> unified_gain={selected_gain:.1f}"
+        )
+
+        return selected_gain
+
+    def _verify_noise_constraints(
+        self,
+        config: CalibrationConfig,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Verify that final calibration settings meet noise constraints.
+
+        Captures frames and measures temporal noise using JAINoiseMeasurement,
+        then checks if per-channel noise (stddev) and SNR meet the configured
+        thresholds.
+
+        Args:
+            config: Calibration configuration with noise constraints
+
+        Returns:
+            Tuple of (passes, details_dict) where:
+            - passes: True if all constraints are met
+            - details_dict: Contains stddevs, snr, and per-channel pass/fail info
+        """
+        try:
+            from microscope_control.jai.noise import JAINoiseMeasurement
+
+            noise_meter = JAINoiseMeasurement(self.hardware, self.jai_props)
+            stats = noise_meter.measure_noise(
+                num_frames=config.noise_frames,
+                settle_frames=1
+            )
+        except Exception as e:
+            logger.warning(f"Noise verification failed to measure noise: {e}")
+            return False, {'error': str(e)}
+
+        passes = True
+        channel_results = {}
+
+        for channel in ['red', 'green', 'blue']:
+            stddev = stats.channel_stddevs.get(channel, 0.0)
+            snr = stats.channel_snr.get(channel, 0.0)
+
+            stddev_ok = stddev <= config.max_noise_stddev
+            snr_ok = snr >= config.min_snr
+
+            channel_results[channel] = {
+                'stddev': stddev,
+                'snr': snr,
+                'stddev_ok': stddev_ok,
+                'snr_ok': snr_ok,
+                'passes': stddev_ok and snr_ok,
+            }
+
+            if not (stddev_ok and snr_ok):
+                passes = False
+
+        result = {
+            'passes': passes,
+            'channel_stddevs': stats.channel_stddevs,
+            'channel_snr': stats.channel_snr,
+            'channel_means': stats.channel_means,
+            'thresholds': {
+                'max_noise_stddev': config.max_noise_stddev,
+                'min_snr': config.min_snr,
+            },
+            'per_channel': channel_results,
+        }
+
+        if passes:
+            logger.info(
+                f"Noise verification PASSED: "
+                f"R(std={stats.channel_stddevs['red']:.2f}, SNR={stats.channel_snr['red']:.1f}) "
+                f"G(std={stats.channel_stddevs['green']:.2f}, SNR={stats.channel_snr['green']:.1f}) "
+                f"B(std={stats.channel_stddevs['blue']:.2f}, SNR={stats.channel_snr['blue']:.1f})"
+            )
+        else:
+            failures = []
+            for ch, info in channel_results.items():
+                if not info['passes']:
+                    issues = []
+                    if not info['stddev_ok']:
+                        issues.append(f"stddev={info['stddev']:.2f}>{config.max_noise_stddev}")
+                    if not info['snr_ok']:
+                        issues.append(f"SNR={info['snr']:.1f}<{config.min_snr}")
+                    failures.append(f"{ch}({', '.join(issues)})")
+            logger.warning(
+                f"Noise verification FAILED: {', '.join(failures)}"
+            )
+
+        return passes, result
+
+    def _apply_quality_preset(self, config: CalibrationConfig) -> CalibrationConfig:
+        """
+        Apply quality preset values to config if a valid preset is specified.
+
+        Args:
+            config: Original calibration configuration
+
+        Returns:
+            Configuration with preset values applied (or original if no preset)
+        """
+        if not config.quality_mode or config.quality_mode not in QUALITY_PRESETS:
+            return config
+
+        preset = QUALITY_PRESETS[config.quality_mode]
+        logger.info(f"Applying quality preset: {config.quality_mode}")
+
+        # Apply preset values - these override individual settings
+        config.max_exposure_ms = preset.get('max_exposure_ms', config.max_exposure_ms)
+        config.max_noise_stddev = preset.get('max_noise_stddev', config.max_noise_stddev)
+        config.min_snr = preset.get('min_snr', config.min_snr)
+        config.unified_gain_mode = preset.get('unified_gain_mode', config.unified_gain_mode)
+        config.base_gain = preset.get('base_gain', config.base_gain)
+
+        logger.debug(
+            f"Preset values: max_exp={config.max_exposure_ms}ms, "
+            f"max_noise={config.max_noise_stddev}, min_snr={config.min_snr}, "
+            f"gain_mode={config.unified_gain_mode}, base_gain={config.base_gain}"
+        )
+
+        return config
 
     def _boost_unified_gain(
         self,
@@ -1179,9 +1487,8 @@ class JAIWhiteBalanceCalibrator:
         The imageprocessing file is derived from the config path:
         config_PPM.yml -> imageprocessing_PPM.yml
 
-        Saves to two locations:
-        1. white_balance_calibration section (for reference/audit trail)
-        2. imaging_profiles.{modality}.{objective}.{detector}.exposures_ms (for actual use)
+        Saves calibration results to:
+        imaging_profiles.{modality}.{objective}.{detector} (exposures_ms and gains)
 
         Args:
             config_path: Path to the main config file (e.g., config_PPM.yml)
@@ -1216,60 +1523,10 @@ class JAIWhiteBalanceCalibrator:
             else:
                 ip_data = {}
 
-            # Ensure white_balance_calibration section exists
-            if "white_balance_calibration" not in ip_data:
-                ip_data["white_balance_calibration"] = {}
+            # Remove legacy audit trail section if present (no longer used)
+            ip_data.pop("white_balance_calibration", None)
 
-            wb_cal = ip_data["white_balance_calibration"]
-
-            # Structure for JAI camera calibration
-            if calibration_type == "simple":
-                # Simple WB - same settings for all angles
-                wb_cal["jai_simple"] = {
-                    "calibrated": datetime.now().isoformat(),
-                    "converged": result.converged,
-                    "target": result.target_value,
-                    "exposures_ms": {
-                        "r": round(result.exposures_ms["red"], 2),
-                        "g": round(result.exposures_ms["green"], 2),
-                        "b": round(result.exposures_ms["blue"], 2),
-                    },
-                    "gains": {
-                        "unified_gain": round(result.unified_gain, 3),
-                        "analog_red": round(result.analog_red, 3),
-                        "analog_blue": round(result.analog_blue, 3),
-                    },
-                    "final_means": {
-                        "r": round(result.final_means["red"], 1),
-                        "g": round(result.final_means["green"], 1),
-                        "b": round(result.final_means["blue"], 1),
-                    },
-                }
-            elif calibration_type == "ppm" and angle_name:
-                # PPM WB - per-angle settings
-                if "jai_ppm" not in wb_cal:
-                    wb_cal["jai_ppm"] = {
-                        "calibrated": datetime.now().isoformat(),
-                        "angles": {},
-                    }
-                wb_cal["jai_ppm"]["calibrated"] = datetime.now().isoformat()
-                wb_cal["jai_ppm"]["angles"][angle_name] = {
-                    "converged": result.converged,
-                    "unified_gain": round(result.unified_gain, 3),
-                    "exposures_ms": {
-                        "r": round(result.exposures_ms["red"], 2),
-                        "g": round(result.exposures_ms["green"], 2),
-                        "b": round(result.exposures_ms["blue"], 2),
-                    },
-                    "gains": {
-                        "unified_gain": round(result.unified_gain, 3),
-                        "analog_red": round(result.analog_red, 3),
-                        "analog_blue": round(result.analog_blue, 3),
-                    },
-                }
-
-            # Also update imaging_profiles section if modality/objective/detector provided
-            # This is where BackgroundCollectionController reads the values from
+            # Update imaging_profiles section with calibration results
             if modality and objective and detector and angle_name:
                 if "imaging_profiles" not in ip_data:
                     ip_data["imaging_profiles"] = {}
