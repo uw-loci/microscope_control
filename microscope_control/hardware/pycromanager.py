@@ -526,7 +526,14 @@ class PycromanagerHardware(MicroscopeHardware):
             return processed, meta
 
         except Exception as e:
-            logger.error(f"get_live_frame failed: {e}")
+            # "Circular buffer is empty" is a benign race condition -
+            # buffer can drain between get_remaining_image_count() and
+            # get_last_image(). Log at debug, not error.
+            msg = str(e)
+            if "Circular buffer" in msg or "buffer is empty" in msg:
+                logger.debug("Live frame buffer empty (race condition, harmless)")
+            else:
+                logger.error(f"get_live_frame failed: {e}")
             return None, None
 
     def get_fov(self) -> Tuple[float, float]:
