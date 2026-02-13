@@ -579,10 +579,51 @@ class JAIWhiteBalanceCalibrator:
 
             phase1_iterations = iteration
 
+            # ==================== PHASE 1b: Fine exposure tuning ====================
+            # Phase 1 converges to coarse_tolerance (10.0) but Phase 2 can only
+            # adjust R/B analog gains - it cannot correct Green. Fine-tune ALL
+            # channel exposures to get closer to target before Phase 2.
+            logger.info("Phase 1b: Fine exposure tuning (all channels)")
+            max_phase1b_iters = 10
+            for p1b_iter in range(1, max_phase1b_iters + 1):
+                self.jai_props.set_channel_exposures(**exposures, auto_enable=False)
+                time.sleep(0.1)
+                means = self._capture_and_analyze()
+
+                converged_flags = self._check_convergence(means, target, config.tolerance)
+                all_converged = all(converged_flags.values())
+
+                deviations = {ch: abs(means[ch] - target) for ch in ["red", "green", "blue"]}
+                max_deviation = max(deviations.values())
+
+                logger.debug(
+                    f"P1b Iter {p1b_iter}: R={means['red']:.1f}, "
+                    f"G={means['green']:.1f}, B={means['blue']:.1f} "
+                    f"| max_dev={max_deviation:.1f}"
+                )
+
+                if all_converged:
+                    logger.info(
+                        f"Phase 1b converged after {p1b_iter} iterations "
+                        f"(all channels within {config.tolerance} of target)"
+                    )
+                    break
+
+                # Fine-tune exposures with low damping for precision
+                for channel in ["red", "green", "blue"]:
+                    if not converged_flags[channel] and means[channel] > 0:
+                        ratio = target / means[channel]
+                        damped_ratio = 1.0 + (ratio - 1.0) * config.fine_damping_factor
+                        new_exposure = exposures[channel] * damped_ratio
+                        exposures[channel] = self._clamp_exposure(new_exposure, config)
+
             # ==================== PHASE 2: Fine R/B analog gain tuning ====================
+            # Reset converged_means - Phase 2 must independently reach fine tolerance.
+            # Without this, Phase 1's coarse convergence is falsely reported as success.
+            converged_means = None
             logger.info("Phase 2: Fine R/B analog gain tuning")
 
-            # Lock exposures from Phase 1
+            # Lock exposures from Phase 1b
             self.jai_props.set_channel_exposures(**exposures, auto_enable=False)
             time.sleep(0.1)
 
@@ -917,11 +958,21 @@ class JAIWhiteBalanceCalibrator:
             means = self._capture_and_analyze()
         except Exception as e:
             logger.warning(f"Failed to test at minimum gain: {e}. Using base_gain={config.base_gain}")
+            # Restore saved exposures before returning
+            try:
+                self.jai_props.set_channel_exposures(**saved_exposures)
+            except Exception:
+                pass
             return min(config.base_gain, 5.0)
 
         min_mean = min(means.values())
         if min_mean <= 0:
             logger.warning("Zero signal at minimum gain - using default base_gain")
+            # Restore saved exposures before returning
+            try:
+                self.jai_props.set_channel_exposures(**saved_exposures)
+            except Exception:
+                pass
             return min(config.base_gain, 5.0)
 
         # Calculate how much signal boost we need
@@ -978,6 +1029,12 @@ class JAIWhiteBalanceCalibrator:
             f"Noise-aware gain selection ({config.unified_gain_mode}): "
             f"required_factor={required_factor:.1f} -> unified_gain={selected_gain:.1f}"
         )
+
+        # Restore saved exposures so calibration starts from user-provided values
+        try:
+            self.jai_props.set_channel_exposures(**saved_exposures)
+        except Exception:
+            pass
 
         return selected_gain
 

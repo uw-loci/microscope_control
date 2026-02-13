@@ -44,10 +44,16 @@ from microscope_control.jai.calibration import (
     JAIWhiteBalanceCalibrator,
     WhiteBalanceResult,
     CalibrationConfig,
+    QUALITY_PRESETS,
     db_to_linear,
     linear_to_db,
 )
 from microscope_control.jai.noise import JAINoiseMeasurement, NoiseStats
+from microscope_control.jai.noise_characterization import (
+    JAINoiseCharacterization,
+    NoiseCharacterizationResults,
+    NoiseTestResult,
+)
 
 __all__ = [
     "JAICameraProperties",
@@ -55,8 +61,12 @@ __all__ = [
     "JAIWhiteBalanceCalibrator",
     "WhiteBalanceResult",
     "CalibrationConfig",
+    "QUALITY_PRESETS",
     "db_to_linear",
     "linear_to_db",
     "JAINoiseMeasurement",
     "NoiseStats",
+    "JAINoiseCharacterization",
+    "NoiseCharacterizationResults",
+    "NoiseTestResult",
 ]

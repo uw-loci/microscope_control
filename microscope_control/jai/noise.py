@@ -64,6 +64,10 @@ class NoiseStats:
     # Current R/B analog gain values
     analog_gains: Dict[str, float]
 
+    # Optional noise verification result (populated when verify_noise=True)
+    # Contains: passes, channel_stddevs, channel_snr, thresholds, per_channel
+    verification_result: Optional[Dict] = None
+
 
 class JAINoiseMeasurement:
     """Noise measurement tool for JAI prism cameras.
