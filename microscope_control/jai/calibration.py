@@ -617,6 +617,99 @@ class JAIWhiteBalanceCalibrator:
                         new_exposure = exposures[channel] * damped_ratio
                         exposures[channel] = self._clamp_exposure(new_exposure, config)
 
+            # ==================== PHASE 1c: Exposure ratio compensation ====================
+            # After Phase 1b converges, check if exposure spread exceeds threshold.
+            # If so, boost the slow channel(s) with analog gain and reduce exposure
+            # proportionally, then re-converge. This reduces acquisition time.
+            max_exp = max(exposures.values())
+            min_exp = min(exposures.values())
+            exposure_ratio = max_exp / min_exp if min_exp > 0 else 1.0
+
+            if exposure_ratio > config.gain_threshold_ratio:
+                logger.info(
+                    f"Phase 1c: Exposure ratio {exposure_ratio:.1f}x exceeds "
+                    f"threshold {config.gain_threshold_ratio:.1f}x - applying analog gain compensation"
+                )
+                logger.info(
+                    f"  Current exposures: R={exposures['red']:.2f}, "
+                    f"G={exposures['green']:.2f}, B={exposures['blue']:.2f}ms"
+                )
+
+                # Reference exposure = green (no independent analog gain control)
+                ref_exp = exposures["green"]
+                rb_min, rb_max = JAICameraProperties.GAIN_ANALOG_RED_RANGE
+
+                for ch_name in ["red", "blue"]:
+                    ch_exp = exposures[ch_name]
+                    if ch_exp > ref_exp * config.gain_threshold_ratio:
+                        # This channel needs analog gain boost
+                        desired_gain = ch_exp / ref_exp
+                        # Clamp to hardware range
+                        actual_gain = max(rb_min, min(rb_max, desired_gain))
+                        # Reduce exposure proportionally
+                        new_exp = ch_exp / actual_gain
+                        new_exp = self._clamp_exposure(new_exp, config)
+
+                        logger.info(
+                            f"  {ch_name}: {ch_exp:.2f}ms -> {new_exp:.2f}ms "
+                            f"(analog gain {actual_gain:.2f}x, "
+                            f"desired {desired_gain:.2f}x)"
+                        )
+
+                        exposures[ch_name] = new_exp
+                        if ch_name == "red":
+                            analog_red = actual_gain
+                        else:
+                            analog_blue = actual_gain
+
+                # Apply updated analog gains and exposures
+                try:
+                    self.jai_props.set_rb_analog_gains(red=analog_red, blue=analog_blue)
+                except Exception as e:
+                    logger.warning(f"Failed to set R/B analog gains: {e}")
+
+                self.jai_props.set_channel_exposures(**exposures, auto_enable=False)
+                time.sleep(0.2)
+
+                # Re-converge with gain applied (mini Phase 1b)
+                logger.info("Phase 1c: Re-converging exposures with analog gain applied")
+                for p1c_iter in range(1, 11):
+                    means = self._capture_and_analyze()
+                    converged_flags = self._check_convergence(means, target, config.tolerance)
+                    all_converged = all(converged_flags.values())
+
+                    if all_converged:
+                        logger.info(
+                            f"Phase 1c converged after {p1c_iter} iterations: "
+                            f"R={means['red']:.1f}, G={means['green']:.1f}, B={means['blue']:.1f}"
+                        )
+                        break
+
+                    for channel in ["red", "green", "blue"]:
+                        if not converged_flags[channel] and means[channel] > 0:
+                            ratio = target / means[channel]
+                            damped_ratio = 1.0 + (ratio - 1.0) * config.fine_damping_factor
+                            new_exposure = exposures[channel] * damped_ratio
+                            exposures[channel] = self._clamp_exposure(new_exposure, config)
+
+                    self.jai_props.set_channel_exposures(**exposures, auto_enable=False)
+                    time.sleep(0.1)
+
+                new_ratio = max(exposures.values()) / max(min(exposures.values()), 0.001)
+                logger.info(
+                    f"Phase 1c complete: exposure ratio {exposure_ratio:.1f}x -> {new_ratio:.1f}x, "
+                    f"analog gains R={analog_red:.2f}x B={analog_blue:.2f}x"
+                )
+                logger.info(
+                    f"  Final exposures: R={exposures['red']:.2f}, "
+                    f"G={exposures['green']:.2f}, B={exposures['blue']:.2f}ms"
+                )
+            else:
+                logger.info(
+                    f"Exposure ratio {exposure_ratio:.1f}x within threshold "
+                    f"{config.gain_threshold_ratio:.1f}x - no analog gain compensation needed"
+                )
+
             # ==================== PHASE 2: Fine R/B analog gain tuning ====================
             # Reset converged_means - Phase 2 must independently reach fine tolerance.
             # Without this, Phase 1's coarse convergence is falsely reported as success.
