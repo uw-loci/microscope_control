@@ -148,6 +148,9 @@ class WhiteBalanceResult:
     # Number of iterations to converge
     iterations: int = 0
 
+    # Per-channel saturation percentage at final settings
+    saturation_pct: Dict[str, float] = field(default_factory=dict)
+
 
 @dataclass
 class CalibrationConfig:
@@ -451,7 +454,7 @@ class JAIWhiteBalanceCalibrator:
             self.jai_props.enable_individual_exposure()
 
             # Initial capture
-            means = self._capture_and_analyze()
+            means, _ = self._capture_and_analyze()
             logger.info(
                 f"Initial channel means: R={means['red']:.1f}, "
                 f"G={means['green']:.1f}, B={means['blue']:.1f}"
@@ -496,7 +499,7 @@ class JAIWhiteBalanceCalibrator:
                 self.jai_props.set_channel_exposures(**exposures, auto_enable=False)
                 time.sleep(0.1)
 
-                means = self._capture_and_analyze()
+                means, _ = self._capture_and_analyze()
 
                 # Phase 1 uses coarse_tolerance
                 converged_flags = self._check_convergence(
@@ -588,7 +591,7 @@ class JAIWhiteBalanceCalibrator:
             for p1b_iter in range(1, max_phase1b_iters + 1):
                 self.jai_props.set_channel_exposures(**exposures, auto_enable=False)
                 time.sleep(0.1)
-                means = self._capture_and_analyze()
+                means, _ = self._capture_and_analyze()
 
                 converged_flags = self._check_convergence(means, target, config.tolerance)
                 all_converged = all(converged_flags.values())
@@ -674,7 +677,7 @@ class JAIWhiteBalanceCalibrator:
                 # Re-converge with gain applied (mini Phase 1b)
                 logger.info("Phase 1c: Re-converging exposures with analog gain applied")
                 for p1c_iter in range(1, 11):
-                    means = self._capture_and_analyze()
+                    means, _ = self._capture_and_analyze()
                     converged_flags = self._check_convergence(means, target, config.tolerance)
                     all_converged = all(converged_flags.values())
 
@@ -714,6 +717,7 @@ class JAIWhiteBalanceCalibrator:
             # Reset converged_means - Phase 2 must independently reach fine tolerance.
             # Without this, Phase 1's coarse convergence is falsely reported as success.
             converged_means = None
+            converged_sat_pct = None
             logger.info("Phase 2: Fine R/B analog gain tuning")
 
             # Lock exposures from Phase 1b
@@ -721,7 +725,7 @@ class JAIWhiteBalanceCalibrator:
             time.sleep(0.1)
 
             # Capture with locked exposures
-            means = self._capture_and_analyze()
+            means, sat_pct = self._capture_and_analyze()
             logger.info(
                 f"Phase 2 start: R={means['red']:.1f}, G={means['green']:.1f}, B={means['blue']:.1f}"
             )
@@ -752,6 +756,7 @@ class JAIWhiteBalanceCalibrator:
                         f"(all channels within {config.tolerance} of target)"
                     )
                     converged_means = means.copy()
+                    converged_sat_pct = sat_pct.copy()
                     break
 
                 # Compute corrections - use green as reference
@@ -781,7 +786,7 @@ class JAIWhiteBalanceCalibrator:
                     break
 
                 time.sleep(0.1)
-                means = self._capture_and_analyze()
+                means, sat_pct = self._capture_and_analyze()
 
                 logger.debug(
                     f"P2 Iter {p2_iter}: R={means['red']:.1f} (aR={analog_red:.3f}), "
@@ -794,9 +799,10 @@ class JAIWhiteBalanceCalibrator:
             # Final validation
             if converged_means is not None:
                 final_means = converged_means
+                final_sat_pct = converged_sat_pct
                 all_converged = True
             else:
-                final_means = self._capture_and_analyze()
+                final_means, final_sat_pct = self._capture_and_analyze()
                 final_converged = self._check_convergence(final_means, target, config.tolerance)
                 all_converged = all(final_converged.values())
 
@@ -817,6 +823,20 @@ class JAIWhiteBalanceCalibrator:
                     f"B={final_means['blue']:.1f} (dev={final_deviations['blue']:.1f}) "
                     f"(target: {target:.0f}, max_dev: {max_final_deviation:.1f})"
                 )
+
+            # Log saturation summary and warn if any channel exceeds 1%
+            logger.info(
+                f"Final: R={final_means['red']:.1f}, G={final_means['green']:.1f}, "
+                f"B={final_means['blue']:.1f} | "
+                f"Sat: R={final_sat_pct['red']:.1f}%, G={final_sat_pct['green']:.1f}%, "
+                f"B={final_sat_pct['blue']:.1f}%"
+            )
+            for ch in ["red", "green", "blue"]:
+                if final_sat_pct[ch] > 1.0:
+                    logger.warning(
+                        f"WARNING: {ch.upper()} channel has {final_sat_pct[ch]:.1f}% saturated pixels! "
+                        f"Consider lowering target intensity."
+                    )
 
             # Measure noise at final settings if configured
             noise_stats = None
@@ -853,6 +873,7 @@ class JAIWhiteBalanceCalibrator:
                 iterations=total_iterations,
                 final_means=final_means,
                 target_value=config.target_value,
+                saturation_pct=final_sat_pct,
             )
 
             # Attach noise verification result to noise_stats if available
@@ -957,12 +978,33 @@ class JAIWhiteBalanceCalibrator:
         self._black_levels = black_levels
         return black_levels
 
-    def _capture_and_analyze(self) -> Dict[str, float]:
-        """
-        Capture an image and return per-channel mean values.
+    def _compute_image_stats(self, img: np.ndarray) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """Compute per-channel means and saturation percentages.
+
+        Args:
+            img: RGB image array with shape (H, W, 3)
 
         Returns:
-            Dictionary with 'red', 'green', 'blue' keys and mean values
+            Tuple of (means, saturation_pct) - both dicts with 'red', 'green', 'blue' keys.
+            Means are black-level-subtracted. Saturation is percentage of pixels >= 255.
+        """
+        total_pixels = img.shape[0] * img.shape[1]
+        means = {}
+        saturation_pct = {}
+        for i, ch in enumerate(["red", "green", "blue"]):
+            channel_data = img[:, :, i]
+            means[ch] = float(np.mean(channel_data)) - self._black_levels.get(ch, 0)
+            means[ch] = max(0.0, means[ch])
+            saturated_count = int(np.sum(channel_data >= 255))
+            saturation_pct[ch] = 100.0 * saturated_count / total_pixels
+        return means, saturation_pct
+
+    def _capture_and_analyze(self) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """
+        Capture an image and return per-channel mean values and saturation stats.
+
+        Returns:
+            Tuple of (means, saturation_pct) dicts with 'red', 'green', 'blue' keys.
         """
         img, tags = self.hardware.snap_image()
 
@@ -973,18 +1015,7 @@ class JAIWhiteBalanceCalibrator:
         if len(img.shape) != 3 or img.shape[2] < 3:
             raise ValueError(f"Expected RGB image, got shape: {img.shape}")
 
-        # Subtract black levels if calibrated
-        means = {
-            "red": float(np.mean(img[:, :, 0])) - self._black_levels.get("red", 0),
-            "green": float(np.mean(img[:, :, 1])) - self._black_levels.get("green", 0),
-            "blue": float(np.mean(img[:, :, 2])) - self._black_levels.get("blue", 0),
-        }
-
-        # Ensure non-negative
-        for channel in means:
-            means[channel] = max(0.0, means[channel])
-
-        return means
+        return self._compute_image_stats(img)
 
     def _clamp_exposure(self, exposure: float, config: CalibrationConfig) -> float:
         """Clamp exposure to valid range."""
@@ -1048,7 +1079,7 @@ class JAIWhiteBalanceCalibrator:
             )
             time.sleep(0.2)  # Allow settings to take effect
 
-            means = self._capture_and_analyze()
+            means, _ = self._capture_and_analyze()
         except Exception as e:
             logger.warning(f"Failed to test at minimum gain: {e}. Using base_gain={config.base_gain}")
             # Restore saved exposures before returning
@@ -1449,15 +1480,25 @@ class JAIWhiteBalanceCalibrator:
                     np.save(str(verification_path), img)
                 logger.info(f"Saved verification image to {verification_path}")
 
-                # Log per-channel means of verification image
+                # Log per-channel means and saturation of verification image
                 if len(img.shape) == 3 and img.shape[2] == 3:
                     r_mean = float(np.mean(img[:, :, 0]))
                     g_mean = float(np.mean(img[:, :, 1]))
                     b_mean = float(np.mean(img[:, :, 2]))
+                    total_px = img.shape[0] * img.shape[1]
+                    r_sat = 100.0 * np.sum(img[:, :, 0] >= 255) / total_px
+                    g_sat = 100.0 * np.sum(img[:, :, 1] >= 255) / total_px
+                    b_sat = 100.0 * np.sum(img[:, :, 2] >= 255) / total_px
                     logger.info(
-                        f"Verification image channel means: "
-                        f"R={r_mean:.1f}, G={g_mean:.1f}, B={b_mean:.1f}"
+                        f"Verification image: Mean R={r_mean:.1f}, G={g_mean:.1f}, "
+                        f"B={b_mean:.1f} | "
+                        f"Sat R={r_sat:.1f}%, G={g_sat:.1f}%, B={b_sat:.1f}%"
                     )
+                    if max(r_sat, g_sat, b_sat) > 1.0:
+                        logger.warning(
+                            f"Saturation detected in verification image! "
+                            f"R={r_sat:.1f}%, G={g_sat:.1f}%, B={b_sat:.1f}%"
+                        )
         except Exception as e:
             logger.warning(f"Failed to save verification image: {e}")
 
@@ -1529,7 +1570,27 @@ class JAIWhiteBalanceCalibrator:
                 ax.set_xlabel("Iteration")
                 ax.set_ylabel("Mean Intensity")
 
-        plt.tight_layout()
+        # Add saturation annotation at bottom of figure
+        if img is not None and len(img.shape) == 3 and img.shape[2] >= 3:
+            total_px = img.shape[0] * img.shape[1]
+            stats_parts = []
+            any_saturated = False
+            for i, ch in enumerate(["red", "green", "blue"]):
+                ch_mean = result.final_means[ch]
+                sat_count = int(np.sum(img[:, :, i] >= 255))
+                sat_pct = 100.0 * sat_count / total_px
+                if sat_pct > 1.0:
+                    any_saturated = True
+                stats_parts.append(f"{ch[0].upper()}: mean={ch_mean:.1f}, sat={sat_pct:.1f}%")
+            stats_line = "   |   ".join(stats_parts)
+
+            fig.text(
+                0.5, 0.01, stats_line, ha='center', fontsize=10,
+                color='red' if any_saturated else 'black',
+                fontweight='bold' if any_saturated else 'normal',
+            )
+
+        plt.tight_layout(rect=[0, 0.04, 1, 1])  # Leave space at bottom for text
         plt.savefig(output_path, dpi=150)
         plt.close()
 
