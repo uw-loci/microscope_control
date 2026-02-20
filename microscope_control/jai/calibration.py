@@ -13,10 +13,11 @@ Calibration Algorithm Overview
 1. Optionally calibrate black level using dark frames
 2. Enable individual exposure mode
 3. Capture image with current settings
-4. Analyze per-channel histogram (R, G, B)
-5. Iteratively adjust per-channel exposure to balance channels
-6. If exposure ratio exceeds threshold, compensate with per-channel gain
-7. Save calibration results for use during acquisition
+4. Phase 0: De-saturate if any channel is clipped (halve exposures until real data)
+5. Iteratively adjust per-channel exposure to balance channels (Phase 1/1b)
+6. If exposure ratio exceeds threshold, compensate with per-channel gain (Phase 1c)
+7. Fine-tune R/B analog gains for color balance (Phase 2)
+8. Save calibration results for use during acquisition
 
 Usage
 -----
@@ -246,6 +247,16 @@ class CalibrationConfig:
     # Whether to run noise verification at end of calibration
     verify_noise: bool = True
 
+    # Saturation threshold -- channels with mean >= this are considered saturated.
+    # At mean=250, some pixels are already clipped at 255, making proportional
+    # control unreliable. Phase 0 de-saturation halves exposures until all
+    # channels drop below this threshold.
+    saturation_threshold: float = 250.0
+
+    # Maximum halving iterations for Phase 0 de-saturation.
+    # 20 halvings covers 200ms -> 0.0002ms, far below any useful minimum.
+    max_desaturation_iterations: int = 20
+
 
 @dataclass
 class ConvergenceLog:
@@ -347,7 +358,12 @@ class JAIWhiteBalanceCalibrator:
         defocus_callback: Optional[Callable[[float], Tuple[float, Callable]]] = None,
     ) -> WhiteBalanceResult:
         """
-        Run 2-phase white balance calibration.
+        Run white balance calibration.
+
+        Phase 0 (De-saturation, conditional):
+            If any channel is saturated (mean >= 250), aggressively halve
+            all channel exposures until real intensity data is available.
+            Skipped entirely if no channels are saturated.
 
         Phase 1 (Coarse - exposure balancing):
             Set unified gain, then iteratively adjust per-channel exposures
@@ -466,6 +482,82 @@ class JAIWhiteBalanceCalibrator:
             except Exception:
                 exposures = {"red": 50.0, "green": 50.0, "blue": 50.0}
                 self.jai_props.set_channel_exposures(**exposures)
+
+            # ==================== PHASE 0: De-saturation ====================
+            # Saturated channels (mean >= threshold) give no useful brightness
+            # information -- 255 could mask 300, 500, or 10000. Proportional
+            # control (target/mean) makes tiny adjustments that never escape
+            # saturation. Fix: aggressively halve all exposures until no
+            # channels are clipped, so Phase 1 starts with real intensity data.
+            sat_threshold = config.saturation_threshold
+            if config.bit_depth == 16:
+                sat_threshold = config.saturation_threshold * (65535 / 255)
+
+            saturated_channels = [
+                ch for ch in ["red", "green", "blue"]
+                if means[ch] >= sat_threshold
+            ]
+
+            if saturated_channels:
+                logger.warning(
+                    "Phase 0: Scene too bright -- channels %s saturated "
+                    "(mean >= %.0f). Running de-saturation.",
+                    saturated_channels, sat_threshold
+                )
+                for desat_iter in range(1, config.max_desaturation_iterations + 1):
+                    # Halve ALL channel exposures together to preserve ratios
+                    for channel in ["red", "green", "blue"]:
+                        exposures[channel] = max(
+                            config.min_exposure_ms,
+                            exposures[channel] / 2.0
+                        )
+
+                    self.jai_props.set_channel_exposures(**exposures, auto_enable=False)
+                    time.sleep(0.1)
+                    means, _ = self._capture_and_analyze()
+
+                    saturated_channels = [
+                        ch for ch in ["red", "green", "blue"]
+                        if means[ch] >= sat_threshold
+                    ]
+
+                    logger.info(
+                        "Phase 0 iter %d: R=%.1f (%.3fms), G=%.1f (%.3fms), "
+                        "B=%.1f (%.3fms)%s",
+                        desat_iter,
+                        means["red"], exposures["red"],
+                        means["green"], exposures["green"],
+                        means["blue"], exposures["blue"],
+                        "" if not saturated_channels
+                        else " -- still saturated: %s" % saturated_channels
+                    )
+
+                    if not saturated_channels:
+                        logger.info(
+                            "Phase 0 complete: de-saturated in %d halving(s)",
+                            desat_iter
+                        )
+                        break
+
+                    # Check if we hit the exposure floor
+                    all_at_floor = all(
+                        abs(exposures[ch] - config.min_exposure_ms) < 0.001
+                        for ch in ["red", "green", "blue"]
+                    )
+                    if all_at_floor:
+                        raise RuntimeError(
+                            "Scene too bright even at minimum exposure "
+                            "(%.3fms). Reduce lamp/illumination intensity."
+                            % config.min_exposure_ms
+                        )
+                else:
+                    # Exhausted max_desaturation_iterations without de-saturating
+                    logger.warning(
+                        "Phase 0: reached max de-saturation iterations (%d) "
+                        "with channels still saturated: %s. "
+                        "Proceeding to Phase 1 (may converge slowly).",
+                        config.max_desaturation_iterations, saturated_channels
+                    )
 
             # Initial exposure estimation
             for channel in ["red", "green", "blue"]:
