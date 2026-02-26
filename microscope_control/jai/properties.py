@@ -87,7 +87,7 @@ class JAICameraProperties:
     # The _adjust_frame_rate_for_exposure() method handles this automatically.
     EXPOSURE_MIN_MS = 0.001
     FRAME_RATE_MIN = 0.125
-    FRAME_RATE_MAX = 39.21
+    FRAME_RATE_MAX = 38.0  # Actual camera limit (39.21 from spec sheet is rejected)
 
     # Hardware max exposure (at min frame rate 0.125 Hz, with margin)
     HARDWARE_MAX_EXPOSURE_MS = 7900.0

@@ -418,7 +418,7 @@ def test_issue_7_framerate_exposure_coupling(props):
     Issue 7: Does the camera correctly handle long exposures via frame rate?
 
     Procedure:
-      1. Reset to default frame rate (max ~39.21 Hz)
+      1. Reset to default frame rate (max ~38 Hz)
       2. Read current frame rate
       3. Set a long per-channel exposure (500ms) via set_channel_exposures
          (which should auto-call _adjust_frame_rate_for_exposure)
