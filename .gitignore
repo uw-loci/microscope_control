@@ -43,3 +43,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 codemap/
+
+# Claude Code session scope
+CLAUDE.md

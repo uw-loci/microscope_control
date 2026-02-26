@@ -262,10 +262,30 @@ class JAICameraProperties:
         logger.info("Enabled individual exposure mode")
 
     def disable_individual_exposure(self) -> None:
-        """Return to unified exposure control mode."""
+        """Return to unified exposure control mode with readback verification.
+
+        If the mode fails to disable, logs an error -- this is critical because
+        set_exposure() calls are silently ignored while individual mode is active.
+        """
         if self._property_exists(self.EXPOSURE_INDIVIDUAL):
             self._set_property(self.EXPOSURE_INDIVIDUAL, self.MODE_OFF)
-            logger.info("Disabled individual exposure mode")
+            # Verify the mode was actually disabled
+            if self.is_individual_exposure_enabled():
+                logger.error(
+                    "CRITICAL: Individual exposure mode still active after disable! "
+                    "Subsequent set_exposure() calls (e.g. autofocus) will be "
+                    "silently ignored. Attempting second disable..."
+                )
+                self._set_property(self.EXPOSURE_INDIVIDUAL, self.MODE_OFF)
+                if self.is_individual_exposure_enabled():
+                    logger.error(
+                        "Individual exposure mode could not be disabled after "
+                        "2 attempts. Manual camera reset may be required."
+                    )
+                else:
+                    logger.info("Individual exposure mode disabled on second attempt")
+            else:
+                logger.info("Disabled individual exposure mode (verified)")
 
     def set_channel_exposures(
         self,
@@ -340,7 +360,7 @@ class JAICameraProperties:
             exposure_ms: Exposure time in milliseconds
         """
         frame_rate_min = 0.125
-        frame_rate_max = 38.0
+        frame_rate_max = self.FRAME_RATE_MAX
         margin = 1.01
 
         exposure_s = exposure_ms / 1000.0

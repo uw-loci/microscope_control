@@ -230,11 +230,24 @@ class PycromanagerHardware(MicroscopeHardware):
 
         logger.debug(f"Moved to position: {position}")
 
-    def get_current_position(self) -> Position:
-        """Get current stage position."""
-        return Position(
-            self.core.get_x_position(), self.core.get_y_position(), self.core.get_position()
-        )
+    def get_current_position(self, max_retries: int = 3) -> Position:
+        """Get current stage position with retry on transient serial errors."""
+        for attempt in range(1, max_retries + 1):
+            try:
+                return Position(
+                    self.core.get_x_position(),
+                    self.core.get_y_position(),
+                    self.core.get_position(),
+                )
+            except Exception as e:
+                if attempt < max_retries and "Serial command failed" in str(e):
+                    logger.warning(
+                        f"get_current_position failed (attempt {attempt}/{max_retries}), "
+                        f"retrying in 200ms: {e}"
+                    )
+                    time.sleep(0.2)
+                else:
+                    raise
 
     def snap_image(self, background_correction=False, remove_alpha=True, debayering="auto"):
         """
