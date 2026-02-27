@@ -76,8 +76,8 @@ def setup_logging(verbose=False):
 
 
 def connect_camera():
-    """Initialize Pycromanager and return JAICameraProperties instance."""
-    from microscope_control.hardware.pycromanager import init_pycromanager
+    """Initialize Pycromanager and return (JAICameraProperties, PycromanagerHardware)."""
+    from microscope_control.hardware.pycromanager import init_pycromanager, PycromanagerHardware
     from microscope_control.jai.properties import JAICameraProperties
 
     logger.info("Connecting to Micro-Manager via Pycromanager...")
@@ -91,8 +91,37 @@ def connect_camera():
         logger.error("JAI camera not detected or not active.")
         sys.exit(1)
 
+    hardware = PycromanagerHardware(core, studio)
     logger.info("JAI camera connected and validated.")
-    return props
+    return props, hardware
+
+
+def snap_rgb_means(hardware):
+    """Snap an image and return per-channel mean values as (R, G, B) tuple."""
+    import numpy as np
+    img, _tags = hardware.snap_image()
+    if img.ndim == 3 and img.shape[2] >= 3:
+        r_mean = float(np.mean(img[:, :, 0]))
+        g_mean = float(np.mean(img[:, :, 1]))
+        b_mean = float(np.mean(img[:, :, 2]))
+    else:
+        val = float(np.mean(img))
+        r_mean = g_mean = b_mean = val
+    return r_mean, g_mean, b_mean
+
+
+def log_rgb(label, rgb):
+    """Log RGB means with a label."""
+    r, g, b = rgb
+    # Color balance ratio: how far from neutral (1.0 = perfectly balanced)
+    avg = (r + g + b) / 3.0 if (r + g + b) > 0 else 1.0
+    ratio_r = r / avg if avg > 0 else 0
+    ratio_b = b / avg if avg > 0 else 0
+    logger.info(
+        f"[{label}] RGB means: R={r:.1f}  G={g:.1f}  B={b:.1f}  "
+        f"(R/avg={ratio_r:.3f}, B/avg={ratio_b:.3f})"
+    )
+    return rgb
 
 
 def dump_state(props, label=""):
@@ -175,29 +204,31 @@ def read_gains_compact(props):
 # TEST 1: Camera AWB Gain Persistence
 # ===========================================================================
 
-def test_issue_1_awb_persistence(props):
+def apply_awb(props, dwell=5.0):
+    """Apply Continuous AWB for dwell seconds, then set to Off."""
+    props._set_property(props.WHITE_BALANCE, "Continuous")
+    time.sleep(dwell)
+    props._set_property(props.WHITE_BALANCE, "Off")
+    time.sleep(0.5)
+    # Verify mode actually changed
+    actual = props.get_white_balance_mode()
+    if actual != "Off":
+        logger.warning(f"WB mode after Off write: '{actual}' (expected 'Off')")
+    return actual
+
+
+def test_issue_1_awb_persistence(props, hardware):
     """
     Issue 1: Do camera AWB internal gains persist after explicit reset?
 
-    Uses Continuous mode (the real Camera AWB workflow) with 5-second dwell,
-    then tests each reset call individually to find which one clears AWB.
-
-    Procedure:
-      1. Ensure frame rate is high enough for AWB to work
-      2. Reset to known neutral state, snapshot baseline
-      3. Enable Continuous AWB, wait 5s for convergence
-      4. Set WB to Off (normal workflow -- correction should persist)
-      5. Snapshot post-AWB state
-      6. Try each reset call individually, snapshot after each:
-         a. set_rb_analog_gains(1.0, 1.0)
-         b. set_unified_gain(1.0)
-         c. disable_individual_gain() / disable_individual_exposure()
-      7. If none cleared it, try re-applying AWB then full cleanup sequence
+    Uses Continuous mode (the real Camera AWB workflow) with image-based
+    verification. Snaps images to measure RGB channel means before/after
+    each reset strategy to determine which call actually clears AWB.
     """
     print("\n" + "=" * 70)
-    print("TEST 1: Camera AWB Gain Persistence (Issue #1)")
+    print("TEST 1: Camera AWB Persistence & Reset Strategies (Issue #1)")
     print("=" * 70)
-    print("Uses Continuous mode (real workflow). Tests which API call clears AWB.")
+    print("Uses Continuous mode + image snaps to detect AWB state.")
     print()
 
     AWB_DWELL = 5.0  # seconds for Continuous AWB to converge
@@ -207,143 +238,226 @@ def test_issue_1_awb_persistence(props):
     props._set_property(props.FRAME_RATE, props.FRAME_RATE_MAX)
     time.sleep(SETTLE_TIME)
 
-    # Step 2: Reset to known neutral state
+    # Step 2: Reset to known neutral state and snap baseline image
     logger.info("Step 2: Resetting to neutral state...")
     props.reset_to_defaults()
     props.set_unified_gain(1.0)
     props.set_rb_analog_gains(red=1.0, blue=1.0)
-    props.set_white_balance_mode("Off")
-    time.sleep(SETTLE_TIME)
+    props._set_property(props.WHITE_BALANCE, "Off")
+    time.sleep(1.0)
 
-    logger.info("Reading baseline...")
+    baseline_rgb = snap_rgb_means(hardware)
+    log_rgb("BASELINE (no AWB)", baseline_rgb)
     dump_state(props, "BASELINE")
-    baseline = read_gains_compact(props)
 
-    # Step 3: Enable Continuous AWB, let it converge
-    logger.info(f"Step 3: Enabling Continuous AWB for {AWB_DWELL}s...")
-    props.set_white_balance_mode("Continuous")
+    # Step 3: Apply Continuous AWB and snap image to confirm it worked
+    logger.info(f"\nStep 3: Applying Continuous AWB for {AWB_DWELL}s...")
+    props._set_property(props.WHITE_BALANCE, "Continuous")
     time.sleep(AWB_DWELL)
 
-    logger.info("Reading state while Continuous AWB is active...")
-    dump_state(props, "AWB-ACTIVE")
-    awb_active = read_gains_compact(props)
+    awb_active_rgb = snap_rgb_means(hardware)
+    log_rgb("AWB ACTIVE (Continuous)", awb_active_rgb)
 
-    # Step 4: Set WB to Off (normal workflow -- correction should persist)
-    logger.info("Step 4: Setting WB to Off (correction should persist)...")
-    props.set_white_balance_mode("Off")
-    time.sleep(SETTLE_TIME)
+    wb_mode_during = props.get_white_balance_mode()
+    logger.info(f"WB mode while active: {wb_mode_during}")
 
-    logger.info("Reading state after WB Off...")
-    dump_state(props, "AWB-OFF")
-    awb_off = read_gains_compact(props)
+    # Step 4: Set WB to Off and check if correction persists
+    logger.info("\nStep 4: Writing WB='Off'...")
+    props._set_property(props.WHITE_BALANCE, "Off")
+    time.sleep(1.0)
 
-    # Step 5: Try each reset call individually
-    # We test them in order, re-applying AWB between each test
+    wb_mode_after_off = props.get_white_balance_mode()
+    logger.info(f"WB mode after Off write: {wb_mode_after_off}")
 
-    reset_calls = [
-        (
-            "set_rb_analog_gains(1.0, 1.0)",
-            lambda: props.set_rb_analog_gains(red=1.0, blue=1.0),
-        ),
-        (
-            "set_unified_gain(1.0)",
-            lambda: props.set_unified_gain(1.0),
-        ),
-        (
-            "disable_individual_gain()",
-            lambda: props.disable_individual_gain(),
-        ),
-        (
-            "disable_individual_exposure()",
-            lambda: props.disable_individual_exposure(),
-        ),
-        (
-            "enable_individual_gain() then disable",
-            lambda: (props.enable_individual_gain(), props.disable_individual_gain()),
-        ),
+    awb_off_rgb = snap_rgb_means(hardware)
+    log_rgb("AFTER WB->Off", awb_off_rgb)
+
+    # Check if AWB actually changed anything
+    baseline_r, baseline_g, baseline_b = baseline_rgb
+    awb_r, awb_g, awb_b = awb_active_rgb
+    channel_shift = abs(awb_r - baseline_r) + abs(awb_g - baseline_g) + abs(awb_b - baseline_b)
+
+    if channel_shift < 5.0:
+        print("\n  WARNING: AWB did not significantly change image appearance.")
+        print(f"  Total channel shift: {channel_shift:.1f} (threshold: 5.0)")
+        print("  The camera may need a more strongly colored scene.")
+        print("  Continuing with reset tests anyway...\n")
+
+    # ===================================================================
+    # Step 5: Try each reset strategy with image verification
+    # ===================================================================
+    # For each strategy: re-apply AWB, then try the reset, then snap image.
+    # Compare snapped image to baseline to determine if AWB was cleared.
+
+    reset_strategies = [
+        {
+            "name": "A: set_white_balance_mode('Off') only",
+            "desc": "Current approach -- write Off to WB property",
+            "fn": lambda: props._set_property(props.WHITE_BALANCE, "Off"),
+        },
+        {
+            "name": "B: Preset6500K then Off",
+            "desc": "Transition through a preset to break out of Continuous",
+            "fn": lambda: (
+                props._set_property(props.WHITE_BALANCE, "Preset6500K"),
+                time.sleep(0.5),
+                props._set_property(props.WHITE_BALANCE, "Off"),
+            ),
+        },
+        {
+            "name": "C: Once then Off",
+            "desc": "Transition through Once mode (auto-returns to Off)",
+            "fn": lambda: (
+                props._set_property(props.WHITE_BALANCE, "Once"),
+                time.sleep(1.0),
+                props._set_property(props.WHITE_BALANCE, "Off"),
+            ),
+        },
+        {
+            "name": "D: Off with 2s delay",
+            "desc": "Write Off then wait longer for camera to process",
+            "fn": lambda: (
+                props._set_property(props.WHITE_BALANCE, "Off"),
+                time.sleep(2.0),
+            ),
+        },
+        {
+            "name": "E: set_rb_analog_gains(1.0, 1.0) after Off",
+            "desc": "Write Off then overwrite analog gains",
+            "fn": lambda: (
+                props._set_property(props.WHITE_BALANCE, "Off"),
+                time.sleep(0.5),
+                props.set_rb_analog_gains(red=1.0, blue=1.0),
+            ),
+        },
+        {
+            "name": "F: set_unified_gain(1.0) after Off",
+            "desc": "Write Off then overwrite unified gain",
+            "fn": lambda: (
+                props._set_property(props.WHITE_BALANCE, "Off"),
+                time.sleep(0.5),
+                props.set_unified_gain(1.0),
+            ),
+        },
+        {
+            "name": "G: Toggle individual gain mode after Off",
+            "desc": "Write Off, enable individual gain, disable it",
+            "fn": lambda: (
+                props._set_property(props.WHITE_BALANCE, "Off"),
+                time.sleep(0.5),
+                props.enable_individual_gain(),
+                time.sleep(0.3),
+                props.disable_individual_gain(),
+            ),
+        },
+        {
+            "name": "H: Full cleanup (Off + all resets)",
+            "desc": "Write Off + analog gains + unified gain + mode toggles",
+            "fn": lambda: (
+                props._set_property(props.WHITE_BALANCE, "Off"),
+                time.sleep(0.5),
+                props.set_rb_analog_gains(red=1.0, blue=1.0),
+                props.set_unified_gain(1.0),
+                props.disable_individual_exposure(),
+                props.disable_individual_gain(),
+            ),
+        },
     ]
 
-    results = {}
-    for call_name, call_fn in reset_calls:
-        # Re-apply AWB fresh before each test
-        logger.info(f"\n--- Testing reset call: {call_name} ---")
-        logger.info(f"Re-applying Continuous AWB for {AWB_DWELL}s...")
-        props.set_white_balance_mode("Continuous")
+    strategy_results = []
+    for strategy in reset_strategies:
+        name = strategy["name"]
+        desc = strategy["desc"]
+        fn = strategy["fn"]
+
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"Strategy {name}")
+        logger.info(f"  {desc}")
+
+        # Re-apply AWB fresh
+        logger.info(f"  Re-applying Continuous AWB for {AWB_DWELL}s...")
+        props._set_property(props.WHITE_BALANCE, "Continuous")
         time.sleep(AWB_DWELL)
-        props.set_white_balance_mode("Off")
-        time.sleep(SETTLE_TIME)
 
-        # Snapshot before reset
-        pre_reset = read_gains_compact(props)
-        logger.info(
-            f"Before reset: unified={pre_reset['unified_gain']}, "
-            f"R={pre_reset['analog_red']}, B={pre_reset['analog_blue']}"
-        )
+        # Snap to confirm AWB is active
+        awb_rgb = snap_rgb_means(hardware)
+        log_rgb(f"  {name} AWB-ACTIVE", awb_rgb)
 
-        # Apply the reset call
-        logger.info(f"Calling {call_name}...")
+        # Apply the reset strategy
+        logger.info(f"  Applying reset strategy...")
         try:
-            call_fn()
+            fn()
         except Exception as e:
-            logger.warning(f"  Call raised: {e}")
-        time.sleep(SETTLE_TIME)
+            logger.warning(f"  Strategy raised: {e}")
+        time.sleep(1.0)
 
-        # Snapshot after reset
-        post_reset = read_gains_compact(props)
+        # Snap after reset
+        post_rgb = snap_rgb_means(hardware)
+        log_rgb(f"  {name} AFTER-RESET", post_rgb)
+
+        # Check WB mode
+        wb_after = props.get_white_balance_mode()
+        logger.info(f"  WB mode after reset: {wb_after}")
+
+        # Compare to baseline: how close is the post-reset image to baseline?
+        post_r, post_g, post_b = post_rgb
+        dist_to_baseline = (
+            abs(post_r - baseline_r) + abs(post_g - baseline_g) + abs(post_b - baseline_b)
+        )
+        dist_to_awb = (
+            abs(post_r - awb_r) + abs(post_g - awb_g) + abs(post_b - awb_b)
+        )
+
+        # AWB cleared if post-reset is closer to baseline than to AWB-active
+        cleared = dist_to_baseline < dist_to_awb
+        verdict = "CLEARED AWB" if cleared else "AWB still active"
+
         logger.info(
-            f"After reset:  unified={post_reset['unified_gain']}, "
-            f"R={post_reset['analog_red']}, B={post_reset['analog_blue']}"
+            f"  Distance to baseline: {dist_to_baseline:.1f}, "
+            f"distance to AWB: {dist_to_awb:.1f} -> {verdict}"
         )
 
-        results[call_name] = {
-            "pre": pre_reset,
-            "post": post_reset,
-        }
+        strategy_results.append({
+            "name": name,
+            "awb_rgb": awb_rgb,
+            "post_rgb": post_rgb,
+            "wb_mode": wb_after,
+            "dist_baseline": dist_to_baseline,
+            "dist_awb": dist_to_awb,
+            "cleared": cleared,
+        })
 
+    # ===================================================================
     # Analysis
-    print("\n--- ANALYSIS ---")
-    print(f"  Baseline analog gains:     R={baseline['analog_red']}, B={baseline['analog_blue']}")
-    print(f"  While AWB Continuous:      R={awb_active['analog_red']}, B={awb_active['analog_blue']}")
-    print(f"  After WB -> Off:           R={awb_off['analog_red']}, B={awb_off['analog_blue']}")
-
-    awb_changed_gains = (
-        awb_active["analog_red"] != baseline["analog_red"]
-        or awb_active["analog_blue"] != baseline["analog_blue"]
-        or awb_off["analog_red"] != baseline["analog_red"]
-        or awb_off["analog_blue"] != baseline["analog_blue"]
-    )
-
-    if awb_changed_gains:
-        print("\n  AWB DID change visible analog gains.")
-    else:
-        print("\n  AWB did NOT change visible analog gains (hidden register).")
-        print("  Reset call tests below show property-level effects only.")
-        print("  AWB correction may still be active/cleared at the hidden register level.")
-
-    print("\n  Reset call results (property-level changes):")
-    for call_name, r in results.items():
-        pre = r["pre"]
-        post = r["post"]
-        changed = (
-            pre["unified_gain"] != post["unified_gain"]
-            or pre["analog_red"] != post["analog_red"]
-            or pre["analog_blue"] != post["analog_blue"]
-            or pre["gain_individual"] != post["gain_individual"]
-        )
-        if changed:
-            print(f"    {call_name}: CHANGED properties")
-            print(f"      Before: unified={pre['unified_gain']}, R={pre['analog_red']}, B={pre['analog_blue']}, indiv={pre['gain_individual']}")
-            print(f"      After:  unified={post['unified_gain']}, R={post['analog_red']}, B={post['analog_blue']}, indiv={post['gain_individual']}")
-        else:
-            print(f"    {call_name}: no property change")
-
+    # ===================================================================
+    print("\n" + "=" * 70)
+    print("ANALYSIS: AWB Reset Strategies")
+    print("=" * 70)
+    print(f"\n  Baseline RGB:  R={baseline_r:.1f}  G={baseline_g:.1f}  B={baseline_b:.1f}")
+    print(f"  AWB active:    R={awb_r:.1f}  G={awb_g:.1f}  B={awb_b:.1f}")
     print()
-    print("  NOTE: Since AWB uses a hidden register, property changes alone")
-    print("  cannot confirm which call clears AWB. Check the Live view after")
-    print("  this test completes -- if the display is still color-corrected,")
-    print("  none of the individual calls cleared AWB. If it reverted to the")
-    print("  original color cast, one of the calls above did clear it.")
-    print("  To isolate which one, run with --test 1 and stop between calls.")
+
+    any_cleared = False
+    print(f"  {'Strategy':<50s} {'WB Mode':<12s} {'Dist->Base':<12s} {'Dist->AWB':<12s} {'Result'}")
+    print(f"  {'-'*50} {'-'*12} {'-'*12} {'-'*12} {'-'*15}")
+    for r in strategy_results:
+        result_str = "CLEARED" if r["cleared"] else "still active"
+        if r["cleared"]:
+            any_cleared = True
+        print(
+            f"  {r['name']:<50s} {r['wb_mode']:<12s} "
+            f"{r['dist_baseline']:<12.1f} {r['dist_awb']:<12.1f} {result_str}"
+        )
+
+    if any_cleared:
+        cleared_names = [r["name"] for r in strategy_results if r["cleared"]]
+        print(f"\n  FOUND WORKING RESET: {cleared_names[0]}")
+        if len(cleared_names) > 1:
+            print(f"  Also worked: {', '.join(cleared_names[1:])}")
+    else:
+        print("\n  NO STRATEGY CLEARED AWB.")
+        print("  The camera may require MM restart to clear AWB corrections.")
+
     print()
     return
 
@@ -670,7 +784,7 @@ def main():
     print("=" * 70)
     print()
 
-    props = connect_camera()
+    props, hardware = connect_camera()
 
     # Initial state dump
     dump_state(props, "INITIAL")
@@ -678,7 +792,7 @@ def main():
     tests_to_run = args.test
     try:
         if tests_to_run in ("1", "all"):
-            test_issue_1_awb_persistence(props)
+            test_issue_1_awb_persistence(props, hardware)
 
         if tests_to_run in ("6", "all"):
             test_issue_6_gain_persistence_across_angles(props)
