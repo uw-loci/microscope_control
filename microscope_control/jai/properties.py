@@ -786,9 +786,9 @@ class JAICameraProperties:
         except Exception:
             return "Off"
 
-    def set_white_balance_mode(self, mode: str) -> None:
+    def set_white_balance_mode(self, mode: str, max_retries: int = 3) -> None:
         """
-        Set camera's built-in white balance mode.
+        Set camera's built-in white balance mode with read-back verification.
 
         The camera has hardware white balance with several options:
         - 'Off': Manual control (use per-channel exposure/gain)
@@ -798,18 +798,50 @@ class JAICameraProperties:
 
         Args:
             mode: One of WHITE_BALANCE_OPTIONS
+            max_retries: Number of attempts if read-back does not match
 
         Raises:
             ValueError: If mode is not valid
             RuntimeError: If property cannot be set
         """
+        import time
+
         if mode not in self.WHITE_BALANCE_OPTIONS:
             raise ValueError(
                 f"Invalid white balance mode '{mode}'. "
                 f"Must be one of: {self.WHITE_BALANCE_OPTIONS}"
             )
-        self._set_property(self.WHITE_BALANCE, mode)
-        logger.info(f"Set white balance mode to: {mode}")
+
+        for attempt in range(1, max_retries + 1):
+            self._set_property(self.WHITE_BALANCE, mode)
+            time.sleep(0.1)  # Brief settle before read-back
+
+            # "Once" auto-returns to "Off" after calibration, so skip verification
+            if mode == "Once":
+                logger.info(f"Set white balance mode to: {mode}")
+                return
+
+            actual = self.get_white_balance_mode()
+            if actual == mode:
+                logger.info(f"Set white balance mode to: {mode} (verified)")
+                return
+
+            logger.warning(
+                f"WhiteBalance write attempt {attempt}/{max_retries}: "
+                f"wrote '{mode}' but read back '{actual}'"
+            )
+            time.sleep(0.3)
+
+        # All retries exhausted
+        actual = self.get_white_balance_mode()
+        if actual != mode:
+            logger.error(
+                f"CRITICAL: Failed to set WhiteBalance to '{mode}' after "
+                f"{max_retries} attempts. Read-back: '{actual}'. "
+                f"Camera may still be in active AWB mode."
+            )
+        else:
+            logger.info(f"Set white balance mode to: {mode} (verified on final check)")
 
     def run_auto_white_balance(self, wait_time: float = 0.5) -> None:
         """
