@@ -91,7 +91,7 @@ def connect_camera():
         logger.error("JAI camera not detected or not active.")
         sys.exit(1)
 
-    hardware = PycromanagerHardware(core, studio)
+    hardware = PycromanagerHardware(core, studio, settings={})
     logger.info("JAI camera connected and validated.")
     return props, hardware
 
