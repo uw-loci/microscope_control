@@ -97,9 +97,40 @@ def connect_camera():
 
 
 def snap_rgb_means(hardware):
-    """Snap an image and return per-channel mean values as (R, G, B) tuple."""
+    """Snap a single-frame image and return per-channel means as (R, G, B).
+
+    WARNING: snap_image() captures outside the streaming pipeline. AWB
+    Continuous corrections only apply during streaming, so snapped frames
+    may NOT reflect AWB state. Use stream_rgb_means() for AWB testing.
+    """
     import numpy as np
     img, _tags = hardware.snap_image()
+    return _img_to_rgb_means(img)
+
+
+def stream_rgb_means(hardware, settle_frames=5):
+    """Read a frame from the live streaming buffer and return RGB means.
+
+    Requires streaming to be active (start_continuous_acquisition).
+    Waits for settle_frames to pass so the returned frame reflects the
+    current camera state (AWB, gain, exposure).
+    """
+    import numpy as np
+    # Flush stale frames and wait for fresh ones
+    hardware.core.clear_circular_buffer()
+    frame_interval = 1.0 / max(float(hardware.core.get_property("JAICamera", "FrameRateHz")), 1.0)
+    time.sleep(frame_interval * settle_frames + 0.1)
+
+    img, _meta = hardware.get_live_frame()
+    if img is None:
+        logger.warning("No frame available from streaming buffer")
+        return (0.0, 0.0, 0.0)
+    return _img_to_rgb_means(img)
+
+
+def _img_to_rgb_means(img):
+    """Extract RGB channel means from an image array."""
+    import numpy as np
     if img.ndim == 3 and img.shape[2] >= 3:
         r_mean = float(np.mean(img[:, :, 0]))
         g_mean = float(np.mean(img[:, :, 1]))
@@ -204,13 +235,27 @@ def read_gains_compact(props):
 # TEST 1: Camera AWB Gain Persistence
 # ===========================================================================
 
-def apply_awb(props, dwell=5.0):
-    """Apply Continuous AWB for dwell seconds, then set to Off."""
+def apply_awb_streaming(props, hardware, dwell=5.0):
+    """Apply Continuous AWB while streaming, then set to Off.
+
+    AWB Continuous only works during streaming -- it needs frames flowing
+    through the camera pipeline to converge. This starts streaming,
+    enables Continuous AWB, waits for convergence, then sets Off.
+    Streaming is left running for the caller to read frames.
+    """
+    # Ensure streaming is active
+    if not hardware.core.is_sequence_running():
+        hardware.start_continuous_acquisition()
+        time.sleep(0.5)
+
     props._set_property(props.WHITE_BALANCE, "Continuous")
+    logger.info(f"AWB Continuous enabled, waiting {dwell}s for convergence...")
     time.sleep(dwell)
+
+    # Set to Off -- correction should persist
     props._set_property(props.WHITE_BALANCE, "Off")
     time.sleep(0.5)
-    # Verify mode actually changed
+
     actual = props.get_white_balance_mode()
     if actual != "Off":
         logger.warning(f"WB mode after Off write: '{actual}' (expected 'Off')")
@@ -221,14 +266,14 @@ def test_issue_1_awb_persistence(props, hardware):
     """
     Issue 1: Do camera AWB internal gains persist after explicit reset?
 
-    Uses Continuous mode (the real Camera AWB workflow) with image-based
-    verification. Snaps images to measure RGB channel means before/after
-    each reset strategy to determine which call actually clears AWB.
+    Uses Continuous mode WITH STREAMING so AWB actually has frames to
+    process. Reads frames from the circular buffer to measure RGB means.
+    Tests multiple reset strategies to find which one clears AWB.
     """
     print("\n" + "=" * 70)
     print("TEST 1: Camera AWB Persistence & Reset Strategies (Issue #1)")
     print("=" * 70)
-    print("Uses Continuous mode + image snaps to detect AWB state.")
+    print("Uses Continuous mode + streaming + live frame reads.")
     print()
 
     AWB_DWELL = 5.0  # seconds for Continuous AWB to converge
@@ -238,7 +283,7 @@ def test_issue_1_awb_persistence(props, hardware):
     props._set_property(props.FRAME_RATE, props.FRAME_RATE_MAX)
     time.sleep(SETTLE_TIME)
 
-    # Step 2: Reset to known neutral state and snap baseline image
+    # Step 2: Reset to known neutral state
     logger.info("Step 2: Resetting to neutral state...")
     props.reset_to_defaults()
     props.set_unified_gain(1.0)
@@ -246,31 +291,41 @@ def test_issue_1_awb_persistence(props, hardware):
     props._set_property(props.WHITE_BALANCE, "Off")
     time.sleep(1.0)
 
-    baseline_rgb = snap_rgb_means(hardware)
-    log_rgb("BASELINE (no AWB)", baseline_rgb)
+    # Start streaming for baseline read
+    logger.info("Starting continuous streaming...")
+    hardware.start_continuous_acquisition()
+    time.sleep(1.0)
+
+    baseline_rgb = stream_rgb_means(hardware)
+    log_rgb("BASELINE (no AWB, streaming)", baseline_rgb)
     dump_state(props, "BASELINE")
 
-    # Step 3: Apply Continuous AWB and snap image to confirm it worked
-    logger.info(f"\nStep 3: Applying Continuous AWB for {AWB_DWELL}s...")
+    # Step 3: Apply Continuous AWB while streaming
+    logger.info(f"\nStep 3: Enabling Continuous AWB for {AWB_DWELL}s (streaming active)...")
     props._set_property(props.WHITE_BALANCE, "Continuous")
     time.sleep(AWB_DWELL)
 
-    awb_active_rgb = snap_rgb_means(hardware)
-    log_rgb("AWB ACTIVE (Continuous)", awb_active_rgb)
-
+    awb_active_rgb = stream_rgb_means(hardware)
+    log_rgb("AWB ACTIVE (Continuous, streaming)", awb_active_rgb)
     wb_mode_during = props.get_white_balance_mode()
     logger.info(f"WB mode while active: {wb_mode_during}")
 
-    # Step 4: Set WB to Off and check if correction persists
-    logger.info("\nStep 4: Writing WB='Off'...")
+    # Step 4: Set WB to Off (correction should persist in streaming)
+    logger.info("\nStep 4: Writing WB='Off' (streaming still active)...")
     props._set_property(props.WHITE_BALANCE, "Off")
     time.sleep(1.0)
 
+    awb_off_rgb = stream_rgb_means(hardware)
+    log_rgb("AFTER WB->Off (streaming)", awb_off_rgb)
     wb_mode_after_off = props.get_white_balance_mode()
     logger.info(f"WB mode after Off write: {wb_mode_after_off}")
 
-    awb_off_rgb = snap_rgb_means(hardware)
-    log_rgb("AFTER WB->Off", awb_off_rgb)
+    # Step 4b: Stop streaming, then snap -- does correction persist to snap?
+    logger.info("\nStep 4b: Stopping stream, then snapping single frame...")
+    hardware.stop_continuous_acquisition()
+    time.sleep(0.5)
+    snap_after_awb_rgb = snap_rgb_means(hardware)
+    log_rgb("SNAP after AWB+stream stop", snap_after_awb_rgb)
 
     # Check if AWB actually changed anything
     baseline_r, baseline_g, baseline_b = baseline_rgb
@@ -282,22 +337,31 @@ def test_issue_1_awb_persistence(props, hardware):
         print(f"  Total channel shift: {channel_shift:.1f} (threshold: 5.0)")
         print("  The camera may need a more strongly colored scene.")
         print("  Continuing with reset tests anyway...\n")
+    else:
+        print(f"\n  AWB shifted channels by {channel_shift:.1f} -- AWB is working.")
+        print()
 
     # ===================================================================
-    # Step 5: Try each reset strategy with image verification
+    # Step 5: Try each reset strategy with streaming image verification
     # ===================================================================
-    # For each strategy: re-apply AWB, then try the reset, then snap image.
-    # Compare snapped image to baseline to determine if AWB was cleared.
+    # For each strategy:
+    #   1. Start streaming
+    #   2. Apply AWB Continuous, wait for convergence
+    #   3. Set Off (correction should persist)
+    #   4. Read streaming frame (confirms AWB correction is active)
+    #   5. Apply the reset strategy
+    #   6. Read streaming frame (check if AWB was cleared)
+    #   7. Stop streaming
 
     reset_strategies = [
         {
-            "name": "A: set_white_balance_mode('Off') only",
-            "desc": "Current approach -- write Off to WB property",
+            "name": "A: Write Off only (no other changes)",
+            "desc": "Just write Off to WB property (already done in step 4)",
             "fn": lambda: props._set_property(props.WHITE_BALANCE, "Off"),
         },
         {
             "name": "B: Preset6500K then Off",
-            "desc": "Transition through a preset to break out of Continuous",
+            "desc": "Transition through a color temp preset",
             "fn": lambda: (
                 props._set_property(props.WHITE_BALANCE, "Preset6500K"),
                 time.sleep(0.5),
@@ -306,7 +370,7 @@ def test_issue_1_awb_persistence(props, hardware):
         },
         {
             "name": "C: Once then Off",
-            "desc": "Transition through Once mode (auto-returns to Off)",
+            "desc": "Transition through one-shot mode",
             "fn": lambda: (
                 props._set_property(props.WHITE_BALANCE, "Once"),
                 time.sleep(1.0),
@@ -314,48 +378,51 @@ def test_issue_1_awb_persistence(props, hardware):
             ),
         },
         {
-            "name": "D: Off with 2s delay",
-            "desc": "Write Off then wait longer for camera to process",
+            "name": "D: Off + set_rb_analog_gains(1.0, 1.0)",
+            "desc": "Write Off then overwrite analog gains to 1.0",
             "fn": lambda: (
                 props._set_property(props.WHITE_BALANCE, "Off"),
-                time.sleep(2.0),
-            ),
-        },
-        {
-            "name": "E: set_rb_analog_gains(1.0, 1.0) after Off",
-            "desc": "Write Off then overwrite analog gains",
-            "fn": lambda: (
-                props._set_property(props.WHITE_BALANCE, "Off"),
-                time.sleep(0.5),
+                time.sleep(0.3),
                 props.set_rb_analog_gains(red=1.0, blue=1.0),
             ),
         },
         {
-            "name": "F: set_unified_gain(1.0) after Off",
-            "desc": "Write Off then overwrite unified gain",
+            "name": "E: Off + set_unified_gain(1.0)",
+            "desc": "Write Off then set unified gain",
             "fn": lambda: (
                 props._set_property(props.WHITE_BALANCE, "Off"),
-                time.sleep(0.5),
+                time.sleep(0.3),
                 props.set_unified_gain(1.0),
             ),
         },
         {
-            "name": "G: Toggle individual gain mode after Off",
+            "name": "F: Off + toggle individual gain mode",
             "desc": "Write Off, enable individual gain, disable it",
             "fn": lambda: (
                 props._set_property(props.WHITE_BALANCE, "Off"),
-                time.sleep(0.5),
-                props.enable_individual_gain(),
                 time.sleep(0.3),
+                props.enable_individual_gain(),
+                time.sleep(0.2),
                 props.disable_individual_gain(),
             ),
         },
         {
+            "name": "G: Stop streaming then restart",
+            "desc": "Stop and restart streaming (simulates acquisition boundary)",
+            "stop_stream": True,
+            "fn": lambda: (
+                hardware.stop_continuous_acquisition(),
+                time.sleep(0.5),
+                hardware.start_continuous_acquisition(),
+                time.sleep(0.5),
+            ),
+        },
+        {
             "name": "H: Full cleanup (Off + all resets)",
-            "desc": "Write Off + analog gains + unified gain + mode toggles",
+            "desc": "Off + analog gains + unified gain + mode toggles",
             "fn": lambda: (
                 props._set_property(props.WHITE_BALANCE, "Off"),
-                time.sleep(0.5),
+                time.sleep(0.3),
                 props.set_rb_analog_gains(red=1.0, blue=1.0),
                 props.set_unified_gain(1.0),
                 props.disable_individual_exposure(),
@@ -374,43 +441,64 @@ def test_issue_1_awb_persistence(props, hardware):
         logger.info(f"Strategy {name}")
         logger.info(f"  {desc}")
 
-        # Re-apply AWB fresh
-        logger.info(f"  Re-applying Continuous AWB for {AWB_DWELL}s...")
+        # Ensure streaming is running and WB is Off before re-applying
+        if not hardware.core.is_sequence_running():
+            hardware.start_continuous_acquisition()
+            time.sleep(0.5)
+        props._set_property(props.WHITE_BALANCE, "Off")
+        time.sleep(0.5)
+
+        # Re-apply AWB fresh while streaming
+        logger.info(f"  Applying Continuous AWB for {AWB_DWELL}s (streaming)...")
         props._set_property(props.WHITE_BALANCE, "Continuous")
         time.sleep(AWB_DWELL)
 
-        # Snap to confirm AWB is active
-        awb_rgb = snap_rgb_means(hardware)
+        # Read AWB-corrected frame
+        awb_rgb = stream_rgb_means(hardware)
         log_rgb(f"  {name} AWB-ACTIVE", awb_rgb)
 
+        # Set Off before applying strategy (unless strategy IS the Off test)
+        if name != "A: Write Off only (no other changes)":
+            props._set_property(props.WHITE_BALANCE, "Off")
+            time.sleep(0.3)
+
         # Apply the reset strategy
-        logger.info(f"  Applying reset strategy...")
+        logger.info(f"  Applying reset: {name}...")
         try:
             fn()
         except Exception as e:
             logger.warning(f"  Strategy raised: {e}")
         time.sleep(1.0)
 
-        # Snap after reset
-        post_rgb = snap_rgb_means(hardware)
+        # Ensure streaming is running for post-reset read
+        if not hardware.core.is_sequence_running():
+            hardware.start_continuous_acquisition()
+            time.sleep(0.5)
+
+        # Read post-reset frame
+        post_rgb = stream_rgb_means(hardware)
         log_rgb(f"  {name} AFTER-RESET", post_rgb)
 
-        # Check WB mode
         wb_after = props.get_white_balance_mode()
         logger.info(f"  WB mode after reset: {wb_after}")
 
-        # Compare to baseline: how close is the post-reset image to baseline?
+        # Compare to baseline
         post_r, post_g, post_b = post_rgb
         dist_to_baseline = (
             abs(post_r - baseline_r) + abs(post_g - baseline_g) + abs(post_b - baseline_b)
         )
+        awb_r_s, awb_g_s, awb_b_s = awb_rgb
         dist_to_awb = (
-            abs(post_r - awb_r) + abs(post_g - awb_g) + abs(post_b - awb_b)
+            abs(post_r - awb_r_s) + abs(post_g - awb_g_s) + abs(post_b - awb_b_s)
         )
 
-        # AWB cleared if post-reset is closer to baseline than to AWB-active
-        cleared = dist_to_baseline < dist_to_awb
-        verdict = "CLEARED AWB" if cleared else "AWB still active"
+        cleared = dist_to_baseline < dist_to_awb and dist_to_awb > 5.0
+        if dist_to_awb < 5.0 and dist_to_baseline < 5.0:
+            verdict = "INDETERMINATE (AWB and baseline too similar)"
+        elif cleared:
+            verdict = "CLEARED AWB"
+        else:
+            verdict = "AWB still active"
 
         logger.info(
             f"  Distance to baseline: {dist_to_baseline:.1f}, "
@@ -425,7 +513,11 @@ def test_issue_1_awb_persistence(props, hardware):
             "dist_baseline": dist_to_baseline,
             "dist_awb": dist_to_awb,
             "cleared": cleared,
+            "verdict": verdict,
         })
+
+    # Stop streaming
+    hardware.stop_continuous_acquisition()
 
     # ===================================================================
     # Analysis
@@ -433,20 +525,21 @@ def test_issue_1_awb_persistence(props, hardware):
     print("\n" + "=" * 70)
     print("ANALYSIS: AWB Reset Strategies")
     print("=" * 70)
-    print(f"\n  Baseline RGB:  R={baseline_r:.1f}  G={baseline_g:.1f}  B={baseline_b:.1f}")
-    print(f"  AWB active:    R={awb_r:.1f}  G={awb_g:.1f}  B={awb_b:.1f}")
+    print(f"\n  Baseline RGB:       R={baseline_r:.1f}  G={baseline_g:.1f}  B={baseline_b:.1f}")
+    print(f"  AWB active (step3): R={awb_r:.1f}  G={awb_g:.1f}  B={awb_b:.1f}")
+    snap_r, snap_g, snap_b = snap_after_awb_rgb
+    print(f"  Snap after AWB:     R={snap_r:.1f}  G={snap_g:.1f}  B={snap_b:.1f}")
     print()
 
     any_cleared = False
     print(f"  {'Strategy':<50s} {'WB Mode':<12s} {'Dist->Base':<12s} {'Dist->AWB':<12s} {'Result'}")
-    print(f"  {'-'*50} {'-'*12} {'-'*12} {'-'*12} {'-'*15}")
+    print(f"  {'-'*50} {'-'*12} {'-'*12} {'-'*12} {'-'*20}")
     for r in strategy_results:
-        result_str = "CLEARED" if r["cleared"] else "still active"
         if r["cleared"]:
             any_cleared = True
         print(
             f"  {r['name']:<50s} {r['wb_mode']:<12s} "
-            f"{r['dist_baseline']:<12.1f} {r['dist_awb']:<12.1f} {result_str}"
+            f"{r['dist_baseline']:<12.1f} {r['dist_awb']:<12.1f} {r['verdict']}"
         )
 
     if any_cleared:
@@ -454,6 +547,9 @@ def test_issue_1_awb_persistence(props, hardware):
         print(f"\n  FOUND WORKING RESET: {cleared_names[0]}")
         if len(cleared_names) > 1:
             print(f"  Also worked: {', '.join(cleared_names[1:])}")
+    elif channel_shift < 5.0:
+        print("\n  TEST INVALID: AWB never changed the image.")
+        print("  Point camera at a strongly colored surface and re-run.")
     else:
         print("\n  NO STRATEGY CLEARED AWB.")
         print("  The camera may require MM restart to clear AWB corrections.")
