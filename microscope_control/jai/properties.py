@@ -955,6 +955,42 @@ class JAICameraProperties:
         except Exception as e:
             logger.warning("Could not set WhiteBalance to Off: %s", e)
 
+        # Clear circular buffer to prevent stale AWB frames from being
+        # returned by subsequent snap_image() calls
+        try:
+            self.core.clear_circular_buffer()
+        except Exception:
+            pass
+
+        # Verify exposure control still works after AWB.
+        # Some cameras lock exposure during AWB; verify we can still set it.
+        try:
+            current_exp = float(
+                self.core.get_property("JAICamera", "Exposure")
+            )
+            test_exp = current_exp * 0.5  # Try halving
+            self.core.set_property("JAICamera", "Exposure", test_exp)
+            import time
+            time.sleep(0.05)
+            readback = float(
+                self.core.get_property("JAICamera", "Exposure")
+            )
+            # Restore original
+            self.core.set_property("JAICamera", "Exposure", current_exp)
+            if abs(readback - test_exp) < 1.0:
+                logger.info(
+                    "Post-AWB exposure control verified: "
+                    "set %.1f, read %.1f (OK)", test_exp, readback
+                )
+            else:
+                logger.error(
+                    "POST-AWB EXPOSURE LOCKED: set %.1f but read back %.1f. "
+                    "Camera may not respond to exposure changes after AWB!",
+                    test_exp, readback,
+                )
+        except Exception as e:
+            logger.warning("Could not verify post-AWB exposure control: %s", e)
+
         logger.info("Auto white balance complete")
 
     def clear_awb_corrections(self) -> None:
