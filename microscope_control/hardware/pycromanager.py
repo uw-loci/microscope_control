@@ -314,11 +314,10 @@ class PycromanagerHardware(MicroscopeHardware):
         if needs_debayer:
             self.core.set_property("MicroPublisher6", "Color", "OFF")
 
-        # Handle white balance for JAI - set WB algorithm to Off to prevent camera
-        # from adjusting colors during acquisition. This does NOT clear AWB corrections
-        # stored in analog gains (Gain_AnalogRed/Gain_AnalogBlue), so camera_awb mode
-        # corrections survive this write. This node may be non-writable when individual
-        # gain/exposure mode properties are being changed.
+        # Handle white balance for JAI - set WB algorithm to Off to prevent
+        # the camera from actively adjusting colors during acquisition. This
+        # does NOT clear the internal AWB Temperature corrections, so
+        # camera_awb mode corrections survive this write.
         if camera == "JAICamera":
             t_wb_start = time.perf_counter()
             try:

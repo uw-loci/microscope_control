@@ -844,35 +844,73 @@ class JAICameraProperties:
             logger.info(f"Set white balance mode to: {mode} (verified on final check)")
 
     def run_auto_white_balance(
-        self, equilibration_seconds: float = 2.0
+        self,
+        equilibration_seconds: float = 3.0,
+        calibration_exposure_ms: float = 0.5,
     ) -> None:
         """
         Run auto white balance using camera's Continuous mode with streaming.
 
-        The JAI camera's AWB applies corrections through an internal processing
-        pipeline -- NOT through the Gain_AnalogRed/Gain_AnalogBlue registers
-        (those always read 1.0 regardless of AWB state). This method:
-        1. Starts continuous acquisition so the camera receives frames
-        2. Sets WhiteBalance to "Continuous" (with verification)
-        3. Actively drains the circular buffer so the camera keeps delivering
+        The JAI camera's AWB adjusts the internal color Temperature setting
+        based on frames it sees during Continuous mode. This method:
+        1. Sets exposure to a safe low level to avoid saturation
+        2. Starts continuous acquisition so the camera receives frames
+        3. Sets WhiteBalance to "Continuous"
+        4. Actively drains the circular buffer so the camera keeps delivering
            new frames for the AWB algorithm to analyze
-        4. Stops streaming (must stop BEFORE writing WhiteBalance property)
-        5. Sets WhiteBalance to "Off" (internal corrections persist)
+        5. Sets WhiteBalance to "Off" while still streaming (works in Live)
+        6. Stops streaming and restores original exposure
 
         Args:
-            equilibration_seconds: Time to let AWB Continuous run before
-                stopping. Camera typically equilibrates in ~1 second;
-                default 2.0s provides margin.
+            equilibration_seconds: Time to let AWB Continuous run. The camera
+                needs many frames to converge its Temperature setting;
+                default 3.0s provides good convergence.
+            calibration_exposure_ms: Exposure to use during AWB streaming.
+                Must be low enough to avoid saturation at the current angle
+                (AWB calibrates at uncrossed/90-deg where light is brightest).
+                Default 0.5ms is safe for 20x at 90-deg.
 
         Note:
-            The camera's internal AWB corrections persist after setting Off.
-            For reproducible calibration with saved settings, use
-            JAIWhiteBalanceCalibrator instead.
+            The camera's internal AWB corrections (Temperature) persist after
+            setting Off. For reproducible calibration with saved settings,
+            use JAIWhiteBalanceCalibrator instead.
         """
         import time
 
-        # Start continuous acquisition if not already running so the camera
-        # receives frames for the AWB algorithm to analyze.
+        # ------------------------------------------------------------------
+        # Save original exposure and set a safe calibration exposure.
+        # AWB calibrates at uncrossed (90-deg) which is the brightest angle.
+        # A typical 20x exposure there is ~0.5-0.7ms; anything higher
+        # saturates the sensor and AWB can't determine color ratios.
+        # ------------------------------------------------------------------
+        try:
+            original_exposure = float(
+                self.core.get_property("JAICamera", "Exposure")
+            )
+        except Exception:
+            original_exposure = calibration_exposure_ms
+
+        try:
+            # Set frame rate high enough for the short exposure
+            frame_rate_max = 38.0
+            exposure_s = calibration_exposure_ms / 1000.0
+            required_fps = round(1.0 / (exposure_s * 1.01), 3)
+            frame_rate = min(required_fps, frame_rate_max)
+            self.core.set_property("JAICamera", "FrameRateHz", frame_rate)
+            self.core.set_property("JAICamera", "Exposure",
+                                   calibration_exposure_ms)
+            logger.info(
+                "AWB calibration exposure: %.2fms (original: %.2fms, "
+                "frame rate: %.1f Hz)",
+                calibration_exposure_ms, original_exposure, frame_rate,
+            )
+        except Exception as e:
+            logger.warning("Could not set AWB calibration exposure: %s", e)
+
+        # ------------------------------------------------------------------
+        # Start continuous acquisition so the camera receives frames for
+        # the AWB algorithm to analyze.
+        # ------------------------------------------------------------------
         we_started_streaming = False
         try:
             if not self.core.is_sequence_running():
@@ -885,13 +923,10 @@ class JAICameraProperties:
             logger.warning("Could not start streaming for AWB: %s", e)
 
         try:
-            # Set Continuous mode -- camera adjusts internal WB every frame.
-            # Use _set_property (not set_white_balance_mode which does
-            # read-back verification that may conflict with streaming).
+            # Set Continuous mode -- camera adjusts Temperature every frame.
             self._set_property(self.WHITE_BALANCE, "Continuous")
             time.sleep(0.1)
 
-            # Verify Continuous mode was actually set
             actual_mode = self.get_white_balance_mode()
             if actual_mode != "Continuous":
                 logger.error(
@@ -903,21 +938,19 @@ class JAICameraProperties:
                 logger.info("WhiteBalance set to Continuous (verified)")
 
             logger.info(
-                "Running AWB Continuous for %.1fs "
-                "(draining buffer so camera keeps processing frames)...",
-                equilibration_seconds,
+                "Running AWB Continuous for %.1fs at %.2fms exposure "
+                "(draining buffer for continuous frame delivery)...",
+                equilibration_seconds, calibration_exposure_ms,
             )
 
             # Actively drain the circular buffer during equilibration.
             # If the buffer fills up, the camera stops delivering new frames
-            # and the AWB algorithm stalls (can't analyze new images).
-            # MicroManager's live mode works because it continuously reads
-            # frames; we must do the same.
-            drain_interval = 0.1  # Check buffer every 100ms
+            # and the AWB algorithm stalls. MicroManager's live mode works
+            # because it continuously reads frames; we must do the same.
+            drain_interval = 0.05  # 50ms for better throughput
             start = time.time()
             frames_drained = 0
             while time.time() - start < equilibration_seconds:
-                # Pop all available frames from the circular buffer
                 remaining = self.core.get_remaining_image_count()
                 while remaining > 0:
                     try:
@@ -933,49 +966,56 @@ class JAICameraProperties:
                 time.time() - start, frames_drained,
             )
 
+            # Set Off -- same pattern as setting Continuous above.
+            self._set_property(self.WHITE_BALANCE, "Off")
+            logger.info(
+                "Set WhiteBalance to Off "
+                "(internal Temperature corrections persist)"
+            )
+
         finally:
-            # IMPORTANT: Stop streaming BEFORE setting WhiteBalance to Off.
-            # The WhiteBalance property cannot be written while streaming is
-            # active (GenICam error 11018).
+            # Stop streaming
             if we_started_streaming:
                 try:
                     if self.core.is_sequence_running():
                         self.core.stop_sequence_acquisition()
                         logger.info("Stopped streaming after AWB calibration")
-                        time.sleep(0.2)  # Let camera settle
+                        time.sleep(0.2)
                 except Exception as e:
                     logger.warning(
                         "Could not stop streaming after AWB: %s", e
                     )
 
-        # Set Off -- internal AWB corrections persist even after Off
-        try:
-            self.set_white_balance_mode("Off")
-            logger.info("Set WhiteBalance to Off (internal corrections persist)")
-        except Exception as e:
-            logger.warning("Could not set WhiteBalance to Off: %s", e)
-
-        # Clear circular buffer to prevent stale AWB frames from being
-        # returned by subsequent snap_image() calls
+        # Clear circular buffer
         try:
             self.core.clear_circular_buffer()
         except Exception:
             pass
 
-        # Verify exposure control still works after AWB.
-        # Some cameras lock exposure during AWB; verify we can still set it.
+        # ------------------------------------------------------------------
+        # Restore original exposure
+        # ------------------------------------------------------------------
+        try:
+            exposure_s = original_exposure / 1000.0
+            required_fps = round(1.0 / (exposure_s * 1.01), 3)
+            frame_rate = min(max(required_fps, 0.125), 38.0)
+            self.core.set_property("JAICamera", "FrameRateHz", frame_rate)
+            self.core.set_property("JAICamera", "Exposure", original_exposure)
+            logger.info("Restored exposure to %.2fms", original_exposure)
+        except Exception as e:
+            logger.warning("Could not restore exposure after AWB: %s", e)
+
+        # Verify exposure control still works after AWB
         try:
             current_exp = float(
                 self.core.get_property("JAICamera", "Exposure")
             )
-            test_exp = current_exp * 0.5  # Try halving
+            test_exp = current_exp * 0.5
             self.core.set_property("JAICamera", "Exposure", test_exp)
-            import time
             time.sleep(0.05)
             readback = float(
                 self.core.get_property("JAICamera", "Exposure")
             )
-            # Restore original
             self.core.set_property("JAICamera", "Exposure", current_exp)
             if abs(readback - test_exp) < 1.0:
                 logger.info(
@@ -984,12 +1024,13 @@ class JAICameraProperties:
                 )
             else:
                 logger.error(
-                    "POST-AWB EXPOSURE LOCKED: set %.1f but read back %.1f. "
-                    "Camera may not respond to exposure changes after AWB!",
+                    "POST-AWB EXPOSURE LOCKED: set %.1f but read back %.1f",
                     test_exp, readback,
                 )
         except Exception as e:
-            logger.warning("Could not verify post-AWB exposure control: %s", e)
+            logger.warning(
+                "Could not verify post-AWB exposure control: %s", e
+            )
 
         logger.info("Auto white balance complete")
 
