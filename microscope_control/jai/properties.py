@@ -850,6 +850,10 @@ class JAICameraProperties:
         This sets WhiteBalance to 'Once', which triggers a single auto-calibration.
         The camera analyzes the current scene and adjusts internal parameters.
 
+        The camera's AWB "Once" mode applies on the next acquired frame.
+        This method snaps multiple images to ensure the camera has frames to
+        analyze and the AWB algorithm has time to complete.
+
         Args:
             wait_time: Time to wait for calibration to complete (seconds)
 
@@ -860,10 +864,62 @@ class JAICameraProperties:
         """
         import time
 
+        # Log pre-AWB analog gains for comparison
+        try:
+            pre_red = float(self._get_property(self.GAIN_ANALOG_RED))
+            pre_blue = float(self._get_property(self.GAIN_ANALOG_BLUE))
+            logger.info(
+                "Pre-AWB analog gains: R=%.3f, B=%.3f", pre_red, pre_blue
+            )
+        except Exception:
+            pass
+
         self._set_property(self.WHITE_BALANCE, "Once")
         logger.info("Running one-shot auto white balance...")
+
+        # AWB "Once" applies on the next captured frame. Snap images so the
+        # camera has data to analyze. Multiple snaps give the AWB algorithm
+        # time to converge.
+        for i in range(3):
+            time.sleep(0.3)
+            try:
+                self.core.snap_image()
+                logger.debug("AWB snap %d/3", i + 1)
+            except Exception as e:
+                logger.warning("Could not snap image during AWB: %s", e)
+
         time.sleep(wait_time)
+
+        # Log post-AWB analog gains to verify calibration actually took effect
+        try:
+            post_red = float(self._get_property(self.GAIN_ANALOG_RED))
+            post_blue = float(self._get_property(self.GAIN_ANALOG_BLUE))
+            logger.info(
+                "Post-AWB analog gains: R=%.3f, B=%.3f", post_red, post_blue
+            )
+            if abs(post_red - 1.0) < 0.01 and abs(post_blue - 1.0) < 0.01:
+                logger.warning(
+                    "AWB analog gains unchanged at 1.0 -- "
+                    "one-shot AWB may not have had effect"
+                )
+        except Exception:
+            pass
+
         logger.info("Auto white balance complete")
+
+    def clear_awb_corrections(self) -> None:
+        """Clear any AWB corrections stored in analog gain registers.
+
+        AWB Continuous/Once stores corrections in Gain_AnalogRed/Gain_AnalogBlue.
+        Setting WB mode to 'Off' does NOT clear these -- must explicitly write 1.0.
+
+        IMPORTANT: Streaming must be stopped before calling this method.
+        Gain properties (Gain_AnalogRed, GainIsIndividual) cannot be written
+        during active streaming (error 11018).
+        """
+        self.set_white_balance_mode("Off")
+        self.set_rb_analog_gains(red=1.0, blue=1.0)
+        logger.info("Cleared AWB corrections (WB Off + analog gains reset to 1.0)")
 
     def set_white_balance_preset(self, color_temp_k: int) -> None:
         """
