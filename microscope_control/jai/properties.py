@@ -844,40 +844,30 @@ class JAICameraProperties:
             logger.info(f"Set white balance mode to: {mode} (verified on final check)")
 
     def run_auto_white_balance(
-        self, max_seconds: float = 5.0, poll_interval: float = 0.3
+        self, equilibration_seconds: float = 1.5
     ) -> None:
         """
         Run auto white balance using camera's Continuous mode with streaming.
 
-        The JAI camera's AWB "Once" mode does not work reliably (immediately
-        reverts to Off without calibrating). Instead, this method:
+        The JAI camera's AWB applies corrections through an internal processing
+        pipeline -- NOT through the Gain_AnalogRed/Gain_AnalogBlue registers
+        (those always read 1.0 regardless of AWB state). This method:
         1. Starts continuous acquisition so the camera receives frames
         2. Sets WhiteBalance to "Continuous"
-        3. Monitors analog gains until they stabilize
-        4. Sets WhiteBalance to "Off" (preserves the calibrated gains)
-        5. Stops acquisition if we started it
+        3. Waits for the internal AWB to equilibrate (~1-2 seconds)
+        4. Stops streaming (must stop BEFORE writing WhiteBalance property)
+        5. Sets WhiteBalance to "Off" (internal corrections persist)
 
         Args:
-            max_seconds: Maximum time to wait for AWB convergence
-            poll_interval: Time between gain stability checks (seconds)
+            equilibration_seconds: Time to let AWB Continuous run before
+                stopping. Camera typically equilibrates in ~1 second.
 
         Note:
-            After completion, WhiteBalance is set to Off but the calibrated
-            analog gains (Gain_AnalogRed/Gain_AnalogBlue) are preserved.
+            The camera's internal AWB corrections persist after setting Off.
             For reproducible calibration with saved settings, use
             JAIWhiteBalanceCalibrator instead.
         """
         import time
-
-        # Log pre-AWB analog gains
-        try:
-            pre_red = float(self._get_property(self.GAIN_ANALOG_RED))
-            pre_blue = float(self._get_property(self.GAIN_ANALOG_BLUE))
-            logger.info(
-                "Pre-AWB analog gains: R=%.3f, B=%.3f", pre_red, pre_blue
-            )
-        except Exception:
-            pre_red, pre_blue = 1.0, 1.0
 
         # Start continuous acquisition if not already running so the camera
         # receives frames for the AWB algorithm to analyze.
@@ -893,93 +883,49 @@ class JAICameraProperties:
             logger.warning("Could not start streaming for AWB: %s", e)
 
         try:
-            # Set Continuous mode -- camera adjusts gains every frame
+            # Set Continuous mode -- camera adjusts internal WB every frame
             self._set_property(self.WHITE_BALANCE, "Continuous")
             logger.info(
-                "Running AWB in Continuous mode (max %.1fs)...", max_seconds
+                "Running AWB Continuous for %.1fs...", equilibration_seconds
             )
 
-            # Poll analog gains until they stabilize
-            prev_red, prev_blue = pre_red, pre_blue
-            stable_count = 0
-            start = time.time()
-            while time.time() - start < max_seconds:
-                time.sleep(poll_interval)
-                try:
-                    cur_red = float(
-                        self._get_property(self.GAIN_ANALOG_RED)
-                    )
-                    cur_blue = float(
-                        self._get_property(self.GAIN_ANALOG_BLUE)
-                    )
-                except Exception:
-                    continue
-
-                delta_r = abs(cur_red - prev_red)
-                delta_b = abs(cur_blue - prev_blue)
-                logger.debug(
-                    "AWB poll: R=%.3f (d=%.4f), B=%.3f (d=%.4f)",
-                    cur_red, delta_r, cur_blue, delta_b,
-                )
-
-                if delta_r < 0.005 and delta_b < 0.005:
-                    stable_count += 1
-                    if stable_count >= 3:
-                        logger.info(
-                            "AWB converged: R=%.3f, B=%.3f "
-                            "(stable for %d polls)",
-                            cur_red, cur_blue, stable_count,
-                        )
-                        break
-                else:
-                    stable_count = 0
-
-                prev_red, prev_blue = cur_red, cur_blue
-            else:
-                logger.warning(
-                    "AWB did not fully stabilize within %.1fs "
-                    "(last: R=%.3f, B=%.3f)",
-                    max_seconds, prev_red, prev_blue,
-                )
-
-            # Disable AWB -- gains are preserved
-            self.set_white_balance_mode("Off")
+            # Wait for the camera's internal AWB to equilibrate.
+            # The camera typically converges in ~1 second.
+            time.sleep(equilibration_seconds)
 
         finally:
-            # Stop streaming if we started it
+            # IMPORTANT: Stop streaming BEFORE setting WhiteBalance to Off.
+            # The WhiteBalance property cannot be written while streaming is
+            # active (GenICam error 11018).
             if we_started_streaming:
                 try:
                     if self.core.is_sequence_running():
                         self.core.stop_sequence_acquisition()
                         logger.info("Stopped streaming after AWB calibration")
+                        time.sleep(0.2)  # Let camera settle
                 except Exception as e:
                     logger.warning(
                         "Could not stop streaming after AWB: %s", e
                     )
 
-        # Log final analog gains
+        # Set Off -- internal AWB corrections persist even after Off
         try:
-            post_red = float(self._get_property(self.GAIN_ANALOG_RED))
-            post_blue = float(self._get_property(self.GAIN_ANALOG_BLUE))
-            logger.info(
-                "Post-AWB analog gains: R=%.3f, B=%.3f", post_red, post_blue
-            )
-            if abs(post_red - 1.0) < 0.01 and abs(post_blue - 1.0) < 0.01:
-                logger.warning(
-                    "AWB analog gains still at 1.0 after calibration -- "
-                    "AWB may not have had effect. Check that the scene is "
-                    "illuminated and not too dark."
-                )
-        except Exception:
-            pass
+            self.set_white_balance_mode("Off")
+            logger.info("Set WhiteBalance to Off (internal corrections persist)")
+        except Exception as e:
+            logger.warning("Could not set WhiteBalance to Off: %s", e)
 
         logger.info("Auto white balance complete")
 
     def clear_awb_corrections(self) -> None:
-        """Clear any AWB corrections stored in analog gain registers.
+        """Clear AWB state and reset analog gains to neutral.
 
-        AWB Continuous/Once stores corrections in Gain_AnalogRed/Gain_AnalogBlue.
-        Setting WB mode to 'Off' does NOT clear these -- must explicitly write 1.0.
+        Sets WhiteBalance to Off (clearing any internal AWB corrections from
+        Continuous mode) and resets Gain_AnalogRed/Gain_AnalogBlue to 1.0
+        (clearing any manually-set analog gain corrections from calibration).
+
+        Used by simple/per_angle WB modes to ensure a clean starting state
+        before applying their own per-channel exposure and gain values.
 
         IMPORTANT: Streaming must be stopped before calling this method.
         Gain properties (Gain_AnalogRed, GainIsIndividual) cannot be written
