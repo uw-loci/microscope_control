@@ -970,12 +970,44 @@ class JAICameraProperties:
                 time.time() - start, frames_drained,
             )
 
+            # Read Temperature BEFORE setting Off to see what AWB calculated
+            try:
+                temp_before = self.core.get_property(
+                    "JAICamera", "JAICamera-Temperature"
+                )
+                logger.info("AWB Temperature before Off: %s", temp_before)
+            except Exception:
+                try:
+                    temp_before = self.core.get_property(
+                        "JAICamera", "Temperature"
+                    )
+                    logger.info("AWB Temperature before Off: %s", temp_before)
+                except Exception:
+                    logger.info("Could not read Temperature property")
+
             # Set Off -- same pattern as setting Continuous above.
             self._set_property(self.WHITE_BALANCE, "Off")
-            logger.info(
-                "Set WhiteBalance to Off "
-                "(internal Temperature corrections persist)"
-            )
+
+            # Read Temperature AFTER setting Off to see if corrections persist
+            try:
+                temp_after = self.core.get_property(
+                    "JAICamera", "JAICamera-Temperature"
+                )
+                logger.info(
+                    "Set WhiteBalance to Off. Temperature after: %s",
+                    temp_after,
+                )
+            except Exception:
+                try:
+                    temp_after = self.core.get_property(
+                        "JAICamera", "Temperature"
+                    )
+                    logger.info(
+                        "Set WhiteBalance to Off. Temperature after: %s",
+                        temp_after,
+                    )
+                except Exception:
+                    logger.info("Set WhiteBalance to Off")
 
         finally:
             # Stop streaming

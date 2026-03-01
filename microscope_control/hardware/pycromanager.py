@@ -315,12 +315,16 @@ class PycromanagerHardware(MicroscopeHardware):
             self.core.set_property("MicroPublisher6", "Color", "OFF")
 
         # Handle white balance for JAI - set WB algorithm to Off to prevent
-        # the camera from actively adjusting colors during acquisition. This
-        # does NOT clear the internal AWB Temperature corrections, so
-        # camera_awb mode corrections survive this write.
+        # the camera from actively adjusting colors during acquisition.
         if camera == "JAICamera":
             t_wb_start = time.perf_counter()
             try:
+                # Log Temperature before Off write (diagnostic for AWB)
+                try:
+                    temp = self.core.get_property("JAICamera", "Temperature")
+                    logger.debug(f"    JAI Temperature before snap Off: {temp}")
+                except Exception:
+                    pass
                 self.core.set_property("JAICamera", "WhiteBalance", "Off")
             except Exception as e:
                 logger.debug(f"    WhiteBalance property not writable (non-fatal): {e}")
