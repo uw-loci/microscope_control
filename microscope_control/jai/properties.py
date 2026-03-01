@@ -844,7 +844,7 @@ class JAICameraProperties:
             logger.info(f"Set white balance mode to: {mode} (verified on final check)")
 
     def run_auto_white_balance(
-        self, equilibration_seconds: float = 1.5
+        self, equilibration_seconds: float = 2.0
     ) -> None:
         """
         Run auto white balance using camera's Continuous mode with streaming.
@@ -853,14 +853,16 @@ class JAICameraProperties:
         pipeline -- NOT through the Gain_AnalogRed/Gain_AnalogBlue registers
         (those always read 1.0 regardless of AWB state). This method:
         1. Starts continuous acquisition so the camera receives frames
-        2. Sets WhiteBalance to "Continuous"
-        3. Waits for the internal AWB to equilibrate (~1-2 seconds)
+        2. Sets WhiteBalance to "Continuous" (with verification)
+        3. Actively drains the circular buffer so the camera keeps delivering
+           new frames for the AWB algorithm to analyze
         4. Stops streaming (must stop BEFORE writing WhiteBalance property)
         5. Sets WhiteBalance to "Off" (internal corrections persist)
 
         Args:
             equilibration_seconds: Time to let AWB Continuous run before
-                stopping. Camera typically equilibrates in ~1 second.
+                stopping. Camera typically equilibrates in ~1 second;
+                default 2.0s provides margin.
 
         Note:
             The camera's internal AWB corrections persist after setting Off.
@@ -883,15 +885,53 @@ class JAICameraProperties:
             logger.warning("Could not start streaming for AWB: %s", e)
 
         try:
-            # Set Continuous mode -- camera adjusts internal WB every frame
+            # Set Continuous mode -- camera adjusts internal WB every frame.
+            # Use _set_property (not set_white_balance_mode which does
+            # read-back verification that may conflict with streaming).
             self._set_property(self.WHITE_BALANCE, "Continuous")
+            time.sleep(0.1)
+
+            # Verify Continuous mode was actually set
+            actual_mode = self.get_white_balance_mode()
+            if actual_mode != "Continuous":
+                logger.error(
+                    "Failed to set WhiteBalance to Continuous "
+                    "(read-back: '%s'). AWB may not calibrate.",
+                    actual_mode,
+                )
+            else:
+                logger.info("WhiteBalance set to Continuous (verified)")
+
             logger.info(
-                "Running AWB Continuous for %.1fs...", equilibration_seconds
+                "Running AWB Continuous for %.1fs "
+                "(draining buffer so camera keeps processing frames)...",
+                equilibration_seconds,
             )
 
-            # Wait for the camera's internal AWB to equilibrate.
-            # The camera typically converges in ~1 second.
-            time.sleep(equilibration_seconds)
+            # Actively drain the circular buffer during equilibration.
+            # If the buffer fills up, the camera stops delivering new frames
+            # and the AWB algorithm stalls (can't analyze new images).
+            # MicroManager's live mode works because it continuously reads
+            # frames; we must do the same.
+            drain_interval = 0.1  # Check buffer every 100ms
+            start = time.time()
+            frames_drained = 0
+            while time.time() - start < equilibration_seconds:
+                # Pop all available frames from the circular buffer
+                remaining = self.core.get_remaining_image_count()
+                while remaining > 0:
+                    try:
+                        self.core.pop_next_image()
+                        frames_drained += 1
+                    except Exception:
+                        break
+                    remaining = self.core.get_remaining_image_count()
+                time.sleep(drain_interval)
+
+            logger.info(
+                "AWB equilibration complete (%.1fs, %d frames drained)",
+                time.time() - start, frames_drained,
+            )
 
         finally:
             # IMPORTANT: Stop streaming BEFORE setting WhiteBalance to Off.
