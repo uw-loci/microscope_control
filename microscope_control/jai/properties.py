@@ -947,12 +947,16 @@ class JAICameraProperties:
             # If the buffer fills up, the camera stops delivering new frames
             # and the AWB algorithm stalls. MicroManager's live mode works
             # because it continuously reads frames; we must do the same.
+            # IMPORTANT: Check time in the inner loop too -- each core call
+            # goes through ZMQ and can be slow under contention, so the
+            # inner loop could overshoot the time limit significantly.
             drain_interval = 0.05  # 50ms for better throughput
             start = time.time()
+            end_time = start + equilibration_seconds
             frames_drained = 0
-            while time.time() - start < equilibration_seconds:
+            while time.time() < end_time:
                 remaining = self.core.get_remaining_image_count()
-                while remaining > 0:
+                while remaining > 0 and time.time() < end_time:
                     try:
                         self.core.pop_next_image()
                         frames_drained += 1
