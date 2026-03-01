@@ -1083,8 +1083,13 @@ class JAICameraProperties:
         IMPORTANT: Streaming must be stopped before calling this method.
         Gain properties (Gain_AnalogRed, GainIsIndividual) cannot be written
         during active streaming (error 11018).
+
+        Note: Uses _set_property() directly for the Off write, not the
+        set_white_balance_mode() wrapper. The retry wrapper's read-back
+        verification fails for Continuous->Off transitions (read-back
+        returns stale "Continuous" value).
         """
-        self.set_white_balance_mode("Off")
+        self._set_property(self.WHITE_BALANCE, "Off")
         self.set_rb_analog_gains(red=1.0, blue=1.0)
         logger.info("Cleared AWB corrections (WB Off + analog gains reset to 1.0)")
 
