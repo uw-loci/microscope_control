@@ -653,9 +653,14 @@ class PycromanagerHardware(MicroscopeHardware):
 
                 img, tags = self.snap_image()
 
-                # Extract green channel for focus calculation
+                # Extract green channel for focus calculation.
+                # JAI 3-CCD: use green channel only (index 1). The blue CCD
+                # has low quantum efficiency and at analog gain 1.0 produces
+                # dim, noisy signal that corrupts the laplacian_variance metric.
+                # Green is the reference channel (always gain 1.0) with the
+                # best signal-to-noise ratio.
                 if self.core.get_property("Core", "Camera") == "JAICamera":
-                    img_gray = np.mean(img, 2)
+                    img_gray = img[:, :, 1].astype(np.float32)
                 else:
                     # TODO: debayer to go to gray ?
                     # TODO support other cameras!
@@ -859,12 +864,17 @@ class PycromanagerHardware(MicroscopeHardware):
                 logger.error(f"Failed to acquire image at Z={z}")
                 return -np.inf
 
-            # Process image
-            if len(img.shape) == 2:  # Bayer pattern
+            # Process image to grayscale for focus metric.
+            # JAI 3-CCD: use green channel only (index 1) -- same
+            # rationale as sweep AF (blue CCD noise, green is
+            # reference channel with best SNR).
+            if len(img.shape) == 3 and self.core.get_property("Core", "Camera") == "JAICamera":
+                img_gray = img[:, :, 1].astype(np.float32)
+            elif len(img.shape) == 2:  # Bayer pattern
                 green1 = img[0::2, 0::2]
                 green2 = img[1::2, 1::2]
                 img_gray = ((green1 + green2) / 2.0).astype(np.float32)
-            elif len(img.shape) == 3:  # RGB image
+            elif len(img.shape) == 3:  # RGB image (non-JAI)
                 img_gray = skimage.color.rgb2gray(img)
             else:
                 img_gray = img.astype(np.float32)
