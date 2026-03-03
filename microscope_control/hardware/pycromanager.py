@@ -112,9 +112,7 @@ class PycromanagerHardware(MicroscopeHardware):
         self.studio = studio
         self.settings = settings
 
-        ## PPM Specific attributes
-
-        ## PPM Specific attributes
+        ## Rotation stage attributes (initialized by _initialize_microscope_methods)
         self.psg_angle = None
         self.rotation_device = None
 
@@ -139,23 +137,22 @@ class PycromanagerHardware(MicroscopeHardware):
         """Initialize microscope-specific methods based on settings.
 
         This can be called both during __init__ and when settings are updated.
+        Detects rotation stage capability from the modalities config section
+        rather than checking the microscope name.
         """
         microscope_info = self.settings.get("microscope", {})
         microscope_name = microscope_info.get("name", "")
 
-        if microscope_name == "PPM":
-            ppm_optics_value = self.settings.get("ppm_optics", "ZCutQuartz")
-            logger.info(
-                f"DEBUG: ppm_optics value = {ppm_optics_value!r} (type: {type(ppm_optics_value).__name__})"
-            )
-            if ppm_optics_value != "NA":
+        # Detect rotation stage from modalities config (capability-based)
+        rotation_config = self._find_rotation_stage_config()
+        if rotation_config is not None:
+            r_device_name, optics_disabled = rotation_config
 
-                self.set_psg_ticks = self._ppm_set_psgticks
-                self.get_psg_ticks = self._ppm_get_psgticks
-                self.home_psg = self._ppm_home
+            if not optics_disabled:
+                self.set_psg_ticks = self._set_rotation_ticks
+                self.get_psg_ticks = self._get_rotation_ticks
+                self.home_psg = self._home_rotation
 
-                ppm_config = self.settings.get("modalities", {}).get("ppm", {})
-                r_device_name = ppm_config.get("rotation_stage", {}).get("device")
                 self.rotation_device = (
                     self.settings.get("id_stage", {}).get(r_device_name, {}).get("device")
                 )
@@ -165,43 +162,53 @@ class PycromanagerHardware(MicroscopeHardware):
                         f"Expected device '{r_device_name}' in id_stage section."
                     )
                 try:
-                    _ = self._ppm_get_psgticks()  # initialize psg_angle
-                    logger.info("PPM-specific methods initialized")
+                    _ = self._get_rotation_ticks()  # initialize psg_angle
+                    logger.info("Rotation stage methods initialized (device: %s)", r_device_name)
                 except Exception as e:
-                    # logger.error("Failed to initialize PPM rotation stage", e)
                     print("Rot-stage Exception: ", e)
-                    logger.info("Continuing without PPM rotation stage functionality")
+                    logger.info("Continuing without rotation stage functionality")
             else:
-                logger.info("PPM optics not installed, skipping PPM-specific methods")
+                logger.info("Rotation optics disabled (ppm_optics=NA), using dummy rotation methods")
                 self.psg_angle = 0.0
 
-                # self.get_psg_ticks = lambda theta: self.psg_angle
-                # self.set_psg_ticks = lambda theta: (print(f"Setting psg_angle to: {theta}"), setattr(self, 'psg_angle', theta))[1]
                 def dummy_get_psg_ticks():
-                    logger.info("PPM optics not installed, skipping PPM-specific methods")
                     return self.psg_angle
 
                 def dummy_set_psg_ticks(theta):
-                    logger.info("PPM optics not installed, skipping PPM-specific methods")
                     self.psg_angle = theta
 
                 def dummy_home_psg():
-                    logger.info("PPM optics not installed, skipping PPM-specific methods")
                     self.psg_angle = 0.0
 
                 self.home_psg = dummy_home_psg
                 self.set_psg_ticks = dummy_set_psg_ticks
                 self.get_psg_ticks = dummy_get_psg_ticks
 
-                # TODO: change the ppm properties to mutable container
-                ## MUTATBLE CONTAINER SOLUTION
-                # state = {'theta': 0}
-                # get_psg_ticks = lambda : state['theta']
-                # set_psg_ticks = lambda theta: state.update({'theta':theta}) or theta
-
         if microscope_name == "CAMM":
             self.swap_objective_lens = self._camm_swap_objective_lens
             logger.info("CAMM-specific methods initialized")
+
+    def _find_rotation_stage_config(self):
+        """Check modalities config for a rotation stage.
+
+        Returns:
+            Tuple of (device_name, optics_disabled) if a rotation stage is
+            configured, or None if no modality has a rotation stage.
+            optics_disabled is True when ppm_optics == "NA" (hardware present
+            but disabled).
+        """
+        modalities = self.settings.get("modalities", {})
+        for mod_name, mod_config in modalities.items():
+            if not isinstance(mod_config, dict):
+                continue
+            rot_stage = mod_config.get("rotation_stage", {})
+            if isinstance(rot_stage, dict) and rot_stage.get("device"):
+                # Check if optics are disabled (ppm_optics == "NA")
+                optics_disabled = (
+                    self.settings.get("ppm_optics", "ZCutQuartz") == "NA"
+                )
+                return (rot_stage["device"], optics_disabled)
+        return None
 
     def move_to_position(self, position: Position) -> None:
         """Move stage to specified position."""
@@ -1008,8 +1015,8 @@ class PycromanagerHardware(MicroscopeHardware):
 
         return device_dict
 
-    def _ppm_set_psgticks(self, theta: float) -> None:
-        """Set the PPM rotation stage to a specific angle."""
+    def _set_rotation_ticks(self, theta: float) -> None:
+        """Set the rotation stage to a specific angle."""
         # Try to get rotation stage device from settings
         rotation_device = self.rotation_device
 
@@ -1030,8 +1037,8 @@ class PycromanagerHardware(MicroscopeHardware):
                              supports only [KBD101_Thor_Rotation, PIZStage]"
             )
 
-    def _ppm_get_psgticks(self) -> float:
-        """Get the current PPM rotation angle."""
+    def _get_rotation_ticks(self) -> float:
+        """Get the current rotation stage angle."""
         rotation_device = self.rotation_device
 
         if rotation_device == "PIZStage":
@@ -1046,8 +1053,8 @@ class PycromanagerHardware(MicroscopeHardware):
                              supports only [KBD101_Thor_Rotation, PIZStage]"
             )
 
-    def _ppm_home(self) -> None:
-        """Set the PPM rotation stage to a specific angle."""
+    def _home_rotation(self) -> None:
+        """Home the rotation stage."""
         # Try to get rotation stage device from settings
         rotation_device = self.rotation_device
         self.core.home(rotation_device)

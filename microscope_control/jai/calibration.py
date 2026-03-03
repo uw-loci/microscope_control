@@ -354,7 +354,7 @@ class JAIWhiteBalanceCalibrator:
         self,
         config: Optional[CalibrationConfig] = None,
         output_path: Optional[Path] = None,
-        ppm_rotation_callback: Optional[Callable[[float], None]] = None,
+        rotation_callback: Optional[Callable[[float], None]] = None,
         defocus_callback: Optional[Callable[[float], Tuple[float, Callable]]] = None,
     ) -> WhiteBalanceResult:
         """
@@ -378,8 +378,8 @@ class JAIWhiteBalanceCalibrator:
         Args:
             config: Calibration configuration. Uses defaults if None.
             output_path: Optional path to save diagnostic output (histograms, log)
-            ppm_rotation_callback: Optional callback to set PPM rotation angle.
-                                  Called with angle=90 for max intensity during calibration.
+            rotation_callback: Optional callback to set rotation stage angle.
+                                  Called with angle (e.g. 90) for max intensity during calibration.
             defocus_callback: Optional callback to defocus the stage.
                              Takes offset_um, returns (original_z, restore_callback).
 
@@ -418,10 +418,10 @@ class JAIWhiteBalanceCalibrator:
 
             # Step 2: Setup for calibration
             # Set PPM to 90 degrees (max intensity) if callback provided
-            if ppm_rotation_callback is not None:
+            if rotation_callback is not None:
                 try:
                     original_ppm_angle = self.hardware.get_psg_ticks()
-                    ppm_rotation_callback(90.0)
+                    rotation_callback(90.0)
                     logger.info("Set PPM rotation to 90 degrees for calibration")
                     time.sleep(0.5)
                 except Exception as e:
@@ -983,7 +983,7 @@ class JAIWhiteBalanceCalibrator:
             # Restore PPM rotation if we changed it
             if original_ppm_angle is not None:
                 try:
-                    ppm_rotation_callback(original_ppm_angle)
+                    rotation_callback(original_ppm_angle)
                     logger.info(f"Restored PPM rotation to {original_ppm_angle} degrees")
                 except Exception as e:
                     logger.warning(f"Failed to restore PPM rotation: {e}")
@@ -1796,8 +1796,8 @@ class JAIWhiteBalanceCalibrator:
         Args:
             config_path: Path to the main config file (e.g., config_PPM.yml)
             result: Calibration results to save
-            calibration_type: 'simple' for single calibration, 'ppm' for per-angle
-            angle_name: For PPM calibration, the angle name (e.g., 'negative', 'crossed')
+            calibration_type: 'simple' for single calibration, 'per_angle' for per-angle
+            angle_name: For per-angle calibration, the angle name (e.g., 'negative', 'crossed')
             modality: Modality name (e.g., 'ppm') for imaging_profiles update
             objective: Objective ID for imaging_profiles update
             detector: Detector ID for imaging_profiles update
@@ -2042,7 +2042,7 @@ class JAIWhiteBalanceCalibrator:
         result = self.calibrate(
             config=config,
             output_path=output_path,
-            ppm_rotation_callback=None,
+            rotation_callback=None,
             defocus_callback=None,
         )
         result.wb_method = "manual_simple"
@@ -2054,7 +2054,7 @@ class JAIWhiteBalanceCalibrator:
         target: float = 180.0,
         tolerance: float = 5.0,
         output_path: Optional[Path] = None,
-        ppm_rotation_callback: Optional[Callable[[float], None]] = None,
+        rotation_callback: Optional[Callable[[float], None]] = None,
         per_angle_targets: Optional[Dict[str, float]] = None,
         gain_threshold_ratio: Optional[float] = None,
         max_iterations: Optional[int] = None,
@@ -2082,7 +2082,7 @@ class JAIWhiteBalanceCalibrator:
             tolerance: Acceptable deviation from target
             output_path: Optional base path to save calibration results.
                         Results are saved to {output_path}/{angle_name}/ subdirectories.
-            ppm_rotation_callback: Callback function to rotate PPM stage.
+            rotation_callback: Callback function to rotate stage.
                                   Takes angle in degrees as argument.
             per_angle_targets: Optional dictionary mapping angle names to target intensities.
                               Example: {'crossed': 125.0, 'positive': 160.0, 'negative': 160.0, 'uncrossed': 245.0}
@@ -2162,9 +2162,9 @@ class JAIWhiteBalanceCalibrator:
             config = CalibrationConfig(**config_kwargs)
 
             # Rotate to target angle
-            if ppm_rotation_callback is not None:
+            if rotation_callback is not None:
                 try:
-                    ppm_rotation_callback(angle)
+                    rotation_callback(angle)
                     time.sleep(0.5)  # Allow rotation to stabilize
                 except Exception as e:
                     logger.warning(f"Failed to rotate PPM to {angle} deg: {e}")
@@ -2183,7 +2183,7 @@ class JAIWhiteBalanceCalibrator:
             result = self.calibrate(
                 config=config,
                 output_path=angle_output,
-                ppm_rotation_callback=None,  # Already at target angle
+                rotation_callback=None,  # Already at target angle
                 defocus_callback=None,
             )
             result.wb_method = "manual_ppm"
