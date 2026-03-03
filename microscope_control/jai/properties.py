@@ -176,20 +176,31 @@ class JAICameraProperties:
                 f"Failed to get property '{property_name}' from {self.device_name}: {e}"
             )
 
-    def _set_property(self, property_name: str, value: Any) -> None:
+    def _set_property(
+        self, property_name: str, value: Any, wait: bool = True
+    ) -> None:
         """
         Set a property value on the camera.
 
         Args:
             property_name: Name of the property
             value: Value to set
+            wait: If True (default), call wait_for_device after setting.
+                Set to False for WhiteBalance Off transitions -- the JAI
+                camera's wait_for_device triggers a device state refresh
+                that clears internal AWB corrections accumulated during
+                Continuous mode. MicroManager's GUI does not call
+                wait_for_device after property sets, which is why AWB
+                corrections persist when set to Off via MM but not via
+                Pycromanager.
 
         Raises:
             RuntimeError: If property cannot be set
         """
         try:
             self.core.set_property(self.device_name, property_name, str(value))
-            self.core.wait_for_device(self.device_name)
+            if wait:
+                self.core.wait_for_device(self.device_name)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to set property '{property_name}' to '{value}' on "
@@ -813,7 +824,12 @@ class JAICameraProperties:
             )
 
         for attempt in range(1, max_retries + 1):
-            self._set_property(self.WHITE_BALANCE, mode)
+            # Use wait=False for "Off" to preserve AWB corrections.
+            # wait_for_device clears internal AWB corrections from
+            # Continuous mode. Callers who want to explicitly clear
+            # corrections should use clear_awb_corrections() instead.
+            skip_wait = mode == "Off"
+            self._set_property(self.WHITE_BALANCE, mode, wait=not skip_wait)
             time.sleep(0.1)  # Brief settle before read-back
 
             # "Once" auto-returns to "Off" after calibration, so skip verification
@@ -985,8 +1001,34 @@ class JAICameraProperties:
                 except Exception:
                     logger.info("Could not read Temperature property")
 
-            # Set Off -- same pattern as setting Continuous above.
-            self._set_property(self.WHITE_BALANCE, "Off")
+            # Set Off WITHOUT wait_for_device. The JAI camera's
+            # wait_for_device clears internal AWB corrections accumulated
+            # during Continuous mode. MicroManager's own GUI does not call
+            # wait_for_device after setting properties, which is why AWB
+            # corrections persist when set to Off via MM but not via our code.
+            self._set_property(self.WHITE_BALANCE, "Off", wait=False)
+            time.sleep(0.2)  # Brief settle instead of wait_for_device
+
+            # Verify Off actually took effect
+            actual_mode = self.get_white_balance_mode()
+            if actual_mode != "Off":
+                logger.warning(
+                    "WhiteBalance not Off after first attempt "
+                    "(read-back: '%s'). Retrying...", actual_mode,
+                )
+                time.sleep(0.3)
+                self._set_property(self.WHITE_BALANCE, "Off", wait=False)
+                time.sleep(0.2)
+                actual_mode = self.get_white_balance_mode()
+                if actual_mode != "Off":
+                    logger.error(
+                        "CRITICAL: WhiteBalance still '%s' after 2 attempts. "
+                        "AWB Continuous may stay active.", actual_mode,
+                    )
+                else:
+                    logger.info("WhiteBalance set to Off on retry (verified)")
+            else:
+                logger.info("WhiteBalance set to Off (verified)")
 
             # Read Temperature AFTER setting Off to see if corrections persist
             try:
@@ -994,7 +1036,8 @@ class JAICameraProperties:
                     "JAICamera", "JAICamera-Temperature"
                 )
                 logger.info(
-                    "Set WhiteBalance to Off. Temperature after: %s",
+                    "AWB Temperature after Off: %s "
+                    "(should match before-Off if corrections persist)",
                     temp_after,
                 )
             except Exception:
@@ -1003,11 +1046,11 @@ class JAICameraProperties:
                         "JAICamera", "Temperature"
                     )
                     logger.info(
-                        "Set WhiteBalance to Off. Temperature after: %s",
+                        "AWB Temperature after Off: %s",
                         temp_after,
                     )
                 except Exception:
-                    logger.info("Set WhiteBalance to Off")
+                    pass
 
         finally:
             # Stop streaming
@@ -1073,9 +1116,10 @@ class JAICameraProperties:
     def clear_awb_corrections(self) -> None:
         """Clear AWB state and reset analog gains to neutral.
 
-        Sets WhiteBalance to Off (clearing any internal AWB corrections from
-        Continuous mode) and resets Gain_AnalogRed/Gain_AnalogBlue to 1.0
-        (clearing any manually-set analog gain corrections from calibration).
+        Sets WhiteBalance to Off (with wait_for_device, which clears any
+        internal AWB corrections from Continuous mode) and resets
+        Gain_AnalogRed/Gain_AnalogBlue to 1.0 (clearing any manually-set
+        analog gain corrections from calibration).
 
         Used by simple/per_angle WB modes to ensure a clean starting state
         before applying their own per-channel exposure and gain values.
@@ -1084,12 +1128,13 @@ class JAICameraProperties:
         Gain properties (Gain_AnalogRed, GainIsIndividual) cannot be written
         during active streaming (error 11018).
 
-        Note: Uses _set_property() directly for the Off write, not the
-        set_white_balance_mode() wrapper. The retry wrapper's read-back
-        verification fails for Continuous->Off transitions (read-back
-        returns stale "Continuous" value).
+        Note: Uses wait=True (default) because we WANT to clear AWB
+        corrections here. In contrast, run_auto_white_balance() uses
+        wait=False to PRESERVE corrections. The JAI camera's
+        wait_for_device clears internal AWB corrections accumulated
+        during Continuous mode.
         """
-        self._set_property(self.WHITE_BALANCE, "Off")
+        self._set_property(self.WHITE_BALANCE, "Off")  # wait=True clears corrections
         self.set_rb_analog_gains(red=1.0, blue=1.0)
         logger.info("Cleared AWB corrections (WB Off + analog gains reset to 1.0)")
 
