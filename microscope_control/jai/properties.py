@@ -1001,13 +1001,27 @@ class JAICameraProperties:
                 except Exception:
                     logger.info("Could not read Temperature property")
 
+        finally:
+            # Stop streaming BEFORE setting Off. The JAI camera rejects
+            # the Continuous->Off transition while actively streaming.
+            if we_started_streaming:
+                try:
+                    if self.core.is_sequence_running():
+                        self.core.stop_sequence_acquisition()
+                        logger.info("Stopped streaming before setting Off")
+                        time.sleep(0.3)  # Let camera settle after stream stop
+                except Exception as e:
+                    logger.warning(
+                        "Could not stop streaming after AWB: %s", e
+                    )
+
             # Set Off WITHOUT wait_for_device. The JAI camera's
             # wait_for_device clears internal AWB corrections accumulated
             # during Continuous mode. MicroManager's own GUI does not call
             # wait_for_device after setting properties, which is why AWB
             # corrections persist when set to Off via MM but not via our code.
             self._set_property(self.WHITE_BALANCE, "Off", wait=False)
-            time.sleep(0.2)  # Brief settle instead of wait_for_device
+            time.sleep(0.2)  # Brief settle
 
             # Verify Off actually took effect
             actual_mode = self.get_white_balance_mode()
@@ -1016,9 +1030,9 @@ class JAICameraProperties:
                     "WhiteBalance not Off after first attempt "
                     "(read-back: '%s'). Retrying...", actual_mode,
                 )
-                time.sleep(0.3)
+                time.sleep(0.5)
                 self._set_property(self.WHITE_BALANCE, "Off", wait=False)
-                time.sleep(0.2)
+                time.sleep(0.3)
                 actual_mode = self.get_white_balance_mode()
                 if actual_mode != "Off":
                     logger.error(
@@ -1052,19 +1066,6 @@ class JAICameraProperties:
                 except Exception:
                     pass
 
-        finally:
-            # Stop streaming
-            if we_started_streaming:
-                try:
-                    if self.core.is_sequence_running():
-                        self.core.stop_sequence_acquisition()
-                        logger.info("Stopped streaming after AWB calibration")
-                        time.sleep(0.2)
-                except Exception as e:
-                    logger.warning(
-                        "Could not stop streaming after AWB: %s", e
-                    )
-
         # Clear circular buffer
         try:
             self.core.clear_circular_buffer()
@@ -1096,7 +1097,7 @@ class JAICameraProperties:
                 self.core.get_property("JAICamera", "Exposure")
             )
             self.core.set_property("JAICamera", "Exposure", current_exp)
-            if abs(readback - test_exp) < 1.0:
+            if abs(readback - test_exp) < 0.1:
                 logger.info(
                     "Post-AWB exposure control verified: "
                     "set %.1f, read %.1f (OK)", test_exp, readback
