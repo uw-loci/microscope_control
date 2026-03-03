@@ -212,9 +212,13 @@ class PycromanagerHardware(MicroscopeHardware):
 
     def move_to_position(self, position: Position) -> None:
         """Move stage to specified position."""
+        t_total = time.perf_counter()
+
         # Get current position and populate any missing coordinates
+        t0 = time.perf_counter()
         current_position = self.get_current_position()
         position.populate_missing(current_position)
+        t_get_pos = (time.perf_counter() - t0) * 1000
 
         # Validate position is within range
         if not is_coordinate_in_range(self.settings, position):
@@ -230,12 +234,26 @@ class PycromanagerHardware(MicroscopeHardware):
             self.core.set_focus_device(z_stage_device)
 
         # Move to position
+        t0 = time.perf_counter()
         self.core.set_position(position.z)
         self.core.set_xy_position(position.x, position.y)
-        self.core.wait_for_device(self.core.get_xy_stage_device())
-        self.core.wait_for_device(self.core.get_focus_device())
+        t_set = (time.perf_counter() - t0) * 1000
 
-        logger.debug(f"Moved to position: {position}")
+        t0 = time.perf_counter()
+        self.core.wait_for_device(self.core.get_xy_stage_device())
+        t_wait_xy = (time.perf_counter() - t0) * 1000
+
+        t0 = time.perf_counter()
+        self.core.wait_for_device(self.core.get_focus_device())
+        t_wait_z = (time.perf_counter() - t0) * 1000
+
+        t_total_ms = (time.perf_counter() - t_total) * 1000
+        logger.debug(
+            f"move_to_position timing: total={t_total_ms:.0f}ms "
+            f"[get_pos={t_get_pos:.0f}ms, set={t_set:.0f}ms, "
+            f"wait_xy={t_wait_xy:.0f}ms, wait_z={t_wait_z:.0f}ms] "
+            f"-> {position}"
+        )
 
     def get_current_position(self, max_retries: int = 3) -> Position:
         """Get current stage position with retry on transient serial errors."""
