@@ -344,10 +344,10 @@ class PycromanagerHardware(MicroscopeHardware):
         if camera == "JAICamera":
             t_wb_start = time.perf_counter()
             try:
-                # Log Temperature before Off write (diagnostic for AWB)
+                # Log sensor temperature (diagnostic)
                 try:
                     temp = self.core.get_property("JAICamera", "Temperature")
-                    logger.debug(f"    JAI Temperature before snap Off: {temp}")
+                    logger.debug(f"    JAI sensor temperature before snap Off: {temp}")
                 except Exception:
                     pass
                 self.core.set_property("JAICamera", "WhiteBalance", "Off")
