@@ -26,9 +26,8 @@ props = JAICameraProperties(core)
 props.enable_individual_exposure()
 props.set_channel_exposures(red=50.0, green=60.0, blue=70.0)
 
-# Use camera's built-in auto white balance
-props.run_auto_white_balance()  # One-shot calibration
-# Or use presets: props.set_white_balance_preset(5000)  # 5000K preset
+# Camera AWB must be set manually in MicroManager's Device Property Browser.
+# To clear AWB: restart MicroManager and wait ~30 seconds.
 
 # Automated calibration with saved settings (default tolerance=2 for 2-level precision)
 calibrator = JAIWhiteBalanceCalibrator(hardware)

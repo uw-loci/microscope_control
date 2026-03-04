@@ -269,33 +269,24 @@ Switching between unified and individual exposure/gain modes on the JAI camera c
 
 If Micro-Manager's live mode is active during calibration, it can interfere with frame capture. The calibrator should either stop live mode before calibration or use a separate capture path.
 
-### Camera AWB (Auto White Balance) -- Implementation Details
+### Camera AWB (Auto White Balance)
 
-The JAI camera's built-in AWB adjusts the internal `Temperature` property (color temperature) through a continuous feedback loop. It does NOT use the `Gain_AnalogRed`/`Gain_AnalogBlue` registers -- those always read 1.0 during/after AWB.
+The JAI camera's hardware AWB **cannot be reliably controlled through Pycromanager** due to issues on both the camera and MicroManager side. The programmatic `run_auto_white_balance()` and `set_white_balance_mode()` methods have been removed.
 
-**Key requirements for AWB to work:**
+**To use Camera AWB:**
 
-1. **Low calibration exposure**: AWB calibrates at uncrossed (90-deg), the brightest angle. At 20x, the correct exposure is ~0.5-0.7ms. Anything higher saturates the sensor and the AWB algorithm cannot determine color ratios. The `run_auto_white_balance()` method uses `calibration_exposure_ms=0.5` by default.
+1. Open MicroManager's **Device Property Browser**
+2. Find **JAICamera -> WhiteBalance**
+3. Set to **"Continuous"** (ensure Live mode is active so the camera receives frames)
+4. Wait for colors to converge (~3-5 seconds)
+5. Set WhiteBalance back to **"Off"**
 
-2. **Continuous frame delivery**: The camera needs many frames (~100+) through a continuous feedback loop to adjust Temperature. Single-frame snaps (`snap_image()`) bypass the AWB pipeline entirely. The implementation starts continuous acquisition and actively drains the circular buffer every 50ms to prevent stalling.
+**To clear AWB:** Restart MicroManager and wait ~30 seconds. The `clear_awb_corrections()` method clears analog gains and sets WhiteBalance to Off, but AWB corrections set through MicroManager's GUI may persist.
 
-3. **3+ seconds equilibration**: AWB needs sustained frame delivery to converge. At 38 Hz frame rate and 0.5ms exposure, ~100 frames are delivered in 3 seconds. Fewer than ~10 frames is insufficient.
-
-4. **Off write uses `_set_property` directly**: After AWB converges, the Off write must use `self._set_property(self.WHITE_BALANCE, "Off")` -- the same simple pattern as setting Continuous. The heavier `set_white_balance_mode("Off")` wrapper with retry/read-back verification does not work reliably for transitioning from Continuous to Off. The read-back may return stale cached values.
-
-5. **Drain loop time guard**: The inner drain loop (`while remaining > 0`) must also check `time.time() < end_time`. Each Micro-Manager core call goes through ZMQ and can be slow under contention from other threads. Without the time check, the drain loop can overshoot by 8+ seconds.
-
-6. **Java socket timeout**: AWB calibration takes ~5-6 seconds total. The Java `MicroscopeSocketClient.setWhiteBalanceMode(2)` increases the socket read timeout to 15 seconds for mode 2 (AWB). Without this, the default 5-second timeout causes the Java side to time out and send subsequent commands while AWB streaming is still active, triggering error 11018 on all subsequent operations.
-
-7. **Save/restore exposure**: Original exposure and frame rate are saved before AWB and restored afterward. AWB runs at 0.5ms but acquisitions may need much longer exposures.
-
-**Temperature property:**
-- The `Temperature` property is a single value that controls color temperature (like white point)
-- AWB Continuous adjusts this property through an internal feedback loop
-- The Temperature setting persists after setting WhiteBalance to Off
-- Reading Temperature before/after Off confirms whether AWB made adjustments
-
-See `properties.py:run_auto_white_balance()` (line 846) for the full implementation.
+**Temperature property (physical sensor temperature):**
+- The `Temperature` property (JAICamera-Temperature) is the physical sensor temperature in degrees C -- a thermal reading
+- It is NOT a color temperature or white balance parameter
+- AWB corrections are stored in an opaque internal pipeline and cannot be read via any exposed property
 
 ### Gain State Persistence
 
