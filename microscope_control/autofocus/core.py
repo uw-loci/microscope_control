@@ -64,6 +64,19 @@ class AutofocusUtils:
         if not positions:
             return [], af_min_distance
 
+        total_tiles = len(positions)
+
+        # SAFETY: For small grids (<= 9 tiles), autofocus at every position.
+        # The normal distance-based spacing can skip most tiles on small grids,
+        # leading to dangerous focus drift (e.g., 200um out of focus on a 6-tile grid).
+        if total_tiles <= 9:
+            af_positions = list(range(total_tiles))
+            logger.info(
+                f"Small grid ({total_tiles} tiles <= 9) - "
+                f"autofocus at ALL {total_tiles} positions for safety"
+            )
+            return af_positions, 0.0
+
         # Determine the first autofocus position index
         # For grids with >= 9 tiles, move 1 diagonal FOV inward to avoid edge issues
         first_af_index = 0
@@ -427,6 +440,17 @@ class AutofocusUtils:
                     f"No ideal autofocus position found, using tile {candidate_idx} as backup"
                 )
             return candidate_idx
+
+        # If no forward candidates (at/near last tile), search backward for unchecked positions
+        already_checked = set(original_af_positions) if original_af_positions else set()
+        for candidate_idx in range(current_pos_idx - 1, -1, -1):
+            if candidate_idx not in already_checked:
+                if logger:
+                    logger.warning(
+                        f"No forward deferral positions - falling back to "
+                        f"backward tile {candidate_idx} (unchecked)"
+                    )
+                return candidate_idx
 
         if logger:
             logger.warning(
