@@ -211,18 +211,20 @@ class PycromanagerHardware(MicroscopeHardware):
         return None
 
     def move_to_position(self, position: Position) -> None:
-        """Move stage to specified position."""
+        """Move stage to specified position.
+
+        Only moves and validates axes that are explicitly specified (not None).
+        For example, Position(x, y) moves XY only without touching or validating Z.
+        """
         t_total = time.perf_counter()
 
-        # Get current position and populate any missing coordinates
-        t0 = time.perf_counter()
-        current_position = self.get_current_position()
-        position.populate_missing(current_position)
-        t_get_pos = (time.perf_counter() - t0) * 1000
+        # Record which axes were originally specified BEFORE any population
+        has_xy = position.x is not None and position.y is not None
+        has_z = position.z is not None
 
-        # Validate position is within range
+        # Validate only the axes that were specified
         if not is_coordinate_in_range(self.settings, position):
-            logger.info("Current stage limits:", self.settings["stage"])
+            logger.info(f"Current stage limits: {self.settings.get('stage', {})}")
             logger.info(f"Requested position: {position}")
             raise ValueError(f"Position out of range: {position}")
 
@@ -230,27 +232,34 @@ class PycromanagerHardware(MicroscopeHardware):
         stage_config = self.settings.get("stage", {})
         z_stage_device = stage_config.get("z_stage", None)
 
-        if z_stage_device and self.core.get_focus_device() != z_stage_device:
+        if has_z and z_stage_device and self.core.get_focus_device() != z_stage_device:
             self.core.set_focus_device(z_stage_device)
 
-        # Move to position
+        # Move only the specified axes
         t0 = time.perf_counter()
-        self.core.set_position(position.z)
-        self.core.set_xy_position(position.x, position.y)
+        if has_z:
+            self.core.set_position(position.z)
+        if has_xy:
+            self.core.set_xy_position(position.x, position.y)
         t_set = (time.perf_counter() - t0) * 1000
 
-        t0 = time.perf_counter()
-        self.core.wait_for_device(self.core.get_xy_stage_device())
-        t_wait_xy = (time.perf_counter() - t0) * 1000
+        t_wait_xy = 0
+        t_wait_z = 0
 
-        t0 = time.perf_counter()
-        self.core.wait_for_device(self.core.get_focus_device())
-        t_wait_z = (time.perf_counter() - t0) * 1000
+        if has_xy:
+            t0 = time.perf_counter()
+            self.core.wait_for_device(self.core.get_xy_stage_device())
+            t_wait_xy = (time.perf_counter() - t0) * 1000
+
+        if has_z:
+            t0 = time.perf_counter()
+            self.core.wait_for_device(self.core.get_focus_device())
+            t_wait_z = (time.perf_counter() - t0) * 1000
 
         t_total_ms = (time.perf_counter() - t_total) * 1000
         logger.debug(
             f"move_to_position timing: total={t_total_ms:.0f}ms "
-            f"[get_pos={t_get_pos:.0f}ms, set={t_set:.0f}ms, "
+            f"[set={t_set:.0f}ms, "
             f"wait_xy={t_wait_xy:.0f}ms, wait_z={t_wait_z:.0f}ms] "
             f"-> {position}"
         )

@@ -76,43 +76,49 @@ def is_coordinate_in_range(settings: Dict[str, Any], position: Position) -> bool
     # Check if stage limits exist in settings
     stage_limits = settings.get('stage', {}).get('limits', {})
 
-    # Check X limits
-    x_limits = stage_limits.get('x_um', {})
-    if x_limits and position.x is not None:
-        x_low = x_limits.get('low')
-        x_high = x_limits.get('high')
-
-        if x_low is not None and x_high is not None:
-            if x_low <= position.x <= x_high:
-                _within_x_limit = True
-            else:
-                logger.warning(f"X position {position.x} out of range [{x_low}, {x_high}]")
-                warnings.warn(f"X position {position.x} out of range [{x_low}, {x_high}]")
-        else:
-            logger.warning(f"X limit values are not properly defined: {x_limits}")
-            warnings.warn(f"X limit values are not properly defined: {x_limits}")
+    # Check X limits (skip if x not specified -- axis not being moved)
+    if position.x is None:
+        _within_x_limit = True
     else:
-        logger.warning("X limits not found in configuration")
-        warnings.warn("X limits not found in configuration")
+        x_limits = stage_limits.get('x_um', {})
+        if x_limits:
+            x_low = x_limits.get('low')
+            x_high = x_limits.get('high')
 
-    # Check Y limits
-    y_limits = stage_limits.get('y_um', {})
-    if y_limits and position.y is not None:
-        y_low = y_limits.get('low')
-        y_high = y_limits.get('high')
-
-        if y_low is not None and y_high is not None:
-            if y_low <= position.y <= y_high:
-                _within_y_limit = True
+            if x_low is not None and x_high is not None:
+                if x_low <= position.x <= x_high:
+                    _within_x_limit = True
+                else:
+                    logger.warning(f"X position {position.x} out of range [{x_low}, {x_high}]")
+                    warnings.warn(f"X position {position.x} out of range [{x_low}, {x_high}]")
             else:
-                logger.warning(f"Y position {position.y} out of range [{y_low}, {y_high}]")
-                warnings.warn(f"Y position {position.y} out of range [{y_low}, {y_high}]")
+                logger.warning(f"X limit values are not properly defined: {x_limits}")
+                warnings.warn(f"X limit values are not properly defined: {x_limits}")
         else:
-            logger.warning(f"Y limit values are not properly defined: {y_limits}")
-            warnings.warn(f"Y limit values are not properly defined: {y_limits}")
+            logger.warning("X limits not found in configuration")
+            warnings.warn("X limits not found in configuration")
+
+    # Check Y limits (skip if y not specified -- axis not being moved)
+    if position.y is None:
+        _within_y_limit = True
     else:
-        logger.warning("Y limits not found in configuration")
-        warnings.warn("Y limits not found in configuration")
+        y_limits = stage_limits.get('y_um', {})
+        if y_limits:
+            y_low = y_limits.get('low')
+            y_high = y_limits.get('high')
+
+            if y_low is not None and y_high is not None:
+                if y_low <= position.y <= y_high:
+                    _within_y_limit = True
+                else:
+                    logger.warning(f"Y position {position.y} out of range [{y_low}, {y_high}]")
+                    warnings.warn(f"Y position {position.y} out of range [{y_low}, {y_high}]")
+            else:
+                logger.warning(f"Y limit values are not properly defined: {y_limits}")
+                warnings.warn(f"Y limit values are not properly defined: {y_limits}")
+        else:
+            logger.warning("Y limits not found in configuration")
+            warnings.warn("Y limits not found in configuration")
 
     # If no Z position specified, just check X and Y
     if position.z is None:
