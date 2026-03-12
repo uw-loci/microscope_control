@@ -148,6 +148,14 @@ class JAICameraProperties:
             logger.error(f"Failed to validate JAI camera: {e}")
             return False
 
+    def supports_individual_exposure(self) -> bool:
+        """Check if this camera supports individual exposure mode (PR #781).
+
+        Returns:
+            True if ExposureIsIndividual property exists on the device
+        """
+        return self._property_exists(self.EXPOSURE_INDIVIDUAL)
+
     def _property_exists(self, property_name: str) -> bool:
         """Check if a property exists on the device."""
         try:
