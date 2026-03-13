@@ -32,7 +32,11 @@ autofocus = AutofocusUtils(hardware, settings)
 best_z = autofocus.run_autofocus(current_position)
 """
 
-__version__ = "1.0.0"
+try:
+    from importlib.metadata import version as _get_version
+    __version__ = _get_version("microscope-control")
+except Exception:
+    __version__ = "0.0.0.dev"
 __author__ = "Mike Nelson, Bin Li, Jenu Chacko"
 
 # Make key classes easily accessible
