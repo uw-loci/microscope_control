@@ -178,4 +178,8 @@ Current automated tests achieve ~75-85% coverage for testable components:
 
 ## License
 
-MIT License
+MIT License - see [LICENSE](LICENSE) for details.
+
+## AI-Assisted Development
+
+This project was developed with assistance from [Claude](https://claude.ai) (Anthropic). Claude was used as a development tool for code generation, architecture design, debugging, and documentation throughout the project.
