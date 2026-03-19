@@ -283,6 +283,24 @@ class PycromanagerHardware(MicroscopeHardware):
                 else:
                     raise
 
+    def set_z_no_wait(self, z: float) -> None:
+        """Set Z target position without waiting for the device to arrive.
+
+        Issues core.set_position(z) but skips wait_for_device(), allowing the
+        caller to return immediately while the stage ramps toward the target.
+        Used by sweep-focus to start a continuous Z ramp.
+        """
+        stage_config = self.settings.get("stage", {})
+        z_stage_device = stage_config.get("z_stage", None)
+        if z_stage_device and self.core.get_focus_device() != z_stage_device:
+            self.core.set_focus_device(z_stage_device)
+        self.core.set_position(z)
+        logger.debug(f"set_z_no_wait: target Z={z}")
+
+    def get_z_position(self) -> float:
+        """Get current Z position only (no X/Y read). Faster than get_current_position()."""
+        return self.core.get_position()
+
     def snap_image(self, background_correction=False, remove_alpha=True, debayering="auto"):
         """
         Snap an image using MM Core and return img, tags.
