@@ -1138,16 +1138,35 @@ class PycromanagerHardware(MicroscopeHardware):
             self.core.wait_for_device(z_dev)
             return initial_z
 
-        # Find peak
+        # Log the full score profile for diagnostics
         z_arr = np.array([m[0] for m in measurements])
         scores = np.array([m[1] for m in measurements])
+        profile = " | ".join(f"{z:.1f}:{s:.0f}" for z, s in measurements)
+        logger.info(f"Sweep scores: {profile}")
+
         best_idx = int(np.argmax(scores))
 
-        # If peak is at either boundary, we didn't find a real focus peak
-        # -- the profile is monotonic or noisy. Keep current Z.
+        # If peak is at either boundary, the profile is monotonic or noisy
+        # -- no real focus peak found. Keep current Z.
         if best_idx == 0 or best_idx == len(measurements) - 1:
             logger.info(f"Sweep drift check: peak at boundary (idx={best_idx}), "
-                       f"keeping current Z ({elapsed:.0f}ms, {len(measurements)} pts)")
+                       f"keeping current Z ({elapsed:.0f}ms)")
+            self.core.set_position(initial_z)
+            self.core.wait_for_device(z_dev)
+            return initial_z
+
+        # Find the score at (or nearest to) the starting Z position
+        start_idx = int(np.argmin(np.abs(z_arr - initial_z)))
+        start_score = scores[start_idx]
+        peak_score = scores[best_idx]
+
+        # Only move if peak score is >5% better than the starting position.
+        # If we're already in focus, score differences across the sweep
+        # are noise and we should not chase them.
+        improvement = (peak_score - start_score) / max(start_score, 1.0)
+        if improvement < 0.05:
+            logger.info(f"Sweep drift check: peak improvement {improvement:.1%} "
+                       f"< 5%, keeping current Z ({elapsed:.0f}ms)")
             self.core.set_position(initial_z)
             self.core.wait_for_device(z_dev)
             return initial_z
@@ -1168,7 +1187,7 @@ class PycromanagerHardware(MicroscopeHardware):
         self.core.set_position(best_z)
         self.core.wait_for_device(z_dev)
 
-        logger.info(f"Sweep drift check: {drift:+.2f}um "
+        logger.info(f"Sweep drift check: {drift:+.2f}um, improvement {improvement:.1%} "
                     f"({len(measurements)} pts in {elapsed:.0f}ms)")
         return best_z
 
