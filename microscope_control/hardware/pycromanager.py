@@ -1087,29 +1087,42 @@ class PycromanagerHardware(MicroscopeHardware):
         logger.info(f"Sweep drift check: {n_steps} steps of {step:.2f}um "
                     f"over [{z_start:.1f} -> {z_end:.1f}] (current={initial_z:.1f})")
 
+        # Use direct core snap for speed -- bypasses WhiteBalance property
+        # writes and other per-snap overhead in self.snap_image() that adds
+        # ~1.5s per image.  For focus scoring we only need sharpness, not
+        # color accuracy.
+        z_device_name = z_stage_device or self.core.get_focus_device()
+
         measurements = []
         try:
             for i in range(n_steps + 1):
                 z = z_start + i * step
                 self.core.set_position(z)
-                self.core.wait_for_device(
-                    z_stage_device or self.core.get_focus_device()
-                )
+                self.core.wait_for_device(z_device_name)
 
-                img, _ = self.snap_image()
-                if img is None:
-                    continue
+                # Lightweight snap: core.snap + get_tagged_image, no property
+                # writes or color processing
+                self.core.snap_image()
+                tagged = self.core.get_tagged_image()
+                pixels = tagged.pix
+                height, width = tagged.tags["Height"], tagged.tags["Width"]
+                total = pixels.shape[0]
+                nch = total // (height * width)
+                if nch > 1:
+                    img = pixels.reshape(height, width, nch)
+                else:
+                    img = pixels.reshape(height, width)
 
                 # Convert to grayscale for scoring
-                if len(img.shape) == 2:
-                    # Bayer pattern -- extract green channels
-                    green1 = img[0::2, 0::2]
-                    green2 = img[1::2, 1::2]
-                    img_gray = ((green1 + green2) / 2.0).astype(np.float32)
-                elif len(img.shape) == 3:
-                    img_gray = skimage.color.rgb2gray(img)
-                else:
+                if len(img.shape) == 3:
+                    # RGB -- simple luminance (avoid skimage import overhead)
+                    img_gray = (0.2989 * img[:, :, 0].astype(np.float32)
+                                + 0.5870 * img[:, :, 1].astype(np.float32)
+                                + 0.1140 * img[:, :, 2].astype(np.float32))
+                elif len(img.shape) == 2:
                     img_gray = img.astype(np.float32)
+                else:
+                    continue
 
                 score = score_metric(img_gray)
                 if hasattr(score, "ndim") and score.ndim == 2:
