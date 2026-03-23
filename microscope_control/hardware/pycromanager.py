@@ -1032,32 +1032,27 @@ class PycromanagerHardware(MicroscopeHardware):
         self,
         range_um=10.0,
         n_steps=5,
-        score_metric=None,
     ) -> float:
-        """Quick drift check using a rapid Z sweep around the current position.
+        """Quick drift check by sweeping Z with continuous camera streaming.
 
-        Sweeps +/- range_um/2 in a few large steps, scoring each frame
-        with a fast sharpness metric, then moves to the interpolated peak.
-        Designed for speed (~1s) -- just enough to detect 1-2um of drift.
+        Starts continuous acquisition, ramps Z in small blocking steps,
+        grabs the latest frame from the circular buffer at each position,
+        and scores it with pixel variance (histogram spread). No per-frame
+        snap overhead, no property writes -- just buffer reads.
 
-        If the sweep fails for any reason (too few measurements, flat
-        profile, hardware error), the stage is returned to its starting Z
-        and the current position is returned unchanged.
+        Designed for speed (<1s for 6 points over 10um). If the sweep
+        fails for any reason, returns the starting Z unchanged.
 
         Args:
             range_um: Total sweep range in micrometers (default 10 = +/-5um)
-            n_steps: Number of Z positions to sample (default 5)
-            score_metric: Focus scoring function (default: Brenner gradient)
+            n_steps: Number of Z positions to sample (default 5 -> 6 pts)
 
         Returns:
             The best-focus Z position (or current Z if sweep failed).
         """
-        if score_metric is None:
-            score_metric = AutofocusUtils.autofocus_profile_brenner_gradient
-
         initial_z = self.get_z_position()
 
-        # Get Z limits from settings
+        # Get Z limits
         stage_limits = self.settings.get("stage", {}).get("limits", {})
         z_limits = stage_limits.get("z_um", {})
         z_min = z_limits.get("low", -10000)
@@ -1069,71 +1064,86 @@ class PycromanagerHardware(MicroscopeHardware):
 
         actual_range = z_end - z_start
         if actual_range < 1.0:
-            logger.warning("Sweep drift check: range too small after clamping "
+            logger.warning("Sweep drift check: range too small "
                           f"({actual_range:.1f}um), keeping current Z")
             return initial_z
 
         step = actual_range / n_steps
 
-        # Get Z stage device for direct core calls
+        # Z device setup
         stage_config = self.settings.get("stage", {})
         z_stage_device = stage_config.get("z_stage", None)
         if z_stage_device and self.core.get_focus_device() != z_stage_device:
             self.core.set_focus_device(z_stage_device)
-        z_device_name = z_stage_device or self.core.get_focus_device()
+        z_dev = z_stage_device or self.core.get_focus_device()
 
         logger.info(f"Sweep drift check: {n_steps + 1} pts, {step:.1f}um step "
-                    f"over [{z_start:.1f} -> {z_end:.1f}] (current={initial_z:.1f})")
+                    f"[{z_start:.1f} -> {z_end:.1f}] (current={initial_z:.1f})")
 
+        t0 = time.perf_counter()
         measurements = []
+        was_streaming = self.core.is_sequence_running()
+
         try:
+            # Start streaming if not already running
+            if not was_streaming:
+                self.core.clear_circular_buffer()
+                self.core.start_continuous_sequence_acquisition(0)
+                # Brief pause to let first frames fill the buffer
+                time.sleep(0.05)
+
             for i in range(n_steps + 1):
                 z = z_start + i * step
                 self.core.set_position(z)
-                self.core.wait_for_device(z_device_name)
+                self.core.wait_for_device(z_dev)
 
-                # Lightweight snap -- no property writes, no color processing.
-                # Just grab raw pixels and score sharpness on one channel.
-                self.core.snap_image()
-                tagged = self.core.get_tagged_image()
-                pixels = tagged.pix
-                h, w = tagged.tags["Height"], tagged.tags["Width"]
-                nch = pixels.shape[0] // (h * w)
+                # Brief settle for the frame buffer to catch up to the new Z
+                time.sleep(0.03)
 
-                # Score on green channel (or grayscale) -- no conversion needed
-                if nch > 1:
-                    # Multi-channel: use green (index 1 in BGRA layout)
-                    img = pixels.reshape(h, w, nch)[:, :, 1].astype(np.float32)
-                else:
-                    img = pixels.reshape(h, w).astype(np.float32)
+                # Grab latest frame from circular buffer (near-instant)
+                if self.core.get_remaining_image_count() == 0:
+                    time.sleep(0.05)  # One more try
+                if self.core.get_remaining_image_count() == 0:
+                    continue  # Skip this position
 
-                score = float(score_metric(img))
+                pixels = self.core.get_last_image()
+                if pixels is None:
+                    continue
+
+                # Score with pixel variance (histogram spread) -- the
+                # simplest possible focus metric, ~0.1ms on any array size.
+                # In-focus images have wider intensity distribution.
+                score = float(np.var(pixels))
                 measurements.append((z, score))
 
         except Exception as e:
-            logger.warning(f"Sweep drift check failed: {e}, returning to initial Z")
-            self.core.set_position(initial_z)
-            self.core.wait_for_device(
-                z_stage_device or self.core.get_focus_device()
-            )
-            return initial_z
+            logger.warning(f"Sweep drift check failed: {e}")
+            # Fall through to cleanup below
+
+        finally:
+            # Stop streaming and clear buffer if we started it
+            if not was_streaming:
+                try:
+                    self.core.stop_sequence_acquisition()
+                    self.core.clear_circular_buffer()
+                except Exception:
+                    pass
+
+        elapsed = (time.perf_counter() - t0) * 1000
 
         if len(measurements) < 3:
-            logger.warning(f"Sweep drift check: only {len(measurements)} measurements, "
-                          "keeping current Z")
+            logger.warning(f"Sweep drift check: only {len(measurements)} "
+                          f"measurements in {elapsed:.0f}ms, keeping current Z")
             self.core.set_position(initial_z)
-            self.core.wait_for_device(
-                z_stage_device or self.core.get_focus_device()
-            )
+            self.core.wait_for_device(z_dev)
             return initial_z
 
-        # Find discrete best
+        # Find peak with quadratic interpolation
         z_arr = np.array([m[0] for m in measurements])
         scores = np.array([m[1] for m in measurements])
         best_idx = int(np.argmax(scores))
         best_z = z_arr[best_idx]
 
-        # Quadratic interpolation around peak
         if 0 < best_idx < len(measurements) - 1:
             z0, z1, z2 = z_arr[best_idx - 1], z_arr[best_idx], z_arr[best_idx + 1]
             s0, s1, s2 = scores[best_idx - 1], scores[best_idx], scores[best_idx + 1]
@@ -1146,12 +1156,10 @@ class PycromanagerHardware(MicroscopeHardware):
         # Move to best Z
         drift = best_z - initial_z
         self.core.set_position(best_z)
-        self.core.wait_for_device(
-            z_stage_device or self.core.get_focus_device()
-        )
+        self.core.wait_for_device(z_dev)
 
         logger.info(f"Sweep drift check: {drift:+.2f}um "
-                    f"({len(measurements)} pts, range={actual_range:.1f}um)")
+                    f"({len(measurements)} pts in {elapsed:.0f}ms)")
         return best_z
 
     def white_balance(self, img=None, background_image=None, gain=1.0, white_balance_profile=None):
