@@ -1031,34 +1031,31 @@ class PycromanagerHardware(MicroscopeHardware):
     def autofocus_sweep_drift_check(
         self,
         range_um=10.0,
-        n_steps=10,
+        n_steps=5,
         score_metric=None,
     ) -> float:
         """Quick drift check using a rapid Z sweep around the current position.
 
-        Sweeps +/- range_um/2 in small blocking steps, scoring each frame
-        with a focus metric, then moves to the peak.  Much faster than
-        autofocus_adaptive_search (~2-3s vs ~14s) because each step is a
-        tiny Z move (~1um) with minimal settle time.
+        Sweeps +/- range_um/2 in a few large steps, scoring each frame
+        with a fast sharpness metric, then moves to the interpolated peak.
+        Designed for speed (~1s) -- just enough to detect 1-2um of drift.
 
         If the sweep fails for any reason (too few measurements, flat
         profile, hardware error), the stage is returned to its starting Z
-        and the current position is returned unchanged -- the caller
-        continues with existing focus.
+        and the current position is returned unchanged.
 
         Args:
             range_um: Total sweep range in micrometers (default 10 = +/-5um)
-            n_steps: Number of Z positions to sample (default 10)
-            score_metric: Focus scoring function (default: Laplacian variance)
+            n_steps: Number of Z positions to sample (default 5)
+            score_metric: Focus scoring function (default: Brenner gradient)
 
         Returns:
             The best-focus Z position (or current Z if sweep failed).
         """
         if score_metric is None:
-            score_metric = AutofocusUtils.autofocus_profile_laplacian_variance
+            score_metric = AutofocusUtils.autofocus_profile_brenner_gradient
 
-        current_pos = self.get_current_position()
-        initial_z = current_pos.z
+        initial_z = self.get_z_position()
 
         # Get Z limits from settings
         stage_limits = self.settings.get("stage", {}).get("limits", {})
@@ -1078,20 +1075,15 @@ class PycromanagerHardware(MicroscopeHardware):
 
         step = actual_range / n_steps
 
-        # Get Z stage device for direct core calls (faster than move_to_position)
+        # Get Z stage device for direct core calls
         stage_config = self.settings.get("stage", {})
         z_stage_device = stage_config.get("z_stage", None)
         if z_stage_device and self.core.get_focus_device() != z_stage_device:
             self.core.set_focus_device(z_stage_device)
-
-        logger.info(f"Sweep drift check: {n_steps} steps of {step:.2f}um "
-                    f"over [{z_start:.1f} -> {z_end:.1f}] (current={initial_z:.1f})")
-
-        # Use direct core snap for speed -- bypasses WhiteBalance property
-        # writes and other per-snap overhead in self.snap_image() that adds
-        # ~1.5s per image.  For focus scoring we only need sharpness, not
-        # color accuracy.
         z_device_name = z_stage_device or self.core.get_focus_device()
+
+        logger.info(f"Sweep drift check: {n_steps + 1} pts, {step:.1f}um step "
+                    f"over [{z_start:.1f} -> {z_end:.1f}] (current={initial_z:.1f})")
 
         measurements = []
         try:
@@ -1100,34 +1092,23 @@ class PycromanagerHardware(MicroscopeHardware):
                 self.core.set_position(z)
                 self.core.wait_for_device(z_device_name)
 
-                # Lightweight snap: core.snap + get_tagged_image, no property
-                # writes or color processing
+                # Lightweight snap -- no property writes, no color processing.
+                # Just grab raw pixels and score sharpness on one channel.
                 self.core.snap_image()
                 tagged = self.core.get_tagged_image()
                 pixels = tagged.pix
-                height, width = tagged.tags["Height"], tagged.tags["Width"]
-                total = pixels.shape[0]
-                nch = total // (height * width)
+                h, w = tagged.tags["Height"], tagged.tags["Width"]
+                nch = pixels.shape[0] // (h * w)
+
+                # Score on green channel (or grayscale) -- no conversion needed
                 if nch > 1:
-                    img = pixels.reshape(height, width, nch)
+                    # Multi-channel: use green (index 1 in BGRA layout)
+                    img = pixels.reshape(h, w, nch)[:, :, 1].astype(np.float32)
                 else:
-                    img = pixels.reshape(height, width)
+                    img = pixels.reshape(h, w).astype(np.float32)
 
-                # Convert to grayscale for scoring
-                if len(img.shape) == 3:
-                    # RGB -- simple luminance (avoid skimage import overhead)
-                    img_gray = (0.2989 * img[:, :, 0].astype(np.float32)
-                                + 0.5870 * img[:, :, 1].astype(np.float32)
-                                + 0.1140 * img[:, :, 2].astype(np.float32))
-                elif len(img.shape) == 2:
-                    img_gray = img.astype(np.float32)
-                else:
-                    continue
-
-                score = score_metric(img_gray)
-                if hasattr(score, "ndim") and score.ndim == 2:
-                    score = np.mean(score)
-                measurements.append((z, float(score)))
+                score = float(score_metric(img))
+                measurements.append((z, score))
 
         except Exception as e:
             logger.warning(f"Sweep drift check failed: {e}, returning to initial Z")
