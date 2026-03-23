@@ -150,6 +150,7 @@ class PycromanagerHardware(MicroscopeHardware):
 
             if not optics_disabled:
                 self.set_psg_ticks = self._set_rotation_ticks
+                self.set_psg_ticks_no_wait = self._set_rotation_ticks_no_wait
                 self.get_psg_ticks = self._get_rotation_ticks
                 self.home_psg = self._home_rotation
 
@@ -177,11 +178,15 @@ class PycromanagerHardware(MicroscopeHardware):
                 def dummy_set_psg_ticks(theta):
                     self.psg_angle = theta
 
+                def dummy_set_psg_ticks_no_wait(theta):
+                    self.psg_angle = theta
+
                 def dummy_home_psg():
                     self.psg_angle = 0.0
 
                 self.home_psg = dummy_home_psg
                 self.set_psg_ticks = dummy_set_psg_ticks
+                self.set_psg_ticks_no_wait = dummy_set_psg_ticks_no_wait
                 self.get_psg_ticks = dummy_get_psg_ticks
 
         if microscope_name == "CAMM":
@@ -263,6 +268,19 @@ class PycromanagerHardware(MicroscopeHardware):
             f"wait_xy={t_wait_xy:.0f}ms, wait_z={t_wait_z:.0f}ms] "
             f"-> {position}"
         )
+
+    def move_xy_no_wait(self, x: float, y: float) -> None:
+        """Issue XY stage move without waiting for completion.
+
+        Call wait_for_xy() before any operation that depends on the
+        stage being at the target position (e.g., image acquisition).
+        """
+        self.core.set_xy_position(x, y)
+        logger.debug(f"move_xy_no_wait: target X={x:.2f}, Y={y:.2f}")
+
+    def wait_for_xy(self) -> None:
+        """Block until the XY stage reaches its target position."""
+        self.core.wait_for_device(self.core.get_xy_stage_device())
 
     def get_current_position(self, max_retries: int = 3) -> Position:
         """Get current stage position with retry on transient serial errors."""
@@ -1010,6 +1028,138 @@ class PycromanagerHardware(MicroscopeHardware):
 
         return best_z
 
+    def autofocus_sweep_drift_check(
+        self,
+        range_um=10.0,
+        n_steps=10,
+        score_metric=None,
+    ) -> float:
+        """Quick drift check using a rapid Z sweep around the current position.
+
+        Sweeps +/- range_um/2 in small blocking steps, scoring each frame
+        with a focus metric, then moves to the peak.  Much faster than
+        autofocus_adaptive_search (~2-3s vs ~14s) because each step is a
+        tiny Z move (~1um) with minimal settle time.
+
+        If the sweep fails for any reason (too few measurements, flat
+        profile, hardware error), the stage is returned to its starting Z
+        and the current position is returned unchanged -- the caller
+        continues with existing focus.
+
+        Args:
+            range_um: Total sweep range in micrometers (default 10 = +/-5um)
+            n_steps: Number of Z positions to sample (default 10)
+            score_metric: Focus scoring function (default: Laplacian variance)
+
+        Returns:
+            The best-focus Z position (or current Z if sweep failed).
+        """
+        if score_metric is None:
+            score_metric = AutofocusUtils.autofocus_profile_laplacian_variance
+
+        current_pos = self.get_current_position()
+        initial_z = current_pos.z
+
+        # Get Z limits from settings
+        stage_limits = self.settings.get("stage", {}).get("limits", {})
+        z_limits = stage_limits.get("z_um", {})
+        z_min = z_limits.get("low", -10000)
+        z_max = z_limits.get("high", 10000)
+
+        half = range_um / 2.0
+        z_start = max(initial_z - half, z_min + 5)
+        z_end = min(initial_z + half, z_max - 5)
+
+        actual_range = z_end - z_start
+        if actual_range < 1.0:
+            logger.warning("Sweep drift check: range too small after clamping "
+                          f"({actual_range:.1f}um), keeping current Z")
+            return initial_z
+
+        step = actual_range / n_steps
+
+        # Get Z stage device for direct core calls (faster than move_to_position)
+        stage_config = self.settings.get("stage", {})
+        z_stage_device = stage_config.get("z_stage", None)
+        if z_stage_device and self.core.get_focus_device() != z_stage_device:
+            self.core.set_focus_device(z_stage_device)
+
+        logger.info(f"Sweep drift check: {n_steps} steps of {step:.2f}um "
+                    f"over [{z_start:.1f} -> {z_end:.1f}] (current={initial_z:.1f})")
+
+        measurements = []
+        try:
+            for i in range(n_steps + 1):
+                z = z_start + i * step
+                self.core.set_position(z)
+                self.core.wait_for_device(
+                    z_stage_device or self.core.get_focus_device()
+                )
+
+                img, _ = self.snap_image()
+                if img is None:
+                    continue
+
+                # Convert to grayscale for scoring
+                if len(img.shape) == 2:
+                    # Bayer pattern -- extract green channels
+                    green1 = img[0::2, 0::2]
+                    green2 = img[1::2, 1::2]
+                    img_gray = ((green1 + green2) / 2.0).astype(np.float32)
+                elif len(img.shape) == 3:
+                    img_gray = skimage.color.rgb2gray(img)
+                else:
+                    img_gray = img.astype(np.float32)
+
+                score = score_metric(img_gray)
+                if hasattr(score, "ndim") and score.ndim == 2:
+                    score = np.mean(score)
+                measurements.append((z, float(score)))
+
+        except Exception as e:
+            logger.warning(f"Sweep drift check failed: {e}, returning to initial Z")
+            self.core.set_position(initial_z)
+            self.core.wait_for_device(
+                z_stage_device or self.core.get_focus_device()
+            )
+            return initial_z
+
+        if len(measurements) < 3:
+            logger.warning(f"Sweep drift check: only {len(measurements)} measurements, "
+                          "keeping current Z")
+            self.core.set_position(initial_z)
+            self.core.wait_for_device(
+                z_stage_device or self.core.get_focus_device()
+            )
+            return initial_z
+
+        # Find discrete best
+        z_arr = np.array([m[0] for m in measurements])
+        scores = np.array([m[1] for m in measurements])
+        best_idx = int(np.argmax(scores))
+        best_z = z_arr[best_idx]
+
+        # Quadratic interpolation around peak
+        if 0 < best_idx < len(measurements) - 1:
+            z0, z1, z2 = z_arr[best_idx - 1], z_arr[best_idx], z_arr[best_idx + 1]
+            s0, s1, s2 = scores[best_idx - 1], scores[best_idx], scores[best_idx + 1]
+            denom = 2.0 * (s0 - 2.0 * s1 + s2)
+            if abs(denom) > 1e-6:
+                z_peak = z1 - (s2 - s0) * (z2 - z0) / (2.0 * denom)
+                if min(z0, z2) <= z_peak <= max(z0, z2):
+                    best_z = z_peak
+
+        # Move to best Z
+        drift = best_z - initial_z
+        self.core.set_position(best_z)
+        self.core.wait_for_device(
+            z_stage_device or self.core.get_focus_device()
+        )
+
+        logger.info(f"Sweep drift check: {drift:+.2f}um "
+                    f"({len(measurements)} pts, range={actual_range:.1f}um)")
+        return best_z
+
     def white_balance(self, img=None, background_image=None, gain=1.0, white_balance_profile=None):
         """Apply white balance correction to image."""
         if white_balance_profile is None:
@@ -1081,6 +1231,29 @@ class PycromanagerHardware(MicroscopeHardware):
                 f"Unknown rotation device: {rotation_device} \
                              supports only [KBD101_Thor_Rotation, PIZStage]"
             )
+
+    def _set_rotation_ticks_no_wait(self, theta: float) -> None:
+        """Set the rotation stage to a specific angle without waiting.
+
+        Issues the move command and returns immediately. Call
+        wait_for_rotation() before any operation that depends on
+        the rotation being complete (e.g., image acquisition).
+        """
+        rotation_device = self.rotation_device
+
+        if rotation_device == "PIZStage":
+            theta_pistage = self.ppm_rlpangle_to_PIStage(theta)
+            self.core.set_position(rotation_device, theta_pistage)
+        elif rotation_device == "KBD101_Thor_Rotation":
+            theta_thor = ppm_psgticks_to_thor(theta)
+            self.core.set_position(rotation_device, theta_thor)
+        else:
+            raise ValueError(f"Unknown rotation device: {rotation_device}")
+        logger.debug(f"Set rotation angle (no wait) to {theta} deg")
+
+    def wait_for_rotation(self) -> None:
+        """Block until the rotation stage reaches its target position."""
+        self.core.wait_for_device(self.rotation_device)
 
     def _get_rotation_ticks(self) -> float:
         """Get the current rotation stage angle."""

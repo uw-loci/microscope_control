@@ -349,10 +349,13 @@ class JAICameraProperties:
         max_exposure = max(red, green, blue)
         self._adjust_frame_rate_for_exposure(max_exposure)
 
-        # Set per-channel exposures
-        self._set_property(self.EXPOSURE_RED, red)
-        self._set_property(self.EXPOSURE_GREEN, green)
-        self._set_property(self.EXPOSURE_BLUE, blue)
+        # Set all 3 channel exposures without intermediate wait_for_device
+        # calls. Each set_property queues the command; a single wait at the
+        # end ensures all three have taken effect before we return.
+        self.core.set_property(self.device_name, self.EXPOSURE_RED, str(red))
+        self.core.set_property(self.device_name, self.EXPOSURE_GREEN, str(green))
+        self.core.set_property(self.device_name, self.EXPOSURE_BLUE, str(blue))
+        self.core.wait_for_device(self.device_name)
 
         logger.info(f"Set channel exposures: R={red:.2f}ms, G={green:.2f}ms, B={blue:.2f}ms")
 
@@ -509,9 +512,11 @@ class JAICameraProperties:
                 f"({blue_min}-{blue_max}), clamped to {blue_clamped:.2f}"
             )
 
-        # Set R/B analog gains directly - these work without individual gain mode
-        self._set_property(self.GAIN_ANALOG_RED, red_clamped)
-        self._set_property(self.GAIN_ANALOG_BLUE, blue_clamped)
+        # Set R/B analog gains directly - these work without individual gain mode.
+        # Batch both writes with a single wait at the end.
+        self.core.set_property(self.device_name, self.GAIN_ANALOG_RED, str(red_clamped))
+        self.core.set_property(self.device_name, self.GAIN_ANALOG_BLUE, str(blue_clamped))
+        self.core.wait_for_device(self.device_name)
 
         logger.info(
             f"Set R/B analog gains (unified mode): "
