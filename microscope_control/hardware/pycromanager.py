@@ -1138,20 +1138,30 @@ class PycromanagerHardware(MicroscopeHardware):
             self.core.wait_for_device(z_dev)
             return initial_z
 
-        # Find peak with quadratic interpolation
+        # Find peak
         z_arr = np.array([m[0] for m in measurements])
         scores = np.array([m[1] for m in measurements])
         best_idx = int(np.argmax(scores))
+
+        # If peak is at either boundary, we didn't find a real focus peak
+        # -- the profile is monotonic or noisy. Keep current Z.
+        if best_idx == 0 or best_idx == len(measurements) - 1:
+            logger.info(f"Sweep drift check: peak at boundary (idx={best_idx}), "
+                       f"keeping current Z ({elapsed:.0f}ms, {len(measurements)} pts)")
+            self.core.set_position(initial_z)
+            self.core.wait_for_device(z_dev)
+            return initial_z
+
         best_z = z_arr[best_idx]
 
-        if 0 < best_idx < len(measurements) - 1:
-            z0, z1, z2 = z_arr[best_idx - 1], z_arr[best_idx], z_arr[best_idx + 1]
-            s0, s1, s2 = scores[best_idx - 1], scores[best_idx], scores[best_idx + 1]
-            denom = 2.0 * (s0 - 2.0 * s1 + s2)
-            if abs(denom) > 1e-6:
-                z_peak = z1 - (s2 - s0) * (z2 - z0) / (2.0 * denom)
-                if min(z0, z2) <= z_peak <= max(z0, z2):
-                    best_z = z_peak
+        # Quadratic interpolation around interior peak
+        z0, z1, z2 = z_arr[best_idx - 1], z_arr[best_idx], z_arr[best_idx + 1]
+        s0, s1, s2 = scores[best_idx - 1], scores[best_idx], scores[best_idx + 1]
+        denom = 2.0 * (s0 - 2.0 * s1 + s2)
+        if abs(denom) > 1e-6:
+            z_peak = z1 - (s2 - s0) * (z2 - z0) / (2.0 * denom)
+            if min(z0, z2) <= z_peak <= max(z0, z2):
+                best_z = z_peak
 
         # Move to best Z
         drift = best_z - initial_z
