@@ -1110,45 +1110,54 @@ class PycromanagerHardware(MicroscopeHardware):
 
         t0 = time.perf_counter()
         measurements = []
+        z_positions = [z_start + i * step for i in range(n_steps + 1)]
 
         try:
-            for i in range(n_steps + 1):
-                z = z_start + i * step
+            # Pipelined sweep: overlap Z movement with snap/score.
+            # After snapping at position i, immediately issue move to
+            # position i+1 (non-blocking). The stage moves during
+            # get_tagged_image + score, so the next wait_for_device
+            # returns instantly. Per-step time = max(snap, move) not
+            # snap + move.
+
+            # Move to first position (blocking, no overlap possible)
+            self.core.set_position(z_positions[0])
+            self.core.wait_for_device(z_dev)
+
+            for i in range(len(z_positions)):
                 t_step = time.perf_counter()
 
-                # Move Z (blocking)
-                self.core.set_position(z)
-                self.core.wait_for_device(z_dev)
+                # Stage is already at z_positions[i] (moved in previous
+                # iteration or in the initial blocking move above)
                 actual_z = self.core.get_position()
-                t_move = (time.perf_counter() - t_step) * 1000
 
-                # Snap image (direct core call, no WhiteBalance overhead)
+                # Snap at current position
                 self.core.snap_image()
+
+                # Immediately issue move to NEXT position (non-blocking).
+                # Stage starts moving while we read + score this frame.
+                if i < len(z_positions) - 1:
+                    self.core.set_position(z_positions[i + 1])
+
+                # Read image and score (stage moving in background)
                 tagged = self.core.get_tagged_image()
                 pixels = tagged.pix
-                t_snap = (time.perf_counter() - t_step) * 1000
-
-                # Score
                 score, green_mean = self._score_green_laplacian(
                     pixels, img_w, img_h, nch, cy, cx)
-                t_total = (time.perf_counter() - t_step) * 1000
 
+                # Wait for stage to arrive at next position (likely
+                # already there -- move takes ~190ms, read+score ~10ms)
+                if i < len(z_positions) - 1:
+                    self.core.wait_for_device(z_dev)
+
+                t_total = (time.perf_counter() - t_step) * 1000
                 measurements.append((actual_z, score))
-                logger.info(f"  Sweep step {i}: cmd_z={z:.1f} actual_z={actual_z:.2f} "
-                           f"score={score:.1f} green_mean={green_mean:.1f} "
-                           f"move={t_move:.0f}ms snap={t_snap:.0f}ms total={t_total:.0f}ms")
+                logger.info(f"  Sweep step {i}: z={actual_z:.2f} "
+                           f"score={score:.1f} mean={green_mean:.0f} "
+                           f"{t_total:.0f}ms")
 
         except Exception as e:
             logger.warning(f"Sweep drift check failed at step: {e}")
-
-        elapsed = (time.perf_counter() - t0) * 1000
-
-        if len(measurements) < 3:
-            logger.warning(f"Sweep drift check: only {len(measurements)} "
-                          f"measurements in {elapsed:.0f}ms, keeping current Z")
-            self.core.set_position(initial_z)
-            self.core.wait_for_device(z_dev)
-            return initial_z
 
         elapsed = (time.perf_counter() - t0) * 1000
 
