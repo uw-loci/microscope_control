@@ -1029,49 +1029,37 @@ class PycromanagerHardware(MicroscopeHardware):
 
         return best_z
 
-    def _grab_and_score(self, z, measurements, img_w, img_h, nch, cy, cx):
-        """Grab latest frame from circular buffer and score with Laplacian variance.
+    def _score_green_laplacian(self, pixels, img_w, img_h, nch, cy, cx):
+        """Score a frame with Laplacian variance on center-crop green channel.
 
-        Returns the measurements list with the new (z, score) appended,
-        or unchanged if no frame was available.
+        Returns (score, green_mean) or (None, None) if scoring fails.
         """
-        if self.core.get_remaining_image_count() == 0:
-            return measurements
-        pixels = self.core.get_last_image()
-        if pixels is None:
-            return measurements
-        # Extract green channel center crop
         if nch > 1:
             green = pixels.reshape(img_h, img_w, nch)[:, :, 1]
         else:
             green = pixels.reshape(img_h, img_w)
         roi = green[cy - 256:cy + 256, cx - 256:cx + 256].astype(np.float32)
         lap = scipy_laplace(roi)
-        score = float(np.var(lap))
-        measurements.append((z, score))
-        return measurements
+        return float(np.var(lap)), float(np.mean(roi))
 
     def autofocus_sweep_drift_check(
         self,
         range_um=10.0,
         n_steps=5,
     ) -> float:
-        """Quick drift check by ramping Z with continuous camera streaming.
+        """Drift check using stepped Z sweep with blocking moves and snaps.
 
-        Two-phase approach:
-        1. Move to z_start (blocking)
-        2. Issue non-blocking ramp to z_end, grab frames + read Z in a
-           tight loop while the stage is moving
+        Uses direct core.snap_image() at each Z position (no continuous
+        acquisition -- buffer frame freshness was unreliable). Scores
+        with Laplacian variance on center-crop green channel.
 
-        If the ramp doesn't yield enough frames (camera too slow or stage
-        too fast), falls back to a stepped approach with blocking moves.
+        Verbose diagnostic logging for debugging focus detection.
 
-        Scores frames with Laplacian variance on center-crop green channel.
         If sweep fails for any reason, returns starting Z unchanged.
 
         Args:
             range_um: Total sweep range in micrometers (default 10 = +/-5um)
-            n_steps: Minimum number of frames desired (default 5)
+            n_steps: Number of Z positions to sample (default 5 -> 6 pts)
 
         Returns:
             The best-focus Z position (or current Z if sweep failed).
@@ -1094,6 +1082,8 @@ class PycromanagerHardware(MicroscopeHardware):
                           f"({actual_range:.1f}um), keeping current Z")
             return initial_z
 
+        step = actual_range / n_steps
+
         # Z device setup
         stage_config = self.settings.get("stage", {})
         z_stage_device = stage_config.get("z_stage", None)
@@ -1101,90 +1091,64 @@ class PycromanagerHardware(MicroscopeHardware):
             self.core.set_focus_device(z_stage_device)
         z_dev = z_stage_device or self.core.get_focus_device()
 
-        # Cache image dimensions (avoid repeated core calls in tight loop)
+        # Cache image dimensions
         img_w = self.core.get_image_width()
         img_h = self.core.get_image_height()
         nch = self.core.get_number_of_components()
         cy, cx = img_h // 2, img_w // 2
 
-        logger.info(f"Sweep drift check: [{z_start:.1f} -> {z_end:.1f}] "
-                    f"(range={actual_range:.1f}um, current={initial_z:.1f})")
+        # Log camera state for diagnostics
+        try:
+            exposure = self.core.get_exposure()
+            logger.info(f"Sweep drift check: [{z_start:.1f} -> {z_end:.1f}] "
+                       f"step={step:.1f}um, range={actual_range:.1f}um, "
+                       f"current={initial_z:.1f}, exposure={exposure:.2f}ms, "
+                       f"img={img_w}x{img_h}x{nch}")
+        except Exception:
+            logger.info(f"Sweep drift check: [{z_start:.1f} -> {z_end:.1f}] "
+                       f"step={step:.1f}um, current={initial_z:.1f}")
 
         t0 = time.perf_counter()
         measurements = []
-        was_streaming = self.core.is_sequence_running()
 
         try:
-            # Start streaming if not already running
-            if not was_streaming:
-                self.core.clear_circular_buffer()
-                self.core.start_continuous_sequence_acquisition(0)
-                time.sleep(0.05)  # Let first frames fill buffer
+            for i in range(n_steps + 1):
+                z = z_start + i * step
+                t_step = time.perf_counter()
 
-            # Phase 1: Move to start position (blocking)
-            self.core.set_position(z_start)
-            self.core.wait_for_device(z_dev)
+                # Move Z (blocking)
+                self.core.set_position(z)
+                self.core.wait_for_device(z_dev)
+                actual_z = self.core.get_position()
+                t_move = (time.perf_counter() - t_step) * 1000
 
-            # Grab a frame at z_start before ramping
-            time.sleep(0.03)
-            measurements = self._grab_and_score(
-                z_start, measurements, img_w, img_h, nch, cy, cx)
+                # Snap image (direct core call, no WhiteBalance overhead)
+                self.core.snap_image()
+                tagged = self.core.get_tagged_image()
+                pixels = tagged.pix
+                t_snap = (time.perf_counter() - t_step) * 1000
 
-            # Phase 2: Issue non-blocking ramp to z_end, grab frames
-            # while stage is moving
-            self.core.set_position(z_end)  # Non-blocking: no wait_for_device
+                # Score
+                score, green_mean = self._score_green_laplacian(
+                    pixels, img_w, img_h, nch, cy, cx)
+                t_total = (time.perf_counter() - t_step) * 1000
 
-            ramp_start = time.perf_counter()
-            ramp_timeout = 2.0  # Max seconds to wait for ramp
-            last_z = z_start
-
-            while (time.perf_counter() - ramp_start) < ramp_timeout:
-                # Read actual Z position (fast, ~1ms)
-                current_z = self.core.get_position()
-
-                # Only score if Z moved at least 0.5um since last measurement
-                if abs(current_z - last_z) >= 0.5:
-                    measurements = self._grab_and_score(
-                        current_z, measurements, img_w, img_h, nch, cy, cx)
-                    last_z = current_z
-
-                # Check if stage arrived at destination
-                if abs(current_z - z_end) < 0.3:
-                    break
-
-                time.sleep(0.01)  # Brief yield to avoid busy-spin
-
-            # Grab final frame at z_end
-            self.core.wait_for_device(z_dev)
-            final_z = self.core.get_position()
-            measurements = self._grab_and_score(
-                final_z, measurements, img_w, img_h, nch, cy, cx)
-
-            # If ramp didn't yield enough frames, fall back to stepped
-            if len(measurements) < 3:
-                logger.info("Ramp yielded only %d frames, using stepped fallback",
-                           len(measurements))
-                measurements = []
-                step = actual_range / n_steps
-                for i in range(n_steps + 1):
-                    z = z_start + i * step
-                    self.core.set_position(z)
-                    self.core.wait_for_device(z_dev)
-                    measurements = self._grab_and_score(
-                        z, measurements, img_w, img_h, nch, cy, cx)
+                measurements.append((actual_z, score))
+                logger.info(f"  Sweep step {i}: cmd_z={z:.1f} actual_z={actual_z:.2f} "
+                           f"score={score:.1f} green_mean={green_mean:.1f} "
+                           f"move={t_move:.0f}ms snap={t_snap:.0f}ms total={t_total:.0f}ms")
 
         except Exception as e:
-            logger.warning(f"Sweep drift check failed: {e}")
-            # Fall through to cleanup below
+            logger.warning(f"Sweep drift check failed at step: {e}")
 
-        finally:
-            # Stop streaming and clear buffer if we started it
-            if not was_streaming:
-                try:
-                    self.core.stop_sequence_acquisition()
-                    self.core.clear_circular_buffer()
-                except Exception:
-                    pass
+        elapsed = (time.perf_counter() - t0) * 1000
+
+        if len(measurements) < 3:
+            logger.warning(f"Sweep drift check: only {len(measurements)} "
+                          f"measurements in {elapsed:.0f}ms, keeping current Z")
+            self.core.set_position(initial_z)
+            self.core.wait_for_device(z_dev)
+            return initial_z
 
         elapsed = (time.perf_counter() - t0) * 1000
 
@@ -1212,18 +1176,25 @@ class PycromanagerHardware(MicroscopeHardware):
             self.core.wait_for_device(z_dev)
             return initial_z
 
-        # Find the score at (or nearest to) the starting Z position
+        # Check if peak is meaningfully better than starting position.
         start_idx = int(np.argmin(np.abs(z_arr - initial_z)))
         start_score = scores[start_idx]
         peak_score = scores[best_idx]
-
-        # Only move if peak score is >5% better than the starting position.
-        # If we're already in focus, score differences across the sweep
-        # are noise and we should not chase them.
         improvement = (peak_score - start_score) / max(start_score, 1.0)
-        if improvement < 0.05:
-            logger.info(f"Sweep drift check: peak improvement {improvement:.1%} "
-                       f"< 5%, keeping current Z ({elapsed:.0f}ms)")
+        score_range = float(scores.max() - scores.min())
+        score_range_pct = score_range / max(float(scores.mean()), 1.0) * 100
+
+        logger.info(f"  Sweep analysis: best_idx={best_idx} best_z={z_arr[best_idx]:.1f} "
+                   f"peak={peak_score:.1f} start={start_score:.1f} "
+                   f"improvement={improvement:.1%} "
+                   f"range={score_range:.1f} ({score_range_pct:.1f}%)")
+
+        # If score range across the whole sweep is <2%, the metric isn't
+        # discriminating focus. Keep current Z.
+        if score_range_pct < 2.0:
+            logger.info(f"Sweep drift check: score range {score_range_pct:.1f}% "
+                       f"< 2% -- metric not discriminating focus, "
+                       f"keeping current Z ({elapsed:.0f}ms)")
             self.core.set_position(initial_z)
             self.core.wait_for_device(z_dev)
             return initial_z
