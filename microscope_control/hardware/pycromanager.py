@@ -1029,24 +1029,49 @@ class PycromanagerHardware(MicroscopeHardware):
 
         return best_z
 
+    def _grab_and_score(self, z, measurements, img_w, img_h, nch, cy, cx):
+        """Grab latest frame from circular buffer and score with Laplacian variance.
+
+        Returns the measurements list with the new (z, score) appended,
+        or unchanged if no frame was available.
+        """
+        if self.core.get_remaining_image_count() == 0:
+            return measurements
+        pixels = self.core.get_last_image()
+        if pixels is None:
+            return measurements
+        # Extract green channel center crop
+        if nch > 1:
+            green = pixels.reshape(img_h, img_w, nch)[:, :, 1]
+        else:
+            green = pixels.reshape(img_h, img_w)
+        roi = green[cy - 256:cy + 256, cx - 256:cx + 256].astype(np.float32)
+        lap = scipy_laplace(roi)
+        score = float(np.var(lap))
+        measurements.append((z, score))
+        return measurements
+
     def autofocus_sweep_drift_check(
         self,
         range_um=10.0,
         n_steps=5,
     ) -> float:
-        """Quick drift check by sweeping Z with continuous camera streaming.
+        """Quick drift check by ramping Z with continuous camera streaming.
 
-        Starts continuous acquisition, ramps Z in small blocking steps,
-        grabs the latest frame from the circular buffer at each position,
-        and scores it with pixel variance (histogram spread). No per-frame
-        snap overhead, no property writes -- just buffer reads.
+        Two-phase approach:
+        1. Move to z_start (blocking)
+        2. Issue non-blocking ramp to z_end, grab frames + read Z in a
+           tight loop while the stage is moving
 
-        Designed for speed (<1s for 6 points over 10um). If the sweep
-        fails for any reason, returns the starting Z unchanged.
+        If the ramp doesn't yield enough frames (camera too slow or stage
+        too fast), falls back to a stepped approach with blocking moves.
+
+        Scores frames with Laplacian variance on center-crop green channel.
+        If sweep fails for any reason, returns starting Z unchanged.
 
         Args:
             range_um: Total sweep range in micrometers (default 10 = +/-5um)
-            n_steps: Number of Z positions to sample (default 5 -> 6 pts)
+            n_steps: Minimum number of frames desired (default 5)
 
         Returns:
             The best-focus Z position (or current Z if sweep failed).
@@ -1069,8 +1094,6 @@ class PycromanagerHardware(MicroscopeHardware):
                           f"({actual_range:.1f}um), keeping current Z")
             return initial_z
 
-        step = actual_range / n_steps
-
         # Z device setup
         stage_config = self.settings.get("stage", {})
         z_stage_device = stage_config.get("z_stage", None)
@@ -1078,8 +1101,14 @@ class PycromanagerHardware(MicroscopeHardware):
             self.core.set_focus_device(z_stage_device)
         z_dev = z_stage_device or self.core.get_focus_device()
 
-        logger.info(f"Sweep drift check: {n_steps + 1} pts, {step:.1f}um step "
-                    f"[{z_start:.1f} -> {z_end:.1f}] (current={initial_z:.1f})")
+        # Cache image dimensions (avoid repeated core calls in tight loop)
+        img_w = self.core.get_image_width()
+        img_h = self.core.get_image_height()
+        nch = self.core.get_number_of_components()
+        cy, cx = img_h // 2, img_w // 2
+
+        logger.info(f"Sweep drift check: [{z_start:.1f} -> {z_end:.1f}] "
+                    f"(range={actual_range:.1f}um, current={initial_z:.1f})")
 
         t0 = time.perf_counter()
         measurements = []
@@ -1090,46 +1119,59 @@ class PycromanagerHardware(MicroscopeHardware):
             if not was_streaming:
                 self.core.clear_circular_buffer()
                 self.core.start_continuous_sequence_acquisition(0)
-                # Brief pause to let first frames fill the buffer
-                time.sleep(0.05)
+                time.sleep(0.05)  # Let first frames fill buffer
 
-            for i in range(n_steps + 1):
-                z = z_start + i * step
-                self.core.set_position(z)
-                self.core.wait_for_device(z_dev)
+            # Phase 1: Move to start position (blocking)
+            self.core.set_position(z_start)
+            self.core.wait_for_device(z_dev)
 
-                # Brief settle for the frame buffer to catch up to the new Z
-                time.sleep(0.03)
+            # Grab a frame at z_start before ramping
+            time.sleep(0.03)
+            measurements = self._grab_and_score(
+                z_start, measurements, img_w, img_h, nch, cy, cx)
 
-                # Grab latest frame from circular buffer (near-instant)
-                if self.core.get_remaining_image_count() == 0:
-                    time.sleep(0.05)  # One more try
-                if self.core.get_remaining_image_count() == 0:
-                    continue  # Skip this position
+            # Phase 2: Issue non-blocking ramp to z_end, grab frames
+            # while stage is moving
+            self.core.set_position(z_end)  # Non-blocking: no wait_for_device
 
-                pixels = self.core.get_last_image()
-                if pixels is None:
-                    continue
+            ramp_start = time.perf_counter()
+            ramp_timeout = 2.0  # Max seconds to wait for ramp
+            last_z = z_start
 
-                # Laplacian variance on center-crop green channel.
-                # 200x more sensitive near focus than raw pixel variance.
-                # Green channel (idx 1 in BGRA) has best contrast for
-                # H&E tissue. Center 512x512 crop is fastest and avoids
-                # edge vignetting.  Total time: ~0.4ms per frame.
-                w = self.core.get_image_width()
-                h = self.core.get_image_height()
-                nch = pixels.shape[0] // (h * w)
-                if nch > 1:
-                    green = pixels.reshape(h, w, nch)[:, :, 1]
-                else:
-                    green = pixels.reshape(h, w)
-                # Center crop
-                cy, cx = h // 2, w // 2
-                roi = green[cy - 256:cy + 256, cx - 256:cx + 256].astype(np.float32)
-                # Laplacian variance (scipy, no opencv needed)
-                lap = scipy_laplace(roi)
-                score = float(np.var(lap))
-                measurements.append((z, score))
+            while (time.perf_counter() - ramp_start) < ramp_timeout:
+                # Read actual Z position (fast, ~1ms)
+                current_z = self.core.get_position()
+
+                # Only score if Z moved at least 0.5um since last measurement
+                if abs(current_z - last_z) >= 0.5:
+                    measurements = self._grab_and_score(
+                        current_z, measurements, img_w, img_h, nch, cy, cx)
+                    last_z = current_z
+
+                # Check if stage arrived at destination
+                if abs(current_z - z_end) < 0.3:
+                    break
+
+                time.sleep(0.01)  # Brief yield to avoid busy-spin
+
+            # Grab final frame at z_end
+            self.core.wait_for_device(z_dev)
+            final_z = self.core.get_position()
+            measurements = self._grab_and_score(
+                final_z, measurements, img_w, img_h, nch, cy, cx)
+
+            # If ramp didn't yield enough frames, fall back to stepped
+            if len(measurements) < 3:
+                logger.info("Ramp yielded only %d frames, using stepped fallback",
+                           len(measurements))
+                measurements = []
+                step = actual_range / n_steps
+                for i in range(n_steps + 1):
+                    z = z_start + i * step
+                    self.core.set_position(z)
+                    self.core.wait_for_device(z_dev)
+                    measurements = self._grab_and_score(
+                        z, measurements, img_w, img_h, nch, cy, cx)
 
         except Exception as e:
             logger.warning(f"Sweep drift check failed: {e}")
