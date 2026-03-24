@@ -1029,6 +1029,82 @@ class PycromanagerHardware(MicroscopeHardware):
 
         return best_z
 
+    def _score_all_metrics(self, pixels, img_w, img_h, nch, cy, cx):
+        """Score a frame with ALL available focus metrics for diagnostics.
+
+        Returns dict of metric_name -> score, plus the primary score and mean.
+        Uses the best (non-saturated) channel for each metric.
+        """
+        if nch > 1:
+            img = pixels.reshape(img_h, img_w, nch)
+            # Find best channel (non-saturated, use blue preferentially)
+            best_ch = None
+            for ch in [0, 1, 2]:  # B, G, R in BGRA
+                roi = img[cy - 256:cy + 256, cx - 256:cx + 256, ch]
+                if float(np.mean(roi)) < 245:
+                    best_ch = ch
+                    break
+            if best_ch is None:
+                best_ch = 1  # fallback to green
+            roi = img[cy - 256:cy + 256, cx - 256:cx + 256, best_ch].astype(np.float32)
+        else:
+            roi = pixels.reshape(img_h, img_w)[cy - 256:cy + 256, cx - 256:cx + 256].astype(np.float32)
+
+        ch_mean = float(np.mean(roi))
+        metrics = {}
+
+        # 1. Laplacian variance (current primary metric)
+        lap = scipy_laplace(roi)
+        metrics["laplacian"] = float(np.var(lap))
+
+        # 2. Normalized variance (var / mean^2 -- amplifies changes on dim images)
+        metrics["norm_var"] = float(np.var(roi) / max(ch_mean * ch_mean, 1.0)) * 1e6
+
+        # 3. Brenner gradient
+        gy, gx = np.gradient(roi)
+        metrics["brenner"] = float(np.mean(gx**2 + gy**2))
+
+        # 4. Sobel variance
+        from skimage.filters import sobel
+        metrics["sobel"] = float(sobel(roi).var()) * 1000
+
+        # 5. P98-P2 range (what Java RefineFocus uses -- histogram spread)
+        p2 = float(np.percentile(roi, 2))
+        p98 = float(np.percentile(roi, 98))
+        metrics["p98_p2"] = p98 - p2
+
+        # 6. Masked Laplacian -- Otsu threshold to isolate tissue, then Laplacian
+        # on tissue pixels only. Background is excluded from scoring.
+        try:
+            from skimage.filters import threshold_otsu
+            thresh = threshold_otsu(roi)
+            tissue_mask = roi < (thresh * 1.1)  # Below bright threshold = tissue
+            if tissue_mask.sum() > 1000:  # Need enough tissue pixels
+                masked_lap = lap[tissue_mask]
+                metrics["masked_lap"] = float(np.var(masked_lap))
+                metrics["tissue_pct"] = float(tissue_mask.sum()) / tissue_mask.size * 100
+            else:
+                metrics["masked_lap"] = metrics["laplacian"]
+                metrics["tissue_pct"] = 0.0
+        except Exception:
+            metrics["masked_lap"] = metrics["laplacian"]
+            metrics["tissue_pct"] = 0.0
+
+        # 7. Max Laplacian across all channels (current _score_focus behavior)
+        if nch > 1:
+            max_lap = 0.0
+            for ch in range(min(nch, 3)):
+                ch_roi = img[cy - 256:cy + 256, cx - 256:cx + 256, ch].astype(np.float32)
+                if float(np.mean(ch_roi)) > 245:
+                    continue
+                ch_lap = scipy_laplace(ch_roi)
+                max_lap = max(max_lap, float(np.var(ch_lap)))
+            metrics["max_lap_rgb"] = max_lap
+        else:
+            metrics["max_lap_rgb"] = metrics["laplacian"]
+
+        return metrics, ch_mean
+
     def _score_focus(self, pixels, img_w, img_h, nch, cy, cx):
         """Score focus using max Laplacian variance across RGB channels.
 
@@ -1163,11 +1239,12 @@ class PycromanagerHardware(MicroscopeHardware):
                 if i < len(z_positions) - 1:
                     self.core.set_position(z_positions[i + 1])
 
-                # Read image and score (stage moving in background)
+                # Read image and score with ALL metrics (stage moving in background)
                 tagged = self.core.get_tagged_image()
                 pixels = tagged.pix
-                score, ch_mean = self._score_focus(
+                all_metrics, ch_mean = self._score_all_metrics(
                     pixels, img_w, img_h, nch, cy, cx)
+                score = all_metrics["max_lap_rgb"]  # Primary metric for correction
 
                 # Wait for stage to arrive at next position (likely
                 # already there -- move takes ~190ms, read+score ~10ms)
@@ -1176,9 +1253,17 @@ class PycromanagerHardware(MicroscopeHardware):
 
                 t_total = (time.perf_counter() - t_step) * 1000
                 measurements.append((actual_z, score))
-                logger.info(f"  Sweep step {i}: z={actual_z:.2f} "
-                           f"score={score:.1f} mean={ch_mean:.0f} "
-                           f"{t_total:.0f}ms")
+                logger.info(
+                    f"  Sweep step {i}: z={actual_z:.2f} mean={ch_mean:.0f} "
+                    f"lap={all_metrics['laplacian']:.0f} "
+                    f"nvar={all_metrics['norm_var']:.1f} "
+                    f"bren={all_metrics['brenner']:.0f} "
+                    f"sobel={all_metrics['sobel']:.1f} "
+                    f"p98p2={all_metrics['p98_p2']:.1f} "
+                    f"masked={all_metrics['masked_lap']:.0f} "
+                    f"tissue={all_metrics['tissue_pct']:.0f}% "
+                    f"maxrgb={all_metrics['max_lap_rgb']:.0f} "
+                    f"{t_total:.0f}ms")
 
         except Exception as e:
             logger.warning(f"Sweep drift check failed at step: {e}")
