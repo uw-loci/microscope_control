@@ -1029,18 +1029,33 @@ class PycromanagerHardware(MicroscopeHardware):
 
         return best_z
 
-    def _score_green_laplacian(self, pixels, img_w, img_h, nch, cy, cx):
-        """Score a frame with Laplacian variance on center-crop green channel.
+    def _score_focus(self, pixels, img_w, img_h, nch, cy, cx):
+        """Score a frame with Laplacian variance on center-crop of best channel.
 
-        Returns (score, green_mean) or (None, None) if scoring fails.
+        For multi-channel (BGRA from JAI), uses blue channel (index 0)
+        which has the strongest contrast for H&E nuclei (hematoxylin)
+        and the least saturation at 90deg uncrossed polarizer.
+
+        If blue is saturated (mean > 245), falls back to green (index 1).
+
+        Returns (score, channel_mean).
         """
         if nch > 1:
-            green = pixels.reshape(img_h, img_w, nch)[:, :, 1]
+            img = pixels.reshape(img_h, img_w, nch)
+            blue_roi = img[cy - 256:cy + 256, cx - 256:cx + 256, 0]
+            blue_mean = float(np.mean(blue_roi))
+            if blue_mean > 245:
+                # Blue saturated -- use green instead
+                roi = img[cy - 256:cy + 256, cx - 256:cx + 256, 1].astype(np.float32)
+                ch_mean = float(np.mean(roi))
+            else:
+                roi = blue_roi.astype(np.float32)
+                ch_mean = blue_mean
         else:
-            green = pixels.reshape(img_h, img_w)
-        roi = green[cy - 256:cy + 256, cx - 256:cx + 256].astype(np.float32)
+            roi = pixels.reshape(img_h, img_w)[cy - 256:cy + 256, cx - 256:cx + 256].astype(np.float32)
+            ch_mean = float(np.mean(roi))
         lap = scipy_laplace(roi)
-        return float(np.var(lap)), float(np.mean(roi))
+        return float(np.var(lap)), ch_mean
 
     def autofocus_sweep_drift_check(
         self,
@@ -1142,7 +1157,7 @@ class PycromanagerHardware(MicroscopeHardware):
                 # Read image and score (stage moving in background)
                 tagged = self.core.get_tagged_image()
                 pixels = tagged.pix
-                score, green_mean = self._score_green_laplacian(
+                score, ch_mean = self._score_focus(
                     pixels, img_w, img_h, nch, cy, cx)
 
                 # Wait for stage to arrive at next position (likely
@@ -1153,7 +1168,7 @@ class PycromanagerHardware(MicroscopeHardware):
                 t_total = (time.perf_counter() - t_step) * 1000
                 measurements.append((actual_z, score))
                 logger.info(f"  Sweep step {i}: z={actual_z:.2f} "
-                           f"score={score:.1f} mean={green_mean:.0f} "
+                           f"score={score:.1f} mean={ch_mean:.0f} "
                            f"{t_total:.0f}ms")
 
         except Exception as e:
