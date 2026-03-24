@@ -1030,32 +1030,41 @@ class PycromanagerHardware(MicroscopeHardware):
         return best_z
 
     def _score_focus(self, pixels, img_w, img_h, nch, cy, cx):
-        """Score a frame with Laplacian variance on center-crop of best channel.
+        """Score focus using max Laplacian variance across RGB channels.
 
-        For multi-channel (BGRA from JAI), uses blue channel (index 0)
-        which has the strongest contrast for H&E nuclei (hematoxylin)
-        and the least saturation at 90deg uncrossed polarizer.
+        Computes Laplacian variance independently on each color channel's
+        center crop and returns the maximum. This handles diverse tissue:
+        - Nuclei (hematoxylin): strongest edges in blue channel
+        - Collagen/eosin: strongest edges in red/green channels
+        - Faint tissue: whichever channel has the most structure wins
 
-        If blue is saturated (mean > 245), falls back to green (index 1).
+        Skips saturated channels (mean > 245). If all channels are
+        saturated, returns 0 (no focus information available).
 
-        Returns (score, channel_mean).
+        Cost: ~1.2ms for 3 channels on 512x512 crop (negligible vs 180ms snap).
+
+        Returns (score, mean_of_best_channel).
         """
         if nch > 1:
             img = pixels.reshape(img_h, img_w, nch)
-            blue_roi = img[cy - 256:cy + 256, cx - 256:cx + 256, 0]
-            blue_mean = float(np.mean(blue_roi))
-            if blue_mean > 245:
-                # Blue saturated -- use green instead
-                roi = img[cy - 256:cy + 256, cx - 256:cx + 256, 1].astype(np.float32)
+            best_score = 0.0
+            best_mean = 0.0
+            # Score B, G, R channels (indices 0, 1, 2 in BGRA)
+            for ch in range(min(nch, 3)):
+                roi = img[cy - 256:cy + 256, cx - 256:cx + 256, ch].astype(np.float32)
                 ch_mean = float(np.mean(roi))
-            else:
-                roi = blue_roi.astype(np.float32)
-                ch_mean = blue_mean
+                if ch_mean > 245:
+                    continue  # Skip saturated channels
+                lap = scipy_laplace(roi)
+                score = float(np.var(lap))
+                if score > best_score:
+                    best_score = score
+                    best_mean = ch_mean
+            return best_score, best_mean
         else:
             roi = pixels.reshape(img_h, img_w)[cy - 256:cy + 256, cx - 256:cx + 256].astype(np.float32)
-            ch_mean = float(np.mean(roi))
-        lap = scipy_laplace(roi)
-        return float(np.var(lap)), ch_mean
+            lap = scipy_laplace(roi)
+            return float(np.var(lap)), float(np.mean(roi))
 
     def autofocus_sweep_drift_check(
         self,
