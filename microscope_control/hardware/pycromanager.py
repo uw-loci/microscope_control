@@ -1038,7 +1038,7 @@ class PycromanagerHardware(MicroscopeHardware):
 
                 t_total = (time.perf_counter() - t_step) * 1000
                 measurements.append((actual_z, score))
-                logger.info(
+                logger.debug(
                     f"  Sweep step {i}: z={actual_z:.2f} score={score:.1f} "
                     f"mean={ch_mean:.0f} {t_total:.0f}ms")
 
@@ -1058,7 +1058,7 @@ class PycromanagerHardware(MicroscopeHardware):
         z_arr = np.array([m[0] for m in measurements])
         scores = np.array([m[1] for m in measurements])
         profile = " | ".join(f"{z:.1f}:{s:.0f}" for z, s in measurements)
-        logger.info(f"Sweep scores: {profile}")
+        logger.debug(f"Sweep scores: {profile}")
 
         best_idx = int(np.argmax(scores))
 
@@ -1079,7 +1079,7 @@ class PycromanagerHardware(MicroscopeHardware):
         score_range = float(scores.max() - scores.min())
         score_range_pct = score_range / max(float(scores.mean()), 1.0) * 100
 
-        logger.info(f"  Sweep analysis: best_idx={best_idx} best_z={z_arr[best_idx]:.1f} "
+        logger.debug(f"  Sweep analysis: best_idx={best_idx} best_z={z_arr[best_idx]:.1f} "
                    f"peak={peak_score:.1f} start={start_score:.1f} "
                    f"improvement={improvement:.1%} "
                    f"range={score_range:.1f} ({score_range_pct:.1f}%)")
