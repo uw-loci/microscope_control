@@ -1244,7 +1244,7 @@ class PycromanagerHardware(MicroscopeHardware):
                 pixels = tagged.pix
                 all_metrics, ch_mean = self._score_all_metrics(
                     pixels, img_w, img_h, nch, cy, cx)
-                score = all_metrics["p98_p2"]  # Primary metric -- 70% range vs <2% for Laplacian
+                score = all_metrics["norm_var"]  # Primary metric -- 145% range vs <2% for Laplacian
 
                 # Wait for stage to arrive at next position (likely
                 # already there -- move takes ~190ms, read+score ~10ms)
