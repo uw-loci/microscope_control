@@ -1,6 +1,6 @@
 [project]
 name = "microscope-control"
-version = "1.0.0"
+version = "1.0.1"
 description = "Hardware control library for microscopes via Pycromanager (Micro-Manager)"
 readme = "README.md"
 requires-python = ">=3.10"
