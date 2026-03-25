@@ -279,6 +279,160 @@ def test_adaptive_autofocus_at_current_position(
     return result
 
 
+def test_autofocus_validation(
+    hardware,
+    config_manager,
+    yaml_file_path: str,
+    output_folder_path: str,
+    objective: str,
+    logger: Optional[logging.Logger] = None,
+) -> Dict[str, Any]:
+    """Two-phase autofocus validation test.
+
+    Verifies that autofocus settings work on the user's specific tissue
+    before committing to a multi-hour acquisition.
+
+    Phase 1: From current (user-focused) position, run sweep drift check.
+              This confirms the sweep can find focus when already focused.
+    Phase 2: Move Z to 80% of search_range away from ground truth, then
+              run full standard autofocus. This confirms AF can recover
+              from significant defocus (as happens between acquisition tiles).
+
+    The stage is always returned to ground truth Z at the end, regardless
+    of success or failure.
+
+    Args:
+        hardware: PycromanagerHardware instance
+        config_manager: ConfigManager instance
+        yaml_file_path: Path to microscope config YAML
+        output_folder_path: Where to save output (currently unused, reserved)
+        objective: Objective identifier (e.g. "20x")
+        logger: Optional logger instance
+
+    Returns:
+        Dict with validation results for both phases, including:
+            success, ground_truth_z, sweep_z, sweep_delta_um,
+            defocus_distance_um, recovery_z, recovery_delta_um,
+            message, test_type
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    logger.info("=== AUTOFOCUS VALIDATION TEST STARTED ===")
+    logger.info(f"  Objective: {objective}")
+    logger.info(f"  Config file: {yaml_file_path}")
+
+    # Create output directory (reserved for future diagnostic output)
+    output_path = Path(output_folder_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Record ground truth Z (user's manual focus position)
+    ground_truth_z = hardware.get_current_position().z
+    logger.info(f"  Ground truth Z (manual focus): {ground_truth_z:.2f}")
+
+    # Load autofocus settings
+    af_settings = _load_autofocus_settings(yaml_file_path, objective, logger)
+
+    result = {
+        "success": False,
+        "ground_truth_z": f"{ground_truth_z:.2f}",
+        "sweep_z": "N/A",
+        "sweep_delta_um": "N/A",
+        "defocus_distance_um": "N/A",
+        "recovery_z": "N/A",
+        "recovery_delta_um": "N/A",
+        "message": "",
+        "test_type": "validation",
+    }
+
+    try:
+        # === PHASE 1: Sweep drift check from focus ===
+        logger.info("--- Phase 1: Sweep drift check from focus ---")
+
+        sweep_range = af_settings.get('sweep_range_um', 10.0)
+        sweep_n_steps = af_settings.get('sweep_n_steps', 6)
+        score_metric_name = af_settings.get('score_metric_name', 'normalized_variance')
+
+        logger.info(f"  sweep_range_um: {sweep_range}")
+        logger.info(f"  sweep_n_steps: {sweep_n_steps}")
+        logger.info(f"  score_metric: {score_metric_name}")
+
+        sweep_z = hardware.autofocus_sweep_drift_check(
+            range_um=sweep_range,
+            n_steps=sweep_n_steps,
+            score_metric=score_metric_name,
+        )
+        sweep_delta = abs(sweep_z - ground_truth_z)
+
+        result["sweep_z"] = f"{sweep_z:.2f}"
+        result["sweep_delta_um"] = f"{sweep_delta:.2f}"
+
+        logger.info(f"  Sweep result: Z={sweep_z:.2f}, delta={sweep_delta:.2f} um")
+
+        # === PHASE 2: Recovery from defocus ===
+        logger.info("--- Phase 2: Full autofocus recovery from defocus ---")
+
+        search_range = af_settings.get('search_range', 50.0)
+        defocus_distance = search_range * 0.8
+
+        result["defocus_distance_um"] = f"{defocus_distance:.1f}"
+
+        # Move to defocused position (positive direction from ground truth)
+        defocus_z = ground_truth_z + defocus_distance
+        hardware.core.set_position(defocus_z)
+        hardware.core.wait_for_device(hardware.core.get_focus_device())
+        logger.info(f"  Moved to defocus position: {defocus_z:.2f} (+{defocus_distance:.1f} um from ground truth)")
+
+        # Run standard autofocus from defocused position
+        recovery_result = hardware.autofocus(
+            n_steps=af_settings['n_steps'],
+            search_range=search_range,
+            interp_strength=af_settings.get('interp_strength', 100),
+            interp_kind=af_settings.get('interp_kind', 'quadratic'),
+            score_metric=af_settings['score_metric'],
+            pop_a_plot=False,
+            move_stage_to_estimate=True,
+            raise_on_invalid_peak=False,  # Don't raise -- we want to report the result
+        )
+
+        if isinstance(recovery_result, dict):
+            # autofocus returns dict on failure (invalid peak)
+            recovery_delta_str = "FAILED"
+            recovery_z_value = defocus_z
+            logger.warning(f"  Recovery FAILED: {recovery_result.get('message', 'unknown')}")
+            result["recovery_z"] = f"{recovery_z_value:.2f}"
+            result["recovery_delta_um"] = recovery_delta_str
+        else:
+            recovery_z_value = float(recovery_result)
+            recovery_delta = abs(recovery_z_value - ground_truth_z)
+            result["recovery_z"] = f"{recovery_z_value:.2f}"
+            result["recovery_delta_um"] = f"{recovery_delta:.2f}"
+            logger.info(f"  Recovery result: Z={recovery_z_value:.2f}, delta={recovery_delta:.2f} um")
+
+        # Mark overall success (both phases completed without exception)
+        result["success"] = True
+        result["message"] = "Autofocus validation complete"
+
+        logger.info("=== AUTOFOCUS VALIDATION TEST COMPLETED ===")
+        logger.info(f"  Phase 1 (sweep drift): delta = {result['sweep_delta_um']} um")
+        logger.info(f"  Phase 2 (recovery):    delta = {result['recovery_delta_um']} um")
+
+    except Exception as e:
+        logger.error(f"Autofocus validation test failed: {e}", exc_info=True)
+        result["message"] = f"Autofocus validation test failed: {str(e)}"
+
+    finally:
+        # ALWAYS return to ground truth Z
+        try:
+            hardware.core.set_position(ground_truth_z)
+            hardware.core.wait_for_device(hardware.core.get_focus_device())
+            logger.info(f"  Returned to ground truth Z: {ground_truth_z:.2f}")
+        except Exception as e2:
+            logger.error(f"  Failed to return to ground truth Z: {e2}")
+
+    return result
+
+
 def _generate_diagnostic_scan_plot(hardware, center_z, af_settings, output_path, logger, test_type="standard"):
     """
     Generate a diagnostic plot by scanning around the center_z position.
