@@ -175,10 +175,13 @@ def test_adaptive_autofocus_at_current_position(
     logger: Optional[logging.Logger] = None,
 ) -> Dict[str, Any]:
     """
-    Test ADAPTIVE autofocus at current microscope position.
-    Calls hardware.autofocus_adaptive_search() with settings from config file.
+    Test sweep drift check at current microscope position.
+    Calls hardware.autofocus_sweep_drift_check() with settings from config file.
 
-    This starts at current position and searches intelligently, stopping when "good enough".
+    This performs a quick Z sweep around current position to detect and correct focus drift.
+
+    Note: Function name kept as test_adaptive_autofocus_at_current_position for
+    socket protocol compatibility (TESTADAF command).
 
     Args:
         hardware: PycromanagerHardware instance
@@ -194,7 +197,7 @@ def test_adaptive_autofocus_at_current_position(
     if logger is None:
         logger = logging.getLogger(__name__)
 
-    logger.info("=== ADAPTIVE AUTOFOCUS TEST STARTED ===")
+    logger.info("=== SWEEP DRIFT CHECK TEST STARTED ===")
     logger.info(f"  Objective: {objective}")
     logger.info(f"  Config file: {yaml_file_path}")
 
@@ -209,7 +212,7 @@ def test_adaptive_autofocus_at_current_position(
         "z_shift": None,
         "plot_path": None,
         "message": "",
-        "test_type": "adaptive",
+        "test_type": "sweep",
     }
 
     try:
@@ -221,40 +224,40 @@ def test_adaptive_autofocus_at_current_position(
         # Load autofocus settings
         af_settings = _load_autofocus_settings(yaml_file_path, objective, logger)
 
-        logger.info(f"  Adaptive autofocus settings:")
-        logger.info(f"    initial_step_size: {af_settings['adaptive_initial_step_um']} um")
-        logger.info(f"    min_step_size: {af_settings['adaptive_min_step_um']} um")
-        logger.info(f"    max_total_steps: {af_settings['adaptive_max_steps']}")
-        logger.info(f"    focus_threshold: {af_settings['adaptive_focus_threshold']}")
-        logger.info(f"    score_metric: {af_settings['score_metric_name']}")
+        # Get sweep parameters (with legacy fallback)
+        sweep_range = af_settings.get('sweep_range_um', 10.0)
+        sweep_n_steps = af_settings.get('sweep_n_steps', 6)
+        score_metric = af_settings.get('score_metric_name', 'normalized_variance')
 
-        # Call the ACTUAL hardware.autofocus_adaptive_search() method
-        logger.info("  Calling hardware.autofocus_adaptive_search()...")
+        # Legacy support: old adaptive_initial_step_um -> sweep_range_um
+        if 'sweep_range_um' not in af_settings and 'adaptive_initial_step_um' in af_settings:
+            sweep_range = af_settings['adaptive_initial_step_um'] * 2
 
-        final_z = hardware.autofocus_adaptive_search(
-            initial_step_size=af_settings['adaptive_initial_step_um'],
-            min_step_size=af_settings['adaptive_min_step_um'],
-            focus_threshold=af_settings['adaptive_focus_threshold'],
-            max_total_steps=af_settings['adaptive_max_steps'],
-            score_metric=af_settings['score_metric'],
-            pop_a_plot=False,
-            move_stage_to_estimate=True,
+        logger.info(f"  Sweep drift check settings:")
+        logger.info(f"    sweep_range_um: {sweep_range} um")
+        logger.info(f"    sweep_n_steps: {sweep_n_steps}")
+        logger.info(f"    score_metric: {score_metric}")
+
+        # Call the sweep drift check
+        logger.info("  Calling hardware.autofocus_sweep_drift_check()...")
+
+        final_z = hardware.autofocus_sweep_drift_check(
+            range_um=sweep_range,
+            n_steps=sweep_n_steps,
+            score_metric=score_metric,
         )
 
         result["final_z"] = final_z
         result["z_shift"] = final_z - initial_pos.z
 
-        logger.info(f"  Adaptive autofocus completed:")
+        logger.info(f"  Sweep drift check completed:")
         logger.info(f"    Final Z: {final_z:.2f} um")
         logger.info(f"    Z shift: {result['z_shift']:.2f} um")
 
-        # Adaptive autofocus does not generate a diagnostic plot
-        # It is designed to be fast and efficient - running an additional scan defeats that purpose
-        # The hardware.autofocus_adaptive_search() method already completed and found focus
         result["plot_path"] = None
-        logger.info("  No diagnostic plot for adaptive autofocus (designed for speed)")
+        logger.info("  No diagnostic plot for sweep drift check (designed for speed)")
 
-        result["message"] = f"Adaptive autofocus completed. Z shift: {result['z_shift']:.2f} um."
+        result["message"] = f"Sweep drift check completed. Z shift: {result['z_shift']:.2f} um."
         result["success"] = True
 
         logger.info("=== ADAPTIVE AUTOFOCUS TEST COMPLETED ===")
@@ -635,11 +638,9 @@ def _load_autofocus_settings(yaml_file_path: str, objective: str, logger) -> Dic
         'search_range': 15.0,
         'interp_strength': 100,
         'interp_kind': 'quadratic',
-        'score_metric_name': 'laplacian_variance',
-        'adaptive_initial_step_um': 10.0,
-        'adaptive_min_step_um': 2.0,
-        'adaptive_max_steps': 25,
-        'adaptive_focus_threshold': 0.95,
+        'score_metric_name': 'normalized_variance',
+        'sweep_range_um': 10.0,
+        'sweep_n_steps': 6,
     }
 
     if autofocus_file.exists():
@@ -655,23 +656,26 @@ def _load_autofocus_settings(yaml_file_path: str, objective: str, logger) -> Dic
                     settings['interp_strength'] = af_setting.get('interp_strength', settings['interp_strength'])
                     settings['interp_kind'] = af_setting.get('interp_kind', settings['interp_kind'])
                     settings['score_metric_name'] = af_setting.get('score_metric', settings['score_metric_name'])
-                    settings['adaptive_initial_step_um'] = af_setting.get('adaptive_initial_step_um', settings['adaptive_initial_step_um'])
-                    settings['adaptive_min_step_um'] = af_setting.get('adaptive_min_step_um', settings['adaptive_min_step_um'])
-                    settings['adaptive_max_steps'] = af_setting.get('adaptive_max_steps', settings['adaptive_max_steps'])
-                    settings['adaptive_focus_threshold'] = af_setting.get('adaptive_focus_threshold', settings['adaptive_focus_threshold'])
+                    settings['sweep_range_um'] = af_setting.get('sweep_range_um', settings['sweep_range_um'])
+                    settings['sweep_n_steps'] = af_setting.get('sweep_n_steps', settings['sweep_n_steps'])
+                    # Legacy support: old adaptive_initial_step_um -> sweep_range_um
+                    if 'sweep_range_um' not in af_setting and 'adaptive_initial_step_um' in af_setting:
+                        settings['sweep_range_um'] = af_setting['adaptive_initial_step_um'] * 2
                     break
         except Exception as e:
             logger.warning(f"Error loading autofocus settings, using defaults: {e}")
     else:
         logger.warning(f"Autofocus config file not found: {autofocus_file}, using defaults")
 
-    # Map score metric name to function
+    # Map score metric name to function (used by standard autofocus test)
     score_metric_map = {
+        'normalized_variance': AutofocusUtils.autofocus_profile_laplacian_variance,  # fallback for standard AF
         'laplacian_variance': AutofocusUtils.autofocus_profile_laplacian_variance,
         'sobel': AutofocusUtils.autofocus_profile_sobel,
         'brenner_gradient': AutofocusUtils.autofocus_profile_brenner_gradient,
         'robust_sharpness': AutofocusUtils.autofocus_profile_robust_sharpness_metric,
         'hybrid_sharpness': AutofocusUtils.autofocus_profile_hybrid_sharpness_metric,
+        'p98_p2': AutofocusUtils.autofocus_profile_laplacian_variance,  # fallback for standard AF
     }
 
     settings['score_metric'] = score_metric_map.get(

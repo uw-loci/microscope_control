@@ -871,177 +871,33 @@ class PycromanagerHardware(MicroscopeHardware):
         except Exception as e:
             logger.warning(f"Failed to save autofocus diagnostic CSV: {e}")
 
-    def autofocus_adaptive_search(
-        self,
-        initial_step_size=10,
-        min_step_size=2,
-        focus_threshold=0.95,
-        max_total_steps=25,
-        score_metric=None,
-        pop_a_plot=False,
-        move_stage_to_estimate=True,
-    ) -> float:
-        """
-        Drift-check autofocus: samples symmetrically around current position
-        to detect focus drift and correct it with minimal acquisitions.
+    def _score_single_metric(self, pixels, img_w, img_h, nch, cy, cx,
+                             metric_name="normalized_variance"):
+        """Score a frame with a single focus metric on 512x512 center crop.
 
-        This simplified approach:
-        - Samples 5 positions around current Z (e.g., -4, -2, 0, +2, +4 um)
-        - Finds peak using symmetric interpolation (NO directional bias)
-        - Only moves if improvement > 1um (avoids chasing noise)
+        Selects the best non-saturated channel (B, G, R order, mean < 245)
+        and computes the requested metric on the center crop.
 
-        Parameters are kept for compatibility but reinterpreted:
-        - initial_step_size: Used to set sampling range (range = 2*step_size)
-        - min_step_size: Minimum movement threshold (won't move if peak < this)
-        - Other parameters: Ignored in this simplified version
-        """
-        if score_metric is None:
-            score_metric = AutofocusUtils.autofocus_profile_laplacian_variance
+        Args:
+            pixels: Raw pixel buffer from core.get_tagged_image().pix
+            img_w: Image width in pixels
+            img_h: Image height in pixels
+            nch: Number of color channels
+            cy: Center Y coordinate for crop
+            cx: Center X coordinate for crop
+            metric_name: One of "normalized_variance" (default),
+                "laplacian_variance", "sobel", "brenner_gradient", "p98_p2"
 
-        current_pos = self.get_current_position()
-        initial_z = current_pos.z
-
-        # Get Z limits from settings
-        stage_limits = self.settings.get("stage", {}).get("limits", {})
-        z_limits = stage_limits.get("z_um", {})
-        z_min = z_limits.get("low", -1000)
-        z_max = z_limits.get("high", 1000)
-
-        # Sampling parameters
-        sample_range = initial_step_size * 0.8  # e.g., 10um -> 8um range (+/-4um)
-        n_samples = 5
-        move_threshold = min_step_size / 2.0  # e.g., 2um -> 1um threshold
-
-        # Create symmetric sample positions around current Z
-        half_range = sample_range / 2
-        z_positions = np.linspace(initial_z - half_range,
-                                  initial_z + half_range,
-                                  n_samples)
-
-        # Clamp to stage limits
-        z_positions = np.clip(z_positions, z_min + 5, z_max - 5)
-
-        # Helper function to acquire and score at a position
-        def measure_at_z(z):
-            self.move_to_position(Position(current_pos.x, current_pos.y, z))
-            img, tags = self.snap_image()
-
-            if img is None:
-                logger.error(f"Failed to acquire image at Z={z}")
-                return -np.inf
-
-            # Process image
-            if len(img.shape) == 2:  # Bayer pattern
-                green1 = img[0::2, 0::2]
-                green2 = img[1::2, 1::2]
-                img_gray = ((green1 + green2) / 2.0).astype(np.float32)
-            elif len(img.shape) == 3:  # RGB image
-                img_gray = skimage.color.rgb2gray(img)
-            else:
-                img_gray = img.astype(np.float32)
-
-            score = score_metric(img_gray)
-            if hasattr(score, "ndim") and score.ndim == 2:
-                score = np.mean(score)
-
-            return float(score)
-
-        # Score all positions
-        scores = []
-        for z in z_positions:
-            score = measure_at_z(z)
-            if score == -np.inf:
-                logger.error(f"Failed to measure at Z={z:.2f}")
-                scores.append(0)
-            else:
-                scores.append(score)
-            logger.debug(f"  Z={z:.2f}um: score={score:.1f}")
-
-        scores = np.array(scores)
-
-        # Find discrete best position
-        best_idx = np.argmax(scores)
-        best_z_discrete = z_positions[best_idx]
-
-        # Refine with symmetric interpolation
-        # CRITICAL FIX: Symmetric window (+/-2 positions, not +3)
-        start_idx = max(0, best_idx - 2)
-        end_idx = min(len(z_positions), best_idx + 2)  # SYMMETRIC: +2 not +3
-
-        # Ensure minimum 3 points for quadratic fit
-        if end_idx - start_idx < 3:
-            if start_idx == 0:
-                end_idx = min(3, len(z_positions))
-            else:
-                start_idx = max(0, len(z_positions) - 3)
-
-        # Quadratic interpolation to find refined peak
-        z_subset = z_positions[start_idx:end_idx]
-        scores_subset = scores[start_idx:end_idx]
-
-        try:
-            # Fit parabola and find peak
-            coeffs = np.polyfit(z_subset, scores_subset, 2)
-            if coeffs[0] < 0:  # Parabola opens downward (valid peak)
-                refined_z = -coeffs[1] / (2 * coeffs[0])
-                # Clamp to sampled range
-                refined_z = np.clip(refined_z, z_positions[0], z_positions[-1])
-            else:
-                # Parabola opens upward (shouldn't happen), use discrete best
-                refined_z = best_z_discrete
-                logger.warning("Invalid parabola fit, using discrete best")
-        except:
-            refined_z = best_z_discrete
-            logger.warning("Interpolation failed, using discrete best")
-
-        # Decide whether to move
-        delta = refined_z - initial_z
-
-        if abs(delta) < move_threshold:
-            # Peak is at current position (within noise tolerance)
-            logger.info(f"Drift check: focus peak at current position "
-                       f"(delta={delta:+.2f}um < {move_threshold:.1f}um threshold)")
-            best_z = initial_z
-        else:
-            # Significant drift detected
-            logger.info(f"Drift check: focus drift {delta:+.2f}um detected, "
-                       f"moving from {initial_z:.2f} to {refined_z:.2f}um")
-            best_z = refined_z
-
-        # Optional plot
-        if pop_a_plot:
-            plt.figure(figsize=(10, 6))
-            plt.scatter(z_positions, scores, s=100, c='blue', label='Measured', zorder=3)
-            plt.axvline(initial_z, color='gray', linestyle='--', label='Initial Z')
-            plt.axvline(best_z, color='red', linestyle='-', linewidth=2, label='Final Z')
-            plt.xlabel("Z position (um)")
-            plt.ylabel("Focus score")
-            plt.title(f"Drift-check autofocus: {n_samples} samples")
-            plt.legend()
-            plt.grid(True, alpha=0.3)
-            plt.show()
-
-        logger.info(f"Drift-check complete: Z={best_z:.2f}um "
-                   f"(sampled {n_samples} positions)")
-
-        if move_stage_to_estimate:
-            self.move_to_position(Position(current_pos.x, current_pos.y, best_z))
-
-        return best_z
-
-    def _score_all_metrics(self, pixels, img_w, img_h, nch, cy, cx):
-        """Score a frame with ALL available focus metrics for diagnostics.
-
-        Returns dict of metric_name -> score, plus the primary score and mean.
-        Uses the best (non-saturated) channel for each metric.
+        Returns:
+            (score, ch_mean) tuple -- the focus score and channel mean intensity.
         """
         if nch > 1:
             img = pixels.reshape(img_h, img_w, nch)
-            # Find best channel (non-saturated, use blue preferentially)
+            # Find best channel (non-saturated, prefer B then G then R)
             best_ch = None
             for ch in [0, 1, 2]:  # B, G, R in BGRA
-                roi = img[cy - 256:cy + 256, cx - 256:cx + 256, ch]
-                if float(np.mean(roi)) < 245:
+                roi_test = img[cy - 256:cy + 256, cx - 256:cx + 256, ch]
+                if float(np.mean(roi_test)) < 245:
                     best_ch = ch
                     break
             if best_ch is None:
@@ -1051,115 +907,45 @@ class PycromanagerHardware(MicroscopeHardware):
             roi = pixels.reshape(img_h, img_w)[cy - 256:cy + 256, cx - 256:cx + 256].astype(np.float32)
 
         ch_mean = float(np.mean(roi))
-        metrics = {}
 
-        # 1. Laplacian variance (current primary metric)
-        lap = scipy_laplace(roi)
-        metrics["laplacian"] = float(np.var(lap))
-
-        # 2. Normalized variance (var / mean^2 -- amplifies changes on dim images)
-        metrics["norm_var"] = float(np.var(roi) / max(ch_mean * ch_mean, 1.0)) * 1e6
-
-        # 3. Brenner gradient
-        gy, gx = np.gradient(roi)
-        metrics["brenner"] = float(np.mean(gx**2 + gy**2))
-
-        # 4. Sobel variance
-        from skimage.filters import sobel
-        metrics["sobel"] = float(sobel(roi).var()) * 1000
-
-        # 5. P98-P2 range (what Java RefineFocus uses -- histogram spread)
-        p2 = float(np.percentile(roi, 2))
-        p98 = float(np.percentile(roi, 98))
-        metrics["p98_p2"] = p98 - p2
-
-        # 6. Masked Laplacian -- Otsu threshold to isolate tissue, then Laplacian
-        # on tissue pixels only. Background is excluded from scoring.
-        try:
-            from skimage.filters import threshold_otsu
-            thresh = threshold_otsu(roi)
-            tissue_mask = roi < (thresh * 1.1)  # Below bright threshold = tissue
-            if tissue_mask.sum() > 1000:  # Need enough tissue pixels
-                masked_lap = lap[tissue_mask]
-                metrics["masked_lap"] = float(np.var(masked_lap))
-                metrics["tissue_pct"] = float(tissue_mask.sum()) / tissue_mask.size * 100
-            else:
-                metrics["masked_lap"] = metrics["laplacian"]
-                metrics["tissue_pct"] = 0.0
-        except Exception:
-            metrics["masked_lap"] = metrics["laplacian"]
-            metrics["tissue_pct"] = 0.0
-
-        # 7. Max Laplacian across all channels (current _score_focus behavior)
-        if nch > 1:
-            max_lap = 0.0
-            for ch in range(min(nch, 3)):
-                ch_roi = img[cy - 256:cy + 256, cx - 256:cx + 256, ch].astype(np.float32)
-                if float(np.mean(ch_roi)) > 245:
-                    continue
-                ch_lap = scipy_laplace(ch_roi)
-                max_lap = max(max_lap, float(np.var(ch_lap)))
-            metrics["max_lap_rgb"] = max_lap
+        if metric_name == "normalized_variance":
+            score = float(np.var(roi) / max(ch_mean * ch_mean, 1.0)) * 1e6
+        elif metric_name == "laplacian_variance":
+            score = float(np.var(scipy_laplace(roi)))
+        elif metric_name == "sobel":
+            from skimage.filters import sobel
+            score = float(sobel(roi).var()) * 1000
+        elif metric_name == "brenner_gradient":
+            gy, gx = np.gradient(roi)
+            score = float(np.mean(gx**2 + gy**2))
+        elif metric_name == "p98_p2":
+            score = float(np.percentile(roi, 98) - np.percentile(roi, 2))
         else:
-            metrics["max_lap_rgb"] = metrics["laplacian"]
+            raise ValueError(f"Unknown focus metric: {metric_name}")
 
-        return metrics, ch_mean
-
-    def _score_focus(self, pixels, img_w, img_h, nch, cy, cx):
-        """Score focus using max Laplacian variance across RGB channels.
-
-        Computes Laplacian variance independently on each color channel's
-        center crop and returns the maximum. This handles diverse tissue:
-        - Nuclei (hematoxylin): strongest edges in blue channel
-        - Collagen/eosin: strongest edges in red/green channels
-        - Faint tissue: whichever channel has the most structure wins
-
-        Skips saturated channels (mean > 245). If all channels are
-        saturated, returns 0 (no focus information available).
-
-        Cost: ~1.2ms for 3 channels on 512x512 crop (negligible vs 180ms snap).
-
-        Returns (score, mean_of_best_channel).
-        """
-        if nch > 1:
-            img = pixels.reshape(img_h, img_w, nch)
-            best_score = 0.0
-            best_mean = 0.0
-            # Score B, G, R channels (indices 0, 1, 2 in BGRA)
-            for ch in range(min(nch, 3)):
-                roi = img[cy - 256:cy + 256, cx - 256:cx + 256, ch].astype(np.float32)
-                ch_mean = float(np.mean(roi))
-                if ch_mean > 245:
-                    continue  # Skip saturated channels
-                lap = scipy_laplace(roi)
-                score = float(np.var(lap))
-                if score > best_score:
-                    best_score = score
-                    best_mean = ch_mean
-            return best_score, best_mean
-        else:
-            roi = pixels.reshape(img_h, img_w)[cy - 256:cy + 256, cx - 256:cx + 256].astype(np.float32)
-            lap = scipy_laplace(roi)
-            return float(np.var(lap)), float(np.mean(roi))
+        return score, ch_mean
 
     def autofocus_sweep_drift_check(
         self,
         range_um=10.0,
         n_steps=5,
+        score_metric="normalized_variance",
     ) -> float:
         """Drift check using stepped Z sweep with blocking moves and snaps.
 
         Uses direct core.snap_image() at each Z position (no continuous
         acquisition -- buffer frame freshness was unreliable). Scores
-        with Laplacian variance on center-crop green channel.
-
-        Verbose diagnostic logging for debugging focus detection.
+        with the specified metric on center-crop of the best non-saturated
+        channel.
 
         If sweep fails for any reason, returns starting Z unchanged.
 
         Args:
             range_um: Total sweep range in micrometers (default 10 = +/-5um)
             n_steps: Number of Z positions to sample (default 5 -> 6 pts)
+            score_metric: Focus metric name passed to _score_single_metric().
+                One of "normalized_variance" (default), "laplacian_variance",
+                "sobel", "brenner_gradient", "p98_p2".
 
         Returns:
             The best-focus Z position (or current Z if sweep failed).
@@ -1239,12 +1025,11 @@ class PycromanagerHardware(MicroscopeHardware):
                 if i < len(z_positions) - 1:
                     self.core.set_position(z_positions[i + 1])
 
-                # Read image and score with ALL metrics (stage moving in background)
+                # Read image and score (stage moving in background)
                 tagged = self.core.get_tagged_image()
                 pixels = tagged.pix
-                all_metrics, ch_mean = self._score_all_metrics(
-                    pixels, img_w, img_h, nch, cy, cx)
-                score = all_metrics["norm_var"]  # Primary metric -- 145% range vs <2% for Laplacian
+                score, ch_mean = self._score_single_metric(
+                    pixels, img_w, img_h, nch, cy, cx, score_metric)
 
                 # Wait for stage to arrive at next position (likely
                 # already there -- move takes ~190ms, read+score ~10ms)
@@ -1254,16 +1039,8 @@ class PycromanagerHardware(MicroscopeHardware):
                 t_total = (time.perf_counter() - t_step) * 1000
                 measurements.append((actual_z, score))
                 logger.info(
-                    f"  Sweep step {i}: z={actual_z:.2f} mean={ch_mean:.0f} "
-                    f"lap={all_metrics['laplacian']:.0f} "
-                    f"nvar={all_metrics['norm_var']:.1f} "
-                    f"bren={all_metrics['brenner']:.0f} "
-                    f"sobel={all_metrics['sobel']:.1f} "
-                    f"p98p2={all_metrics['p98_p2']:.1f} "
-                    f"masked={all_metrics['masked_lap']:.0f} "
-                    f"tissue={all_metrics['tissue_pct']:.0f}% "
-                    f"maxrgb={all_metrics['max_lap_rgb']:.0f} "
-                    f"{t_total:.0f}ms")
+                    f"  Sweep step {i}: z={actual_z:.2f} score={score:.1f} "
+                    f"mean={ch_mean:.0f} {t_total:.0f}ms")
 
         except Exception as e:
             logger.warning(f"Sweep drift check failed at step: {e}")

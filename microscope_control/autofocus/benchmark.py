@@ -887,18 +887,14 @@ class AutofocusBenchmark:
             AutofocusUtils.autofocus_profile_laplacian_variance
         )
 
-        # Run adaptive autofocus with timing
+        # Run sweep drift check with timing
         start_time = time.perf_counter()
 
         try:
-            result_z = self.hardware.autofocus_adaptive_search(
-                initial_step_size=initial_step,
-                min_step_size=min_step,
-                focus_threshold=0.95,
-                max_total_steps=25,
-                score_metric=score_metric,
-                pop_a_plot=False,
-                move_stage_to_estimate=True,
+            result_z = self.hardware.autofocus_sweep_drift_check(
+                range_um=initial_step * 2,
+                n_steps=5,
+                score_metric=metric_name,
             )
 
             end_time = time.perf_counter()
