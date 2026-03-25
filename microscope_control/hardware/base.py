@@ -1,7 +1,7 @@
 """Hardware abstraction layer for microscope control."""
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Set
 import warnings
 import logging
 
@@ -15,6 +15,22 @@ class Position:
         self.x = x
         self.y = y
         self.z = z
+
+    def get_specified_axes(self) -> Set[str]:
+        """Return the set of axes that have non-None values.
+
+        Useful for recording which axes were originally specified before
+        calling populate_missing(), so that validation can be limited to
+        only the axes the caller intended to move.
+        """
+        axes = set()
+        if self.x is not None:
+            axes.add("x")
+        if self.y is not None:
+            axes.add("y")
+        if self.z is not None:
+            axes.add("z")
+        return axes
 
     def populate_missing(self, current_position: "Position") -> None:
         """Populate missing coordinates with values from current_position."""
@@ -60,26 +76,42 @@ def is_mm_running() -> bool:
     return False
 
 
-def is_coordinate_in_range(settings: Dict[str, Any], position: Position) -> bool:
+def is_coordinate_in_range(
+    settings: Dict[str, Any],
+    position: Position,
+    axes: Optional[Set[str]] = None,
+) -> bool:
     """
     Check if position is within stage limits defined in settings.
 
     Args:
         settings: Dictionary containing microscope configuration
         position: Position object to check
+        axes: Optional set of axis names ("x", "y", "z") to validate.
+              When provided, only the listed axes are checked -- unlisted
+              axes are treated as in-range regardless of their value.
+              When None (default), every axis whose value is not None is
+              validated (backward-compatible behavior).
 
     Returns:
         True if position is within limits, False otherwise
     """
-    _within_y_limit = _within_x_limit = False
+    # Determine which axes to validate.  If the caller did not specify,
+    # fall back to checking every axis that has a non-None value.
+    if axes is None:
+        axes = position.get_specified_axes()
+
+    _within_x_limit = _within_y_limit = _within_z_limit = True
 
     # Check if stage limits exist in settings
     stage_limits = settings.get('stage', {}).get('limits', {})
 
-    # Check X limits (skip if x not specified -- axis not being moved)
-    if position.x is None:
-        _within_x_limit = True
+    # --- X axis ---
+    if "x" not in axes or position.x is None:
+        # Not requested for validation or not specified -- skip
+        pass
     else:
+        _within_x_limit = False
         x_limits = stage_limits.get('x_um', {})
         if x_limits:
             x_low = x_limits.get('low')
@@ -98,10 +130,11 @@ def is_coordinate_in_range(settings: Dict[str, Any], position: Position) -> bool
             logger.warning("X limits not found in configuration")
             warnings.warn("X limits not found in configuration")
 
-    # Check Y limits (skip if y not specified -- axis not being moved)
-    if position.y is None:
-        _within_y_limit = True
+    # --- Y axis ---
+    if "y" not in axes or position.y is None:
+        pass
     else:
+        _within_y_limit = False
         y_limits = stage_limits.get('y_um', {})
         if y_limits:
             y_low = y_limits.get('low')
@@ -120,30 +153,27 @@ def is_coordinate_in_range(settings: Dict[str, Any], position: Position) -> bool
             logger.warning("Y limits not found in configuration")
             warnings.warn("Y limits not found in configuration")
 
-    # If no Z position specified, just check X and Y
-    if position.z is None:
-        return _within_x_limit and _within_y_limit
-
-    # Check Z limits
-    z_limits = stage_limits.get('z_um', {})
-    if z_limits and position.z is not None:
-        z_low = z_limits.get('low')
-        z_high = z_limits.get('high')
-
-        if z_low is not None and z_high is not None:
-            if z_low <= position.z <= z_high:
-                _within_z_limit = True
-            else:
-                logger.warning(f"Z position {position.z} out of range [{z_low}, {z_high}]")
-                warnings.warn(f"Z position {position.z} out of range [{z_low}, {z_high}]")
-                return False
-        else:
-            logger.warning(f"Z limit values are not properly defined: {z_limits}")
-            warnings.warn(f"Z limit values are not properly defined: {z_limits}")
-            return False
+    # --- Z axis ---
+    if "z" not in axes or position.z is None:
+        pass
     else:
-        logger.warning("Z limits not found in configuration")
-        warnings.warn("Z limits not found in configuration")
-        return False
+        _within_z_limit = False
+        z_limits = stage_limits.get('z_um', {})
+        if z_limits:
+            z_low = z_limits.get('low')
+            z_high = z_limits.get('high')
+
+            if z_low is not None and z_high is not None:
+                if z_low <= position.z <= z_high:
+                    _within_z_limit = True
+                else:
+                    logger.warning(f"Z position {position.z} out of range [{z_low}, {z_high}]")
+                    warnings.warn(f"Z position {position.z} out of range [{z_low}, {z_high}]")
+            else:
+                logger.warning(f"Z limit values are not properly defined: {z_limits}")
+                warnings.warn(f"Z limit values are not properly defined: {z_limits}")
+        else:
+            logger.warning("Z limits not found in configuration")
+            warnings.warn("Z limits not found in configuration")
 
     return _within_x_limit and _within_y_limit and _within_z_limit

@@ -224,12 +224,16 @@ class PycromanagerHardware(MicroscopeHardware):
         """
         t_total = time.perf_counter()
 
-        # Record which axes were originally specified BEFORE any population
-        has_xy = position.x is not None and position.y is not None
-        has_z = position.z is not None
+        # Record which axes were originally specified BEFORE any population.
+        # Validation must be limited to these axes so that, e.g., an XY-only
+        # move does not fail because the current Z happens to be outside the
+        # configured Z bounds.
+        specified_axes = position.get_specified_axes()
+        has_xy = "x" in specified_axes and "y" in specified_axes
+        has_z = "z" in specified_axes
 
-        # Validate only the axes that were specified
-        if not is_coordinate_in_range(self.settings, position):
+        # Validate only the originally-specified axes
+        if not is_coordinate_in_range(self.settings, position, axes=specified_axes):
             logger.info(f"Current stage limits: {self.settings.get('stage', {})}")
             logger.info(f"Requested position: {position}")
             raise ValueError(f"Position out of range: {position}")
