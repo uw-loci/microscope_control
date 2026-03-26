@@ -104,8 +104,7 @@ class AutofocusUtils:
                     f"(1 diagonal FOV inward)"
                 )
 
-        if first_af_index == 0 and len(positions) < 9:
-            logger.debug(f"Grid has {len(positions)} tiles (< 9) - keeping first AF at tile 0")
+        # Note: grids with < 9 tiles are handled by the early return above (AF at every position)
 
         # Build autofocus position list starting with the computed first position
         af_positions = [first_af_index]
@@ -221,7 +220,7 @@ class AutofocusUtils:
         modality: Optional[str] = None,
         logger=None,
         return_stats: bool = False,
-        rgb_brightness_threshold: float = 225.0,
+        rgb_brightness_threshold: float = 240.0,
     ):
         """
         Determine if image has sufficient tissue texture for reliable autofocus.
