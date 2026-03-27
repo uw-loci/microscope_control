@@ -1864,6 +1864,9 @@ class JAIWhiteBalanceCalibrator:
                     "wb_method": result.wb_method,
                 }
 
+                # Update global WB timestamp -- ANY WB change invalidates all backgrounds
+                profile["wb_last_modified"] = datetime.now().isoformat()
+
                 logger.info(
                     f"Updated imaging_profiles.{modality}.{objective}.{detector}.exposures_ms.{angle_name}"
                 )
