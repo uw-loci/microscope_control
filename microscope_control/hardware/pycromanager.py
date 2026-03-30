@@ -722,6 +722,7 @@ class PycromanagerHardware(MicroscopeHardware):
         # print(z_steps)
         try:
             scores = []
+            fallback_scores = []  # p98_p2 computed alongside primary metric
             for step_number in range(n_steps):
                 new_pos = Position(current_pos.x, current_pos.y, current_pos.z + steps[step_number])
                 self.move_to_position(new_pos)
@@ -742,6 +743,10 @@ class PycromanagerHardware(MicroscopeHardware):
                 if hasattr(score, "ndim") and score.ndim == 2:
                     score = np.mean(score)
                 scores.append(score)
+
+                # Always compute p98_p2 as fallback (negligible cost, no extra acquisition)
+                p98_p2 = float(np.percentile(img_gray, 98) - np.percentile(img_gray, 2))
+                fallback_scores.append(p98_p2)
 
             # VALIDATE FOCUS PEAK QUALITY
             scores_array = np.array(scores)
@@ -768,7 +773,23 @@ class PycromanagerHardware(MicroscopeHardware):
                 logger.warning(f"  Quality metrics: prominence={validation['peak_prominence']:.2f}, "
                              f"quality={validation['quality_score']:.2f}")
 
-                if raise_on_invalid_peak:
+                # Try p98_p2 fallback scores (already computed, no re-acquisition needed)
+                if fallback_scores and "flat" in validation['message'].lower():
+                    fallback_array = np.array(fallback_scores)
+                    fallback_validation = AutofocusUtils.validate_focus_peak(z_steps, fallback_array)
+                    if fallback_validation['is_valid']:
+                        fallback_interp_y = scipy.interpolate.interp1d(
+                            z_steps, fallback_scores, kind=interp_kind)(interp_x)
+                        fallback_z = interp_x[np.argmax(fallback_interp_y)]
+                        logger.info(f"  p98_p2 fallback found valid peak at Z={fallback_z:.2f} um "
+                                    f"(quality={fallback_validation['quality_score']:.2f})")
+                        new_z = fallback_z
+                        validation = fallback_validation
+                        # Fall through to the success path below
+                    else:
+                        logger.warning(f"  p98_p2 fallback also invalid: {fallback_validation['message']}")
+
+                if not validation['is_valid'] and raise_on_invalid_peak:
                     # Return failure dict for manual focus fallback loop
                     # Move stage to computed best position before returning, so user
                     # can manually adjust from a reasonable starting point
