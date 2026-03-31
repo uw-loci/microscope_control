@@ -773,8 +773,10 @@ class PycromanagerHardware(MicroscopeHardware):
                 logger.warning(f"  Quality metrics: prominence={validation['peak_prominence']:.2f}, "
                              f"quality={validation['quality_score']:.2f}")
 
-                # Try p98_p2 fallback scores (already computed, no re-acquisition needed)
-                if fallback_scores and "flat" in validation['message'].lower():
+                # Try p98_p2 fallback scores (already computed, no re-acquisition needed).
+                # Attempt whenever primary metric is invalid -- p98_p2 (dynamic range)
+                # often finds peaks that gradient metrics miss on low-tissue FOVs.
+                if fallback_scores:
                     fallback_array = np.array(fallback_scores)
                     fallback_validation = AutofocusUtils.validate_focus_peak(z_steps, fallback_array)
                     if fallback_validation['is_valid']:
