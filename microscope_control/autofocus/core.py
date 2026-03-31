@@ -38,7 +38,8 @@ class AutofocusUtils:
 
     @staticmethod
     def get_autofocus_positions(
-        fov: Tuple[float, float], positions: List[Tuple[float, float]], n_tiles: float
+        fov: Tuple[float, float], positions: List[Tuple[float, float]], n_tiles: float,
+        preferred_first_af: int = None,
     ) -> Tuple[List[int], float]:
         """
         Determine which tile positions require autofocus.
@@ -47,10 +48,14 @@ class AutofocusUtils:
         1 diagonal FOV inward from the starting corner to avoid focusing
         on areas outside the tissue (e.g., buffer regions).
 
+        If preferred_first_af is provided (from WSI tissue scoring), it
+        overrides the diagonal heuristic for the first AF position.
+
         Args:
             fov: Field of view (x, y) in micrometers
             positions: List of (x, y) tile positions
             n_tiles: Number of tiles between autofocus positions
+            preferred_first_af: Optional tile index with best tissue (from WSI)
 
         Returns:
             Tuple of (autofocus position indices, minimum distance)
@@ -78,11 +83,17 @@ class AutofocusUtils:
             return af_positions, 0.0
 
         # Determine the first autofocus position index
-        # For grids with >= 9 tiles, move 1 diagonal FOV inward to avoid edge issues
         first_af_index = 0
 
-        if len(positions) >= 9:
-            # Calculate direction from start corner toward grid center
+        # Prefer WSI-scored tile if provided and valid
+        if preferred_first_af is not None and 0 <= preferred_first_af < total_tiles:
+            first_af_index = preferred_first_af
+            logger.info(
+                f"Using WSI tissue-scored tile {first_af_index} as first AF position "
+                f"(overrides diagonal heuristic)"
+            )
+        elif len(positions) >= 9:
+            # Fallback: move 1 diagonal FOV inward to avoid edge issues
             start_pos = np.array(positions[0])
             center_pos = np.mean(positions, axis=0)
             direction = center_pos - start_pos
