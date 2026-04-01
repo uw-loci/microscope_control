@@ -278,7 +278,7 @@ class JAICameraProperties:
                 "Ensure JAI camera driver supports individual exposure mode (PR #781)."
             )
         self._set_property(self.EXPOSURE_INDIVIDUAL, self.MODE_ON)
-        logger.info("Enabled individual exposure mode")
+        logger.debug("Enabled individual exposure mode")
 
     def disable_individual_exposure(self) -> None:
         """Return to unified exposure control mode with readback verification.
@@ -304,7 +304,7 @@ class JAICameraProperties:
                 else:
                     logger.info("Individual exposure mode disabled on second attempt")
             else:
-                logger.info("Disabled individual exposure mode (verified)")
+                logger.debug("Disabled individual exposure mode (verified)")
 
     def set_channel_exposures(
         self,
@@ -357,7 +357,7 @@ class JAICameraProperties:
         self.core.set_property(self.device_name, self.EXPOSURE_BLUE, str(blue))
         self.core.wait_for_device(self.device_name)
 
-        logger.info(f"Set channel exposures: R={red:.2f}ms, G={green:.2f}ms, B={blue:.2f}ms")
+        logger.debug(f"Set channel exposures: R={red:.2f}ms, G={green:.2f}ms, B={blue:.2f}ms")
 
     def get_channel_exposures(self) -> Dict[str, float]:
         """
@@ -410,13 +410,13 @@ class JAICameraProperties:
                 "Ensure JAI camera driver supports individual gain mode (PR #781)."
             )
         self._set_property(self.GAIN_INDIVIDUAL, self.MODE_ON)
-        logger.info("Enabled individual gain mode")
+        logger.debug("Enabled individual gain mode")
 
     def disable_individual_gain(self) -> None:
         """Return to unified gain control mode."""
         if self._property_exists(self.GAIN_INDIVIDUAL):
             self._set_property(self.GAIN_INDIVIDUAL, self.MODE_OFF)
-            logger.info("Disabled individual gain mode")
+            logger.debug("Disabled individual gain mode")
 
     def set_unified_gain(self, gain: float, max_retries: int = 3) -> None:
         """
@@ -454,7 +454,7 @@ class JAICameraProperties:
             # Read back and verify
             actual = self.get_unified_gain()
             if abs(actual - clamped) < 0.01:
-                logger.info(f"Set unified gain: {clamped:.2f}x (verified)")
+                logger.debug(f"Set unified gain: {clamped:.2f}x (verified)")
                 return
 
             logger.warning(
@@ -518,7 +518,7 @@ class JAICameraProperties:
         self.core.set_property(self.device_name, self.GAIN_ANALOG_BLUE, str(blue_clamped))
         self.core.wait_for_device(self.device_name)
 
-        logger.info(
+        logger.debug(
             f"Set R/B analog gains (unified mode): "
             f"R={red_clamped:.2f}, B={blue_clamped:.2f}"
         )
@@ -590,7 +590,7 @@ class JAICameraProperties:
         self._set_property(self.GAIN_ANALOG_GREEN, green_clamped)
         self._set_property(self.GAIN_ANALOG_BLUE, blue_clamped)
 
-        logger.info(f"Set analog gains: R={red_clamped:.2f}, G={green_clamped:.2f}, B={blue_clamped:.2f}")
+        logger.debug(f"Set analog gains: R={red_clamped:.2f}, G={green_clamped:.2f}, B={blue_clamped:.2f}")
 
     def get_analog_gains(self) -> Dict[str, float]:
         """
@@ -842,7 +842,7 @@ class JAICameraProperties:
         """
         self._set_property(self.WHITE_BALANCE, "Off")  # wait=True clears corrections
         self.set_rb_analog_gains(red=1.0, blue=1.0)
-        logger.info("Cleared AWB corrections (WB Off + analog gains reset to 1.0)")
+        logger.debug("Cleared AWB corrections (WB Off + analog gains reset to 1.0)")
 
     # ========== Utility Methods ==========
 
