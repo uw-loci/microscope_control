@@ -60,6 +60,45 @@ class RotationStage(ABC):
         """Block until the rotation stage reaches its target position."""
         ...
 
+    # --- Raw device-level access (for calibration) ---
+
+    @property
+    def device_name(self) -> str:
+        """Return the Micro-Manager device name (e.g. 'PIZStage').
+
+        Used by calibration code that needs to identify the device type.
+        Returns empty string for virtual stages.
+        """
+        return ""
+
+    @property
+    def hw_per_deg(self) -> float:
+        """Encoder counts per optical degree for this stage.
+
+        Used by calibration code that sweeps in hardware units.
+        Returns 1.0 by default (virtual stage).
+        """
+        return 1.0
+
+    def set_raw_position(self, hw_pos: float) -> None:
+        """Set raw device position in encoder counts (blocking).
+
+        This bypasses angle conversion -- use ONLY for calibration.
+        Default implementation raises NotImplementedError.
+        """
+        raise NotImplementedError("Raw positioning not supported on this stage")
+
+    def get_raw_position(self) -> float:
+        """Get current raw device position in encoder counts.
+
+        Default implementation raises NotImplementedError.
+        """
+        raise NotImplementedError("Raw positioning not supported on this stage")
+
+    def wait_raw(self) -> None:
+        """Wait for device after raw positioning. Delegates to wait()."""
+        self.wait()
+
 
 class PIZRotationStage(RotationStage):
     """PI nano-positioning stage for polarization rotation.
@@ -104,6 +143,25 @@ class PIZRotationStage(RotationStage):
 
     def wait(self) -> None:
         self._core.wait_for_device(self._device)
+
+    # --- Raw device-level access (for calibration) ---
+
+    @property
+    def device_name(self) -> str:
+        return self._device
+
+    @property
+    def hw_per_deg(self) -> float:
+        return 1000.0
+
+    def set_raw_position(self, hw_pos: float) -> None:
+        self._core.set_position(self._device, hw_pos)
+        self._core.wait_for_device(self._device)
+
+    def get_raw_position(self) -> float:
+        return self._core.get_position(self._device)
+
+    # --- Internal conversion ---
 
     def _angle_to_device(self, theta: float) -> float:
         """Convert birefringence angle (degrees) to PIZ stage position."""
@@ -153,6 +211,25 @@ class ThorRotationStage(RotationStage):
 
     def wait(self) -> None:
         self._core.wait_for_device(self._device)
+
+    # --- Raw device-level access (for calibration) ---
+
+    @property
+    def device_name(self) -> str:
+        return self._device
+
+    @property
+    def hw_per_deg(self) -> float:
+        return 2.0
+
+    def set_raw_position(self, hw_pos: float) -> None:
+        self._core.set_position(self._device, hw_pos)
+        self._core.wait_for_device(self._device)
+
+    def get_raw_position(self) -> float:
+        return self._core.get_position(self._device)
+
+    # --- Internal conversion ---
 
     @staticmethod
     def _angle_to_device(theta: float) -> float:

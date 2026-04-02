@@ -283,7 +283,6 @@ def test_autofocus_validation(
     hardware,
     config_manager,
     yaml_file_path: str,
-    output_folder_path: str,
     objective: str,
     logger: Optional[logging.Logger] = None,
 ) -> Dict[str, Any]:
@@ -305,7 +304,6 @@ def test_autofocus_validation(
         hardware: PycromanagerHardware instance
         config_manager: ConfigManager instance
         yaml_file_path: Path to microscope config YAML
-        output_folder_path: Where to save output (currently unused, reserved)
         objective: Objective identifier (e.g. "20x")
         logger: Optional logger instance
 
@@ -321,10 +319,6 @@ def test_autofocus_validation(
     logger.info("=== AUTOFOCUS VALIDATION TEST STARTED ===")
     logger.info(f"  Objective: {objective}")
     logger.info(f"  Config file: {yaml_file_path}")
-
-    # Create output directory (reserved for future diagnostic output)
-    output_path = Path(output_folder_path)
-    output_path.mkdir(parents=True, exist_ok=True)
 
     # Record ground truth Z (user's manual focus position)
     ground_truth_z = hardware.get_current_position().z
