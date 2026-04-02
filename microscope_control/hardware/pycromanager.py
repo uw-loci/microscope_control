@@ -90,16 +90,6 @@ def init_pycromanager(timeout_seconds: float = 30.0):
         raise MicroManagerConnectionError(error_msg) from e
 
 
-def ppm_psgticks_to_thor(bi_angle: float) -> float:
-    """Convert PPM angle (in degrees) to Thor rotation stage position."""
-    return -2 * bi_angle + 276
-
-
-def ppm_thor_to_psgticks(kinesis_pos: float) -> float:
-    """Convert Thor rotation stage position to PPM angle (in degrees)."""
-    return (276 - kinesis_pos) / 2
-
-
 class PycromanagerHardware(MicroscopeHardware):
     """Implementation for Pycromanager-based microscopes.
 
@@ -143,17 +133,6 @@ class PycromanagerHardware(MicroscopeHardware):
         # Create optional illumination and detector components
         self._illumination = self._create_illumination()
         self._detector = self._create_detector()
-
-        # Legacy attributes kept for backward compat during migration
-        self.rotation_device = None
-        if self._rotation_stage is not None:
-            from microscope_control.hardware.rotation import (
-                PIZRotationStage, ThorRotationStage,
-            )
-            if isinstance(self._rotation_stage, PIZRotationStage):
-                self.rotation_device = self._rotation_stage._device
-            elif isinstance(self._rotation_stage, ThorRotationStage):
-                self.rotation_device = self._rotation_stage._device
 
         # CAMM-specific methods
         if microscope_info.get("name", "") == "CAMM":

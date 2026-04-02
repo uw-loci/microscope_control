@@ -653,9 +653,9 @@ class JAIWhiteBalanceCalibrator:
                         means, exposures, unified_gain, config, target
                     )
 
-                    exposures, _dummy_gains, unified_gain, ceiling_extended = (
+                    exposures, unified_gain, ceiling_extended = (
                         self._handle_stuck_at_ceiling(
-                            means, exposures, {"red": 1.0, "green": 1.0, "blue": 1.0},
+                            means, exposures,
                             config, target, unified_gain
                         )
                     )
@@ -1458,11 +1458,10 @@ class JAIWhiteBalanceCalibrator:
         self,
         means: Dict[str, float],
         exposures: Dict[str, float],
-        gains: Dict[str, float],
         config: CalibrationConfig,
         target: float,
         unified_gain: float = 1.0,
-    ) -> Tuple[Dict[str, float], Dict[str, float], float, bool]:
+    ) -> Tuple[Dict[str, float], float, bool]:
         """
         Detect channels stuck at max exposure with insufficient signal and
         try extending the exposure ceiling.
@@ -1475,13 +1474,12 @@ class JAIWhiteBalanceCalibrator:
         Args:
             means: Current per-channel mean intensities
             exposures: Current per-channel exposures in ms
-            gains: Current per-channel gain values (unused, kept for API compat)
             config: Calibration configuration (may be modified if exposure extended)
             target: Target intensity value
             unified_gain: Current unified gain value
 
         Returns:
-            Tuple of (updated_exposures, gains, unified_gain, ceiling_extended)
+            Tuple of (updated_exposures, unified_gain, ceiling_extended)
             where ceiling_extended indicates if config.max_exposure_ms was raised
         """
         ceiling_extended = False
@@ -1499,11 +1497,11 @@ class JAIWhiteBalanceCalibrator:
                 break
 
         if not any_stuck:
-            return new_exposures, gains, unified_gain, False
+            return new_exposures, unified_gain, False
 
         if unified_gain < ug_max - 0.01:
             # _boost_unified_gain handles this case
-            return new_exposures, gains, unified_gain, False
+            return new_exposures, unified_gain, False
 
         # Unified gain maxed out - try extending exposure ceiling
         for channel in ["red", "green", "blue"]:
@@ -1542,7 +1540,7 @@ class JAIWhiteBalanceCalibrator:
                         f"Best achievable: ~{estimate:.0f}"
                     )
 
-        return new_exposures, gains, unified_gain, ceiling_extended
+        return new_exposures, unified_gain, ceiling_extended
 
     def _save_diagnostics(
         self,
@@ -1987,10 +1985,6 @@ class JAIWhiteBalanceCalibrator:
         max_iterations: Optional[int] = None,
         calibrate_black_level: Optional[bool] = None,
         base_gain: Optional[float] = None,
-        # Legacy params accepted but ignored for backward compatibility
-        max_gain_db: Optional[float] = None,
-        exposure_soft_cap_ms: Optional[float] = None,
-        boosted_max_gain_db: Optional[float] = None,
     ) -> WhiteBalanceResult:
         """
         Run simple white balance calibration at a single exposure.
@@ -2074,10 +2068,6 @@ class JAIWhiteBalanceCalibrator:
         max_iterations: Optional[int] = None,
         calibrate_black_level: Optional[bool] = None,
         base_gain: Optional[float] = None,
-        # Legacy params accepted but ignored for backward compatibility
-        max_gain_db: Optional[float] = None,
-        exposure_soft_cap_ms: Optional[float] = None,
-        boosted_max_gain_db: Optional[float] = None,
     ) -> Dict[str, WhiteBalanceResult]:
         """
         Run white balance calibration for each PPM angle.
