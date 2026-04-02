@@ -334,11 +334,20 @@ class JAIWhiteBalanceCalibrator:
         Initialize the calibrator.
 
         Args:
-            hardware: PycromanagerHardware instance with JAI camera configured
+            hardware: PycromanagerHardware instance with JAI camera configured.
+                If hardware.camera is a JAICamera, its properties are used
+                automatically (no need to pass jai_props).
             jai_props: Optional JAICameraProperties instance (created if not provided)
         """
         self.hardware = hardware
-        self.jai_props = jai_props or JAICameraProperties(hardware.core)
+        if jai_props is not None:
+            self.jai_props = jai_props
+        elif hasattr(hardware, 'camera') and hasattr(hardware.camera, 'properties'):
+            # Use the JAICamera's owned properties instance
+            self.jai_props = hardware.camera.properties
+        else:
+            # Legacy fallback: create directly from core
+            self.jai_props = JAICameraProperties(hardware.core)
         self._convergence_log = ConvergenceLog()
         self._black_levels: Dict[str, float] = {"red": 0, "green": 0, "blue": 0}
 
@@ -2006,10 +2015,12 @@ class JAIWhiteBalanceCalibrator:
         logger.info(f"Starting simple white balance calibration (initial exp={initial_exposure_ms}ms)")
 
         # Stop live mode if running - camera properties cannot be changed during live streaming
-        if self.hardware.core.is_sequence_running():
+        if hasattr(self.hardware, 'camera'):
+            self.hardware.camera.stop_if_streaming()
+        elif self.hardware.core.is_sequence_running():
             if self.hardware.studio is not None:
                 self.hardware.studio.live().set_live_mode(False)
-                logger.info("Stopped live mode before calibration")
+        logger.info("Ensured camera not streaming before calibration")
 
         # Set initial exposure on all channels
         self.jai_props.set_channel_exposures(
@@ -2108,10 +2119,12 @@ class JAIWhiteBalanceCalibrator:
         )
 
         # Stop live mode if running - camera properties cannot be changed during live streaming
-        if self.hardware.core.is_sequence_running():
+        if hasattr(self.hardware, 'camera'):
+            self.hardware.camera.stop_if_streaming()
+        elif self.hardware.core.is_sequence_running():
             if self.hardware.studio is not None:
                 self.hardware.studio.live().set_live_mode(False)
-                logger.info("Stopped live mode before calibration")
+        logger.info("Ensured camera not streaming before calibration")
 
         if output_path is not None:
             output_path = Path(output_path)

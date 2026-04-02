@@ -1,8 +1,13 @@
-"""Pycromanager hardware implementation for microscope control."""
+"""Pycromanager hardware implementation for microscope control.
+
+Stage movement and autofocus logic remain here. Camera operations
+(snap, exposure, debayer, white balance, live mode) are delegated to
+Camera subclasses in hardware/camera/. Rotation stage operations are
+delegated to RotationStage subclasses in hardware/rotation.py.
+"""
 
 import warnings
-from collections import OrderedDict
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple
 import logging
 import time
 from pycromanager import Core, Studio
@@ -10,12 +15,10 @@ from microscope_control.hardware.base import MicroscopeHardware, is_mm_running, 
 from microscope_control.autofocus.core import AutofocusUtils
 
 import numpy as np
-import skimage.color
 import skimage.filters
 import scipy.interpolate
 from scipy.ndimage import laplace as scipy_laplace
 import matplotlib.pyplot as plt
-from ppm_library.debayering import CPUDebayer
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +101,12 @@ def ppm_thor_to_psgticks(kinesis_pos: float) -> float:
 
 
 class PycromanagerHardware(MicroscopeHardware):
-    """Implementation for Pycromanager-based microscopes."""
+    """Implementation for Pycromanager-based microscopes.
+
+    Composes a Camera (auto-detected from MM) and optional RotationStage
+    (auto-detected from YAML config). Stage movement and autofocus logic
+    remain on this class; camera operations are delegated to self._camera.
+    """
 
     def __init__(self, core: Core, studio: Studio, settings: Dict[str, Any]):
         """
@@ -113,86 +121,291 @@ class PycromanagerHardware(MicroscopeHardware):
         self.studio = studio
         self.settings = settings
 
-        ## Rotation stage attributes (initialized by _initialize_microscope_methods)
-        self.psg_angle = None
-        self.rotation_device = None
-
-        # Cache camera name to avoid expensive get_device_properties() calls
-        # This was taking ~800ms per snap_image() call!
-        self._camera_name = None
-
         # Log microscope info
         microscope_info = settings.get("microscope", {})
         logger.info(
-            f"Initializing hardware for microscope: {microscope_info.get('name', 'Unknown')}"
+            "Initializing hardware for microscope: %s",
+            microscope_info.get("name", "Unknown"),
         )
 
-        # Set up microscope-specific methods based on name
-        self._initialize_microscope_methods()
+        # Build camera registry: detector_id -> Camera instance
+        # Multi-camera systems (e.g. brightfield + laser scanning) have
+        # multiple cameras available. The active camera is whichever MM
+        # currently has selected. The registry lets callers switch.
+        self._camera_registry = self._build_camera_registry()
+        self._camera_name = self._detect_camera_name()
+        self._active_detector_id = self._find_detector_id(self._camera_name)
 
-        # Cache the camera name immediately after initialization
-        self._camera_name = self.get_device_properties()["Core"]["Camera"]
-        logger.info(f"Cached camera name: {self._camera_name}")
+        # Create other components
+        self._stage = self._create_stage()
+        self._rotation_stage = self._create_rotation_stage()
 
-    def _initialize_microscope_methods(self):
-        """Initialize microscope-specific methods based on settings.
+        # Create optional illumination and detector components
+        self._illumination = self._create_illumination()
+        self._detector = self._create_detector()
 
-        This can be called both during __init__ and when settings are updated.
-        Detects rotation stage capability from the modalities config section
-        rather than checking the microscope name.
-        """
-        microscope_info = self.settings.get("microscope", {})
-        microscope_name = microscope_info.get("name", "")
+        # Legacy attributes kept for backward compat during migration
+        self.rotation_device = None
+        if self._rotation_stage is not None:
+            from microscope_control.hardware.rotation import (
+                PIZRotationStage, ThorRotationStage,
+            )
+            if isinstance(self._rotation_stage, PIZRotationStage):
+                self.rotation_device = self._rotation_stage._device
+            elif isinstance(self._rotation_stage, ThorRotationStage):
+                self.rotation_device = self._rotation_stage._device
 
-        # Detect rotation stage from modalities config (capability-based)
-        rotation_config = self._find_rotation_stage_config()
-        if rotation_config is not None:
-            r_device_name, optics_disabled = rotation_config
-
-            if not optics_disabled:
-                self.set_psg_ticks = self._set_rotation_ticks
-                self.set_psg_ticks_no_wait = self._set_rotation_ticks_no_wait
-                self.get_psg_ticks = self._get_rotation_ticks
-                self.home_psg = self._home_rotation
-
-                self.rotation_device = (
-                    self.settings.get("id_stage", {}).get(r_device_name, {}).get("device")
-                )
-                if not self.rotation_device:
-                    raise ValueError(
-                        f"No rotation stage device found in configuration. "
-                        f"Expected device '{r_device_name}' in id_stage section."
-                    )
-                try:
-                    _ = self._get_rotation_ticks()  # initialize psg_angle
-                    logger.info("Rotation stage methods initialized (device: %s)", r_device_name)
-                except Exception as e:
-                    print("Rot-stage Exception: ", e)
-                    logger.info("Continuing without rotation stage functionality")
-            else:
-                logger.info("Rotation optics disabled (ppm_optics=NA), using dummy rotation methods")
-                self.psg_angle = 0.0
-
-                def dummy_get_psg_ticks():
-                    return self.psg_angle
-
-                def dummy_set_psg_ticks(theta):
-                    self.psg_angle = theta
-
-                def dummy_set_psg_ticks_no_wait(theta):
-                    self.psg_angle = theta
-
-                def dummy_home_psg():
-                    self.psg_angle = 0.0
-
-                self.home_psg = dummy_home_psg
-                self.set_psg_ticks = dummy_set_psg_ticks
-                self.set_psg_ticks_no_wait = dummy_set_psg_ticks_no_wait
-                self.get_psg_ticks = dummy_get_psg_ticks
-
-        if microscope_name == "CAMM":
+        # CAMM-specific methods
+        if microscope_info.get("name", "") == "CAMM":
             self.swap_objective_lens = self._camm_swap_objective_lens
             logger.info("CAMM-specific methods initialized")
+
+    # --- Camera registry (multi-camera support) ---
+
+    def _detect_camera_name(self) -> str:
+        """Detect the active camera from MM Core."""
+        props = self.get_device_properties()
+        return props["Core"]["Camera"]
+
+    def _build_camera_registry(self) -> Dict[str, Any]:
+        """Build Camera instances for all detectors defined in config.
+
+        Each detector in the id_detector config section gets a Camera
+        instance. The appropriate subclass is chosen based on the
+        device name (JAICamera, LaserScanningCamera, or generic).
+
+        Returns:
+            Dict of detector_id -> Camera instance
+        """
+        from microscope_control.hardware.camera.pycromanager_camera import PycromanagerCamera
+        from microscope_control.hardware.camera.jai_camera import JAICamera
+        from microscope_control.hardware.camera.laser_scanning_camera import LaserScanningCamera
+
+        registry = {}
+        id_detectors = self.settings.get("id_detector", {})
+        for det_id, det_config in id_detectors.items():
+            if not isinstance(det_config, dict):
+                continue
+            device = det_config.get("device")
+            if not device:
+                continue
+            try:
+                cam = self._create_camera_for_device(
+                    device, det_config, det_id,
+                )
+                registry[det_id] = cam
+                logger.info(
+                    "Registered camera: %s -> %s (flip_x=%s, flip_y=%s)",
+                    det_id, type(cam).__name__,
+                    cam.flip_x, cam.flip_y,
+                )
+            except Exception as e:
+                logger.warning("Could not create camera for %s: %s", det_id, e)
+        return registry
+
+    def _create_camera_for_device(self, device_name: str,
+                                   detector_config: Dict[str, Any],
+                                   detector_id: str):
+        """Create the appropriate Camera subclass for a device.
+
+        Args:
+            device_name: MM device name (e.g. 'JAICamera', 'OSc-LSM', 'QCamera')
+            detector_config: Config dict from id_detector section
+            detector_id: The detector's LOCI ID (e.g. 'LOCI_DETECTOR_JAI_001')
+        """
+        from microscope_control.hardware.camera.pycromanager_camera import PycromanagerCamera
+        from microscope_control.hardware.camera.jai_camera import JAICamera
+        from microscope_control.hardware.camera.laser_scanning_camera import LaserScanningCamera
+
+        if device_name == "JAICamera":
+            return JAICamera(self.core, self.studio, detector_config)
+        elif device_name == "OSc-LSM":
+            return LaserScanningCamera(self.core, self.studio, detector_config)
+        else:
+            return PycromanagerCamera(self.core, self.studio, detector_config)
+
+    def _find_detector_id(self, camera_name: str) -> Optional[str]:
+        """Find the detector ID for a given MM camera device name."""
+        id_detectors = self.settings.get("id_detector", {})
+        for det_id, det_config in id_detectors.items():
+            if isinstance(det_config, dict) and det_config.get("device") == camera_name:
+                return det_id
+        return None
+
+    def _find_detector_config(self, camera_name: Optional[str] = None) -> Dict[str, Any]:
+        """Find detector configuration from YAML settings.
+
+        Args:
+            camera_name: MM device name to look up. Defaults to active camera.
+
+        Returns:
+            Config dict from id_detector section, or empty dict.
+        """
+        if camera_name is None:
+            camera_name = self._camera_name
+        id_detectors = self.settings.get("id_detector", {})
+        for det_id, det_config in id_detectors.items():
+            if isinstance(det_config, dict):
+                if det_config.get("device") == camera_name:
+                    return det_config
+        return {}
+
+    def get_camera_for_detector(self, detector_id: str):
+        """Get the Camera instance for a specific detector.
+
+        Args:
+            detector_id: LOCI detector ID (e.g. 'LOCI_DETECTOR_JAI_001')
+
+        Returns:
+            Camera instance for that detector
+
+        Raises:
+            KeyError: If detector_id is not in the registry
+        """
+        if detector_id not in self._camera_registry:
+            raise KeyError(
+                f"Detector '{detector_id}' not in registry. "
+                f"Available: {list(self._camera_registry.keys())}"
+            )
+        return self._camera_registry[detector_id]
+
+    def set_active_camera(self, detector_id: str) -> None:
+        """Switch the active camera to a different detector.
+
+        Updates the MM Core camera device and sets the new Camera
+        as the active one. Callers should also update illumination,
+        shutter, and detector settings as needed for the new modality.
+
+        Args:
+            detector_id: LOCI detector ID to activate
+        """
+        cam = self.get_camera_for_detector(detector_id)
+        device_name = cam.get_name()
+        self.core.set_property("Core", "Camera", device_name)
+        self._camera_name = device_name
+        self._active_detector_id = detector_id
+        logger.info(
+            "Active camera switched to %s (%s, flip_x=%s, flip_y=%s)",
+            detector_id, device_name, cam.flip_x, cam.flip_y,
+        )
+
+    @property
+    def camera_registry(self) -> Dict[str, Any]:
+        """All registered cameras, keyed by detector ID."""
+        return self._camera_registry
+
+    def _create_illumination(self):
+        """Create illumination source from config, or None."""
+        # Look for illumination config in modalities or top-level
+        # This is intentionally simple -- microscopes with multiple
+        # light sources will need to create them in modality-switching code
+        return None
+
+    def _create_detector(self):
+        """Create external detector from config, or None."""
+        return None
+
+    def _create_stage(self):
+        """Create the Stage instance for this microscope."""
+        from microscope_control.hardware.stage import PycromanagerStage
+        return PycromanagerStage(self.core, self.settings)
+
+    def _create_rotation_stage(self):
+        """Create the appropriate RotationStage subclass, or None."""
+        from microscope_control.hardware.rotation import (
+            PIZRotationStage, ThorRotationStage, DummyRotationStage,
+        )
+
+        rotation_config = self._find_rotation_stage_config()
+        if rotation_config is None:
+            return None
+
+        r_device_name, optics_disabled = rotation_config
+
+        if optics_disabled:
+            logger.info("Rotation optics disabled (ppm_optics=NA), using DummyRotationStage")
+            return DummyRotationStage()
+
+        # Look up the actual MM device name from id_stage config
+        mm_device = (
+            self.settings.get("id_stage", {}).get(r_device_name, {}).get("device")
+        )
+        if not mm_device:
+            raise ValueError(
+                f"No rotation stage device found in configuration. "
+                f"Expected device '{r_device_name}' in id_stage section."
+            )
+
+        # Create the appropriate rotation stage based on device type
+        try:
+            if mm_device == "PIZStage":
+                offset = self.settings.get("ppm_pizstage_offset", 50280.0)
+                stage = PIZRotationStage(self.core, mm_device, offset)
+            elif mm_device == "KBD101_Thor_Rotation":
+                stage = ThorRotationStage(self.core, mm_device)
+            else:
+                raise ValueError(
+                    f"Unknown rotation device: {mm_device}. "
+                    f"Supported: PIZStage, KBD101_Thor_Rotation"
+                )
+            # Verify we can read the current angle
+            _ = stage.get_angle()
+            logger.info("Rotation stage initialized (device: %s)", r_device_name)
+            return stage
+        except Exception as e:
+            logger.warning("Rotation stage init failed: %s. Continuing without.", e)
+            return None
+
+    # --- Component properties ---
+
+    @property
+    def camera(self):
+        """The currently active camera.
+
+        On multi-camera systems, this returns the Camera for whichever
+        detector is currently active. Use set_active_camera() to switch,
+        or get_camera_for_detector() for a specific detector.
+        """
+        if self._active_detector_id and self._active_detector_id in self._camera_registry:
+            return self._camera_registry[self._active_detector_id]
+        # Fallback: if no detector ID matched, return first registered camera
+        if self._camera_registry:
+            return next(iter(self._camera_registry.values()))
+        # Last resort: create and cache a generic camera for the active MM camera
+        if not hasattr(self, '_fallback_camera'):
+            from microscope_control.hardware.camera.pycromanager_camera import PycromanagerCamera
+            self._fallback_camera = PycromanagerCamera(self.core, self.studio, {})
+        return self._fallback_camera
+
+    @property
+    def stage(self):
+        """The XYZ stage attached to this microscope."""
+        return self._stage
+
+    @property
+    def rotation_stage(self):
+        """The rotation stage, or None if not configured."""
+        return self._rotation_stage
+
+    @property
+    def illumination(self):
+        """The primary illumination source, or None."""
+        return self._illumination
+
+    @illumination.setter
+    def illumination(self, value):
+        """Allow setting illumination (e.g. during modality switch)."""
+        self._illumination = value
+
+    @property
+    def detector(self):
+        """External detector (e.g. PMT), or None."""
+        return self._detector
+
+    @detector.setter
+    def detector(self, value):
+        """Allow setting detector (e.g. during modality switch)."""
+        self._detector = value
 
     def _find_rotation_stage_config(self):
         """Check modalities config for a rotation stage.
@@ -217,53 +430,45 @@ class PycromanagerHardware(MicroscopeHardware):
         return None
 
     def move_to_position(self, position: Position) -> None:
-        """Move stage to specified position.
+        """Move stage to specified position with coordinate validation.
 
-        Only moves and validates axes that are explicitly specified (not None).
-        For example, Position(x, y) moves XY only without touching or validating Z.
+        Overrides the base class delegation to add:
+        - Coordinate range validation against configured stage limits
+        - Per-axis timing diagnostics
+
+        Only moves axes that are explicitly specified (not None).
+        For example, Position(x, y) moves XY only without touching Z.
         """
         t_total = time.perf_counter()
 
-        # Record which axes were originally specified BEFORE any population.
-        # Validation must be limited to these axes so that, e.g., an XY-only
-        # move does not fail because the current Z happens to be outside the
-        # configured Z bounds.
+        # Validate only the originally-specified axes
         specified_axes = position.get_specified_axes()
         has_xy = "x" in specified_axes and "y" in specified_axes
         has_z = "z" in specified_axes
 
-        # Validate only the originally-specified axes
         if not is_coordinate_in_range(self.settings, position, axes=specified_axes):
             logger.info(f"Current stage limits: {self.settings.get('stage', {})}")
             logger.info(f"Requested position: {position}")
             raise ValueError(f"Position out of range: {position}")
 
-        # Get focus device from settings if available
-        stage_config = self.settings.get("stage", {})
-        z_stage_device = stage_config.get("z_stage", None)
-
-        if has_z and z_stage_device and self.core.get_focus_device() != z_stage_device:
-            self.core.set_focus_device(z_stage_device)
-
-        # Move only the specified axes
+        # Issue moves (non-blocking)
         t0 = time.perf_counter()
         if has_z:
-            self.core.set_position(position.z)
+            self._stage.move_z_no_wait(position.z)
         if has_xy:
-            self.core.set_xy_position(position.x, position.y)
+            self._stage.move_xy_no_wait(position.x, position.y)
         t_set = (time.perf_counter() - t0) * 1000
 
+        # Wait for completion
         t_wait_xy = 0
         t_wait_z = 0
-
         if has_xy:
             t0 = time.perf_counter()
-            self.core.wait_for_device(self.core.get_xy_stage_device())
+            self._stage.wait_xy()
             t_wait_xy = (time.perf_counter() - t0) * 1000
-
         if has_z:
             t0 = time.perf_counter()
-            self.core.wait_for_device(self.core.get_focus_device())
+            self._stage.wait_z()
             t_wait_z = (time.perf_counter() - t0) * 1000
 
         t_total_ms = (time.perf_counter() - t_total) * 1000
@@ -274,28 +479,16 @@ class PycromanagerHardware(MicroscopeHardware):
             f"-> {position}"
         )
 
-    def move_xy_no_wait(self, x: float, y: float) -> None:
-        """Issue XY stage move without waiting for completion.
-
-        Call wait_for_xy() before any operation that depends on the
-        stage being at the target position (e.g., image acquisition).
-        """
-        self.core.set_xy_position(x, y)
-        logger.debug(f"move_xy_no_wait: target X={x:.2f}, Y={y:.2f}")
-
-    def wait_for_xy(self) -> None:
-        """Block until the XY stage reaches its target position."""
-        self.core.wait_for_device(self.core.get_xy_stage_device())
-
     def get_current_position(self, max_retries: int = 3) -> Position:
-        """Get current stage position with retry on transient serial errors."""
+        """Get current stage position with retry on transient serial errors.
+
+        Overrides the base class delegation to add retry logic for
+        transient serial communication failures.
+        """
         for attempt in range(1, max_retries + 1):
             try:
-                return Position(
-                    self.core.get_x_position(),
-                    self.core.get_y_position(),
-                    self.core.get_position(),
-                )
+                x, y, z = self._stage.get_xyz()
+                return Position(x, y, z)
             except Exception as e:
                 if attempt < max_retries and "Serial command failed" in str(e):
                     logger.warning(
@@ -306,373 +499,10 @@ class PycromanagerHardware(MicroscopeHardware):
                 else:
                     raise
 
-    def set_z_no_wait(self, z: float) -> None:
-        """Set Z target position without waiting for the device to arrive.
-
-        Issues core.set_position(z) but skips wait_for_device(), allowing the
-        caller to return immediately while the stage ramps toward the target.
-        Used by sweep-focus to start a continuous Z ramp.
-        """
-        stage_config = self.settings.get("stage", {})
-        z_stage_device = stage_config.get("z_stage", None)
-        if z_stage_device and self.core.get_focus_device() != z_stage_device:
-            self.core.set_focus_device(z_stage_device)
-        self.core.set_position(z)
-        logger.debug(f"set_z_no_wait: target Z={z}")
-
-    def get_z_position(self) -> float:
-        """Get current Z position only (no X/Y read). Faster than get_current_position()."""
-        return self.core.get_position()
-
-    def snap_image(self, background_correction=False, remove_alpha=True, debayering="auto"):
-        """
-        Snap an image using MM Core and return img, tags.
-
-        Args:
-            background_correction: Apply background correction (if implemented)
-            remove_alpha: Remove alpha channel from BGRA images
-            debayering: Debayering mode:
-                - "auto" (default): Automatically debayer based on camera type
-                  (MicroPublisher6 requires debayering, JAI prism camera does not)
-                - True: Force debayering (only applies to MicroPublisher6)
-                - False: Disable debayering
-
-        Returns:
-            Tuple of (image_array, metadata_tags)
-        """
-        import time
-        t_snap_start = time.perf_counter()
-
-        if self.core.is_sequence_running():
-            # Stop any running sequence (core-level continuous acquisition or studio live mode)
-            # Try core-level stop first (works for both cases), then studio as fallback
-            try:
-                self.core.stop_sequence_acquisition()
-                # Allow MicroManager time to fully stop acquisition before
-                # we proceed with snap. Without this, the camera may still be
-                # mid-frame when snap_image() is called, causing a JVM crash.
-                time.sleep(0.1)
-                logger.debug("Stopped sequence acquisition via core before snap")
-            except Exception as e:
-                logger.warning(f"Failed to stop sequence via core: {e}")
-                # Try studio live mode stop as fallback
-                if self.studio is not None:
-                    try:
-                        self.studio.live().set_live_mode(False)
-                        time.sleep(0.1)
-                    except Exception as e2:
-                        logger.warning(f"Failed to stop live mode via studio: {e2}")
-        t_live_check = time.perf_counter()
-        logger.debug(f"    [TIMING-INTERNAL] Check/stop live mode: {(t_live_check - t_snap_start)*1000:.1f}ms")
-
-        # Use cached camera name instead of expensive get_device_properties() call
-        # This optimization saves ~800ms per snap!
-        camera = self._camera_name
-        t_get_props = time.perf_counter()
-        logger.debug(f"    [TIMING-INTERNAL] Get camera name (cached): {(t_get_props - t_live_check)*1000:.1f}ms")
-
-        # Determine if debayering should be applied
-        # MicroPublisher6 has a Bayer filter and needs debayering
-        # JAI prism camera does NOT need debayering (3-sensor prism design)
-        needs_debayer = False
-        if debayering == "auto":
-            # Auto-detect based on camera type
-            needs_debayer = (camera == "MicroPublisher6")
-        elif debayering:
-            # Explicitly requested - only works for MicroPublisher6
-            needs_debayer = (camera == "MicroPublisher6")
-        # If debayering=False, needs_debayer stays False
-
-        logger.debug(f"    Camera: {camera}, Debayering: {needs_debayer} (requested: {debayering})")
-
-        # Handle debayering for MicroPublisher6
-        if needs_debayer:
-            self.core.set_property("MicroPublisher6", "Color", "OFF")
-
-        # Handle white balance for JAI - set WB algorithm to Off to prevent
-        # the camera from actively adjusting colors during acquisition.
-        if camera == "JAICamera":
-            t_wb_start = time.perf_counter()
-            try:
-                # Log sensor temperature (diagnostic)
-                try:
-                    temp = self.core.get_property("JAICamera", "Temperature")
-                    logger.debug(f"    JAI sensor temperature before snap Off: {temp}")
-                except Exception:
-                    pass
-                self.core.set_property("JAICamera", "WhiteBalance", "Off")
-            except Exception as e:
-                logger.debug(f"    WhiteBalance property not writable (non-fatal): {e}")
-            t_wb_end = time.perf_counter()
-            logger.debug(f"    [TIMING-INTERNAL] Set WhiteBalance property: {(t_wb_end - t_wb_start)*1000:.1f}ms")
-
-        # Capture image
-        t_cam_start = time.perf_counter()
-        logger.debug(f"    [TIMING-INTERNAL] Pre-snap overhead (setup to snap): {(t_cam_start - t_snap_start)*1000:.1f}ms")
-        self.core.snap_image()
-        t_cam_snap = time.perf_counter()
-        logger.debug(f"    [TIMING-INTERNAL] Camera snap (exposure+readout): {(t_cam_snap - t_cam_start)*1000:.1f}ms")
-
-        tagged_image = self.core.get_tagged_image()
-        t_cam_transfer = time.perf_counter()
-        logger.debug(f"    [TIMING-INTERNAL] Get tagged image (buffer transfer): {(t_cam_transfer - t_cam_snap)*1000:.1f}ms")
-
-        # Sort tags for consistency
-        tags = OrderedDict(sorted(tagged_image.tags.items()))
-
-        # Process pixels
-        t_proc_start = time.perf_counter()
-        pixels = tagged_image.pix
-        total_pixels = pixels.shape[0]
-        height, width = tags["Height"], tags["Width"]
-        assert (total_pixels % (height * width)) == 0
-        nchannels = total_pixels // (height * width)
-
-        if nchannels > 1:
-            pixels = pixels.reshape(height, width, nchannels)
-        else:
-            pixels = pixels.reshape(height, width)
-        t_reshape = time.perf_counter()
-        logger.debug(f"    [TIMING-INTERNAL] Pixel reshape: {(t_reshape - t_proc_start)*1000:.1f}ms")
-
-        # Apply debayering if needed
-        if needs_debayer:
-            debayerx = CPUDebayer(
-                pattern="GRBG",
-                image_bit_clipmax=(2**14) - 1,
-                image_dtype=np.uint16,
-                convolution_mode="wrap",
-            )
-
-            pixels = debayerx.debayer(pixels)
-            logger.debug(f"Before uint14->uint16 scaling: mean {pixels.mean((0, 1))}")
-            # Scale 14-bit sensor data to 16-bit range, preserving precision
-            # Old code converted to 8-bit which caused quantization artifacts
-            pixels = ((pixels.astype(np.float32) / ((2**14) - 1)) * 65535).astype(np.uint16)
-            pixels = np.clip(pixels, 0, 65535).astype(np.uint16)
-            logger.debug(f"After uint14->uint16 scaling: mean {pixels.mean((0, 1))}")
-            self.core.set_property("MicroPublisher6", "Color", "ON")
-
-            return pixels, tags
-
-        # Handle different camera types
-        if camera in ["QCamera", "MicroPublisher6", "JAICamera"]:
-            if nchannels > 1:
-                t_color_start = time.perf_counter()
-                pixels = pixels[:, :, ::-1]  # BGRA to ARGB
-                if (camera != "QCamera") and remove_alpha:
-                    pixels = pixels[:, :, 1:]  # Remove alpha channel
-                t_color_end = time.perf_counter()
-                logger.debug(f"    [TIMING-INTERNAL] Color channel processing: {(t_color_end - t_color_start)*1000:.1f}ms")
-
-        elif camera == "OSc-LSM":
-            pass
-        else:
-            logger.error(
-                f"Capture Failed: Unrecognized camera: {tags.get('Core-Camera', 'Unknown')}"
-            )
-            return None, None
-
-        return pixels, tags
-
-    def _process_raw_image(self, pixels, width, height, nchannels, debayering="auto"):
-        """
-        Shared post-processing for raw pixel data from snap or live buffer.
-
-        Handles debayering (MicroPublisher6), channel reordering (BGRA->RGB),
-        and alpha removal.
-
-        Args:
-            pixels: Raw pixel array from MM (flat or already shaped)
-            width: Image width in pixels
-            height: Image height in pixels
-            nchannels: Number of channels (1=grayscale, 3/4=color)
-            debayering: Debayering mode ("auto", True, False)
-
-        Returns:
-            Processed numpy array (H, W) for grayscale or (H, W, 3) for RGB
-        """
-        camera = self._camera_name
-
-        # Reshape if flat
-        if pixels.ndim == 1:
-            if nchannels > 1:
-                pixels = pixels.reshape(height, width, nchannels)
-            else:
-                pixels = pixels.reshape(height, width)
-
-        # Determine debayering
-        needs_debayer = False
-        if debayering == "auto":
-            needs_debayer = (camera == "MicroPublisher6")
-        elif debayering:
-            needs_debayer = (camera == "MicroPublisher6")
-
-        # Apply debayering for MicroPublisher6
-        if needs_debayer:
-            debayerx = CPUDebayer(
-                pattern="GRBG",
-                image_bit_clipmax=(2**14) - 1,
-                image_dtype=np.uint16,
-                convolution_mode="wrap",
-            )
-            pixels = debayerx.debayer(pixels)
-            pixels = ((pixels.astype(np.float32) / ((2**14) - 1)) * 65535).astype(np.uint16)
-            pixels = np.clip(pixels, 0, 65535).astype(np.uint16)
-            return pixels
-
-        # Handle channel reordering for color cameras
-        if camera in ["QCamera", "MicroPublisher6", "JAICamera"]:
-            if nchannels > 1 and pixels.ndim == 3:
-                pixels = pixels[:, :, ::-1]  # BGRA to ARGB
-                if camera != "QCamera" and pixels.shape[2] == 4:
-                    pixels = pixels[:, :, 1:]  # Remove alpha channel
-        elif camera == "OSc-LSM":
-            pass
-        else:
-            logger.warning(f"Unrecognized camera for post-processing: {camera}")
-
-        return pixels
-
-    def start_continuous_acquisition(self):
-        """
-        Start continuous sequence acquisition at the Core level.
-
-        Uses core.start_continuous_sequence_acquisition() to fill the circular
-        buffer with frames at the camera's native frame rate. This bypasses
-        MM's studio/live mode entirely -- no MM live window interaction.
-
-        Call stop_continuous_acquisition() to stop, or get_live_frame() to
-        read frames from the buffer.
-        """
-        try:
-            if self.core.is_sequence_running():
-                logger.debug("Sequence already running, not starting another")
-                return
-
-            # Clear any stale frames from previous runs
-            self.core.clear_circular_buffer()
-
-            # Start continuous acquisition with 0ms interval (camera native rate)
-            self.core.start_continuous_sequence_acquisition(0)
-            logger.info("Continuous sequence acquisition started (core-level)")
-        except Exception as e:
-            logger.error(f"Failed to start continuous acquisition: {e}")
-            raise
-
-    def stop_continuous_acquisition(self):
-        """
-        Stop continuous sequence acquisition at the Core level.
-
-        Safe to call even if no sequence is running.
-        """
-        try:
-            if self.core.is_sequence_running():
-                self.core.stop_sequence_acquisition()
-                logger.info("Continuous sequence acquisition stopped")
-            else:
-                logger.debug("No sequence running, nothing to stop")
-        except Exception as e:
-            logger.error(f"Failed to stop continuous acquisition: {e}")
-            raise
-
-    def get_live_frame(self):
-        """
-        Get the latest frame from MM's circular buffer.
-
-        This reads from the circular buffer (near-instant) rather than triggering
-        a new exposure. Works with both core-level continuous acquisition
-        (start_continuous_acquisition) and studio live mode.
-
-        Returns:
-            Tuple of (image_array, metadata_dict) or (None, None) if no frame available.
-            image_array is (H, W) for grayscale or (H, W, 3) for RGB.
-            metadata_dict contains width, height, channels, bytesPerPixel.
-        """
-        try:
-            # Check if there are frames available
-            remaining = self.core.get_remaining_image_count()
-            if remaining == 0:
-                return None, None
-
-            # Read from circular buffer
-            pixels = self.core.get_last_image()
-            if pixels is None:
-                return None, None
-
-            width = self.core.get_image_width()
-            height = self.core.get_image_height()
-            nchannels = self.core.get_number_of_components()
-            bpp = self.core.get_bytes_per_pixel()
-
-            # Process the raw image (debayering, channel reorder, etc.)
-            processed = self._process_raw_image(pixels, width, height, nchannels)
-
-            # Build metadata
-            meta = {
-                "width": processed.shape[1],
-                "height": processed.shape[0],
-                "channels": 1 if processed.ndim == 2 else processed.shape[2],
-                "bytesPerPixel": processed.dtype.itemsize,
-            }
-
-            return processed, meta
-
-        except Exception as e:
-            # "Circular buffer is empty" is a benign race condition -
-            # buffer can drain between get_remaining_image_count() and
-            # get_last_image(). Log at debug, not error.
-            msg = str(e)
-            if "Circular buffer" in msg or "buffer is empty" in msg:
-                logger.debug("Live frame buffer empty (race condition, harmless)")
-            else:
-                logger.error(f"get_live_frame failed: {e}")
-            return None, None
-
-    def get_fov(self) -> Tuple[float, float]:
-        """
-        Get field of view in micrometers.
-
-        Returns:
-            Tuple of (fov_x, fov_y) in micrometers
-        """
-        camera = self.core.get_property("Core", "Camera")
-
-        if camera == "OSc-LSM":
-            height = int(self.core.get_property(camera, "LSM-Resolution"))
-            width = height
-        elif camera == "JAICamera":
-            height = self.settings["id_detector"]["LOCI_DETECTOR_JAI_001"]["height_px"]
-            width = self.settings["id_detector"]["LOCI_DETECTOR_JAI_001"]["width_px"]
-
-        elif camera in ["QCamera", "MicroPublisher6"]:
-            height = int(self.core.get_property(camera, "Y-dimension"))
-            width = int(self.core.get_property(camera, "X-dimension"))
-
-        else:
-            raise ValueError(f"Unknown camera type: {camera}")
-
-        pixel_size_um = self.core.get_pixel_size_um()
-        fov_y = height * pixel_size_um
-        fov_x = width * pixel_size_um
-
-        return fov_x, fov_y
-
-    def set_exposure(self, exposure_ms: float) -> None:
-        """Set camera exposure time in milliseconds."""
-        camera = self.core.get_property("Core", "Camera")
-        if camera == "JAICamera":
-            frame_rate_min = 0.125
-            frame_rate_max = 38.0
-            margin = 1.01
-            exposure_s = exposure_ms / 1000.0
-            required_frame_rate = round(1.0 / (exposure_s * margin), 3)
-            frame_rate = min(max(required_frame_rate, frame_rate_min), frame_rate_max)
-            self.core.set_property("JAICamera", "FrameRateHz", frame_rate)
-            self.core.set_property("JAICamera", "Exposure", exposure_ms)
-        else:
-            self.core.set_exposure(exposure_ms)
-        self.core.wait_for_device(camera)
+    # snap_image, set_exposure, get_exposure, get_fov, get_pixel_size_um,
+    # start/stop_continuous_acquisition, get_live_frame, and white_balance
+    # are now delegated through MicroscopeHardware -> self._camera.
+    # See camera/base.py, camera/pycromanager_camera.py, camera/jai_camera.py
 
     def autofocus(
         self,
@@ -729,15 +559,9 @@ class PycromanagerHardware(MicroscopeHardware):
 
                 img, tags = self.snap_image()
 
-                # Extract green channel for focus calculation
-                if self.core.get_property("Core", "Camera") == "JAICamera":
-                    img_gray = np.mean(img, 2)
-                else:
-                    # TODO: debayer to go to gray ?
-                    # TODO support other cameras!
-                    green1 = img[0::2, 0::2]
-                    green2 = img[1::2, 1::2]
-                    img_gray = ((green1 + green2) / 2.0).astype(np.float32)
+                # Extract green/grayscale channel for focus calculation
+                # (camera-specific: JAI uses mean across RGB, Bayer extracts green pixels)
+                img_gray = self.camera.extract_green_channel(img)
 
                 score = score_metric(img_gray)
                 if hasattr(score, "ndim") and score.ndim == 2:
@@ -1141,25 +965,13 @@ class PycromanagerHardware(MicroscopeHardware):
                     f"({len(measurements)} pts in {elapsed:.0f}ms)")
         return best_z
 
-    def white_balance(self, img=None, background_image=None, gain=1.0, white_balance_profile=None):
-        """Apply white balance correction to image."""
-        if white_balance_profile is None:
-            # Try to get default from settings
-            wb_settings = self.settings.get("white_balance", {})
-            default_wb = wb_settings.get("default", {}).get("default", [1.0, 1.0, 1.0])
-            white_balance_profile = default_wb
-
-        if img is None:
-            raise ValueError("Input image 'img' must not be None for white balancing.")
-
-        if background_image is not None:
-            r, g, b = background_image.mean((0, 1))
-            r1, g1, b1 = (r, g, b) / max(r, g, b)
-        else:
-            r1, g1, b1 = white_balance_profile
-
-        img_wb = img.astype(np.float64) * gain / [r1, g1, b1]
-        return np.clip(img_wb, 0, 255).astype(np.uint8)
+    def white_balance(self, img=None, background_image=None, gain=1.0,
+                      white_balance_profile=None):
+        """Apply software white balance (delegates to camera with settings)."""
+        return self.camera.white_balance(
+            img, background_image=background_image, gain=gain,
+            white_balance_profile=white_balance_profile, settings=self.settings,
+        )
 
     def get_device_properties(self, scope: str = "used") -> Dict[str, Dict[str, Any]]:
         """
@@ -1191,85 +1003,9 @@ class PycromanagerHardware(MicroscopeHardware):
 
         return device_dict
 
-    def _set_rotation_ticks(self, theta: float) -> None:
-        """Set the rotation stage to a specific angle."""
-        # Try to get rotation stage device from settings
-        rotation_device = self.rotation_device
-
-        if rotation_device == "PIZStage":
-            theta_pistage = self.ppm_rlpangle_to_PIStage(theta)
-            self.core.set_position(rotation_device, theta_pistage)
-            self.core.wait_for_device(rotation_device)
-            logger.debug(f"Set rotation angle to {theta} deg (Thor position: {theta_pistage})")
-        elif rotation_device == "KBD101_Thor_Rotation":
-            theta_thor = ppm_psgticks_to_thor(theta)
-            self.core.set_position(rotation_device, theta_thor)
-            self.core.wait_for_device(rotation_device)
-            logger.debug(f"Set rotation angle to {theta} deg (Thor position: {theta_thor})")
-        else:
-            logger.error(f"Unknown rotation device: {rotation_device} in config")
-            raise ValueError(
-                f"Unknown rotation device: {rotation_device} \
-                             supports only [KBD101_Thor_Rotation, PIZStage]"
-            )
-
-    def _set_rotation_ticks_no_wait(self, theta: float) -> None:
-        """Set the rotation stage to a specific angle without waiting.
-
-        Issues the move command and returns immediately. Call
-        wait_for_rotation() before any operation that depends on
-        the rotation being complete (e.g., image acquisition).
-        """
-        rotation_device = self.rotation_device
-
-        if rotation_device == "PIZStage":
-            theta_pistage = self.ppm_rlpangle_to_PIStage(theta)
-            self.core.set_position(rotation_device, theta_pistage)
-        elif rotation_device == "KBD101_Thor_Rotation":
-            theta_thor = ppm_psgticks_to_thor(theta)
-            self.core.set_position(rotation_device, theta_thor)
-        else:
-            raise ValueError(f"Unknown rotation device: {rotation_device}")
-        logger.debug(f"Set rotation angle (no wait) to {theta} deg")
-
-    def wait_for_rotation(self) -> None:
-        """Block until the rotation stage reaches its target position."""
-        self.core.wait_for_device(self.rotation_device)
-
-    def _get_rotation_ticks(self) -> float:
-        """Get the current rotation stage angle."""
-        rotation_device = self.rotation_device
-
-        if rotation_device == "PIZStage":
-            pistage_pos = self.core.get_position(rotation_device)
-            return self.ppm_PIStage_to_rlpangle(pistage_pos)
-        elif rotation_device == "KBD101_Thor_Rotation":
-            thor_pos = self.core.get_position(rotation_device)
-            return ppm_thor_to_psgticks(thor_pos)
-        else:
-            raise ValueError(
-                f"Unknown rotation device: {rotation_device} \
-                             supports only [KBD101_Thor_Rotation, PIZStage]"
-            )
-
-    def _home_rotation(self) -> None:
-        """Home the rotation stage."""
-        # Try to get rotation stage device from settings
-        rotation_device = self.rotation_device
-        self.core.home(rotation_device)
-        self.core.wait_for_device(rotation_device)
-        logger.debug("Homed rotation stage")
-
-    ## since offset is going to be optimized, it need to stay with the config
-    def ppm_rlpangle_to_PIStage(self, theta: float) -> float:
-        """Convert PPM angle (in degrees) to PI stage position."""
-        offset = self.settings.get("ppm_pizstage_offset", 50280.0)
-        return (theta * 1000) + offset
-
-    def ppm_PIStage_to_rlpangle(self, pi_pos: float) -> float:
-        """Convert PI stage position to PPM angle (in degrees)."""
-        offset = self.settings.get("ppm_pizstage_offset", 50280.0)
-        return (pi_pos - offset) / 1000.0
+    # Rotation stage methods (set_psg_ticks, get_psg_ticks, etc.) are now
+    # delegated through MicroscopeHardware -> self._rotation_stage.
+    # See hardware/rotation.py for PIZRotationStage, ThorRotationStage, DummyRotationStage.
 
     def _camm_swap_objective_lens(self, desired_imaging_mode: Dict[str, Any]):
         """

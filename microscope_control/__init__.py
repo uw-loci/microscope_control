@@ -41,6 +41,9 @@ __author__ = "Mike Nelson, Bin Li, Jenu Chacko"
 
 # Make key classes easily accessible
 from microscope_control.hardware.base import MicroscopeHardware, Position, is_mm_running, is_coordinate_in_range
+from microscope_control.hardware.camera.base import Camera
+from microscope_control.hardware.stage import Stage
+from microscope_control.hardware.rotation import RotationStage
 from microscope_control.hardware.pycromanager import PycromanagerHardware, init_pycromanager
 from microscope_control.autofocus.core import AutofocusUtils
 from microscope_control.autofocus.metrics import AutofocusMetrics
@@ -50,6 +53,9 @@ from microscope_control.config.manager import ConfigManager
 __all__ = [
     "MicroscopeHardware",
     "Position",
+    "Camera",
+    "Stage",
+    "RotationStage",
     "PycromanagerHardware",
     "init_pycromanager",
     "is_mm_running",

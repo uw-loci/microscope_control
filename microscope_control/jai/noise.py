@@ -94,8 +94,12 @@ class JAINoiseMeasurement:
         # Lazily create jai_props if not provided
         if self.jai_props is None:
             try:
-                from microscope_control.jai.properties import JAICameraProperties
-                self.jai_props = JAICameraProperties(hardware.core)
+                if hasattr(hardware, 'camera') and hasattr(hardware.camera, 'properties'):
+                    # Use the JAICamera's owned properties instance
+                    self.jai_props = hardware.camera.properties
+                else:
+                    from microscope_control.jai.properties import JAICameraProperties
+                    self.jai_props = JAICameraProperties(hardware.core)
             except Exception as e:
                 logger.warning(f"Could not create JAICameraProperties: {e}")
 
@@ -114,7 +118,7 @@ class JAINoiseMeasurement:
                 exposure_ms = self.jai_props.get_channel_exposures()
             except Exception:
                 try:
-                    exp = float(self.hardware.core.get_exposure())
+                    exp = float(self.hardware.get_exposure())
                     exposure_ms = {"red": exp, "green": exp, "blue": exp}
                 except Exception:
                     pass
