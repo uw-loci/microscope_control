@@ -235,6 +235,28 @@ def is_mm_running() -> bool:
     return False
 
 
+def _check_axis_in_range(axis_name, value, limits_key, stage_limits):
+    """Check if a single axis value is within configured limits."""
+    if value is None:
+        return True
+    axis_limits = stage_limits.get(limits_key, {})
+    if not axis_limits:
+        logger.warning("%s limits not found in configuration", axis_name)
+        warnings.warn(f"{axis_name} limits not found in configuration")
+        return False
+    low = axis_limits.get('low')
+    high = axis_limits.get('high')
+    if low is None or high is None:
+        logger.warning("%s limit values are not properly defined: %s", axis_name, axis_limits)
+        warnings.warn(f"{axis_name} limit values are not properly defined: {axis_limits}")
+        return False
+    if low <= value <= high:
+        return True
+    logger.warning("%s position %s out of range [%s, %s]", axis_name, value, low, high)
+    warnings.warn(f"{axis_name} position {value} out of range [{low}, {high}]")
+    return False
+
+
 def is_coordinate_in_range(
     settings: Dict[str, Any],
     position: Position,
@@ -260,79 +282,10 @@ def is_coordinate_in_range(
     if axes is None:
         axes = position.get_specified_axes()
 
-    _within_x_limit = _within_y_limit = _within_z_limit = True
-
-    # Check if stage limits exist in settings
     stage_limits = settings.get('stage', {}).get('limits', {})
 
-    # --- X axis ---
-    if "x" not in axes or position.x is None:
-        # Not requested for validation or not specified -- skip
-        pass
-    else:
-        _within_x_limit = False
-        x_limits = stage_limits.get('x_um', {})
-        if x_limits:
-            x_low = x_limits.get('low')
-            x_high = x_limits.get('high')
+    x_ok = "x" not in axes or _check_axis_in_range("X", position.x, "x_um", stage_limits)
+    y_ok = "y" not in axes or _check_axis_in_range("Y", position.y, "y_um", stage_limits)
+    z_ok = "z" not in axes or _check_axis_in_range("Z", position.z, "z_um", stage_limits)
 
-            if x_low is not None and x_high is not None:
-                if x_low <= position.x <= x_high:
-                    _within_x_limit = True
-                else:
-                    logger.warning(f"X position {position.x} out of range [{x_low}, {x_high}]")
-                    warnings.warn(f"X position {position.x} out of range [{x_low}, {x_high}]")
-            else:
-                logger.warning(f"X limit values are not properly defined: {x_limits}")
-                warnings.warn(f"X limit values are not properly defined: {x_limits}")
-        else:
-            logger.warning("X limits not found in configuration")
-            warnings.warn("X limits not found in configuration")
-
-    # --- Y axis ---
-    if "y" not in axes or position.y is None:
-        pass
-    else:
-        _within_y_limit = False
-        y_limits = stage_limits.get('y_um', {})
-        if y_limits:
-            y_low = y_limits.get('low')
-            y_high = y_limits.get('high')
-
-            if y_low is not None and y_high is not None:
-                if y_low <= position.y <= y_high:
-                    _within_y_limit = True
-                else:
-                    logger.warning(f"Y position {position.y} out of range [{y_low}, {y_high}]")
-                    warnings.warn(f"Y position {position.y} out of range [{y_low}, {y_high}]")
-            else:
-                logger.warning(f"Y limit values are not properly defined: {y_limits}")
-                warnings.warn(f"Y limit values are not properly defined: {y_limits}")
-        else:
-            logger.warning("Y limits not found in configuration")
-            warnings.warn("Y limits not found in configuration")
-
-    # --- Z axis ---
-    if "z" not in axes or position.z is None:
-        pass
-    else:
-        _within_z_limit = False
-        z_limits = stage_limits.get('z_um', {})
-        if z_limits:
-            z_low = z_limits.get('low')
-            z_high = z_limits.get('high')
-
-            if z_low is not None and z_high is not None:
-                if z_low <= position.z <= z_high:
-                    _within_z_limit = True
-                else:
-                    logger.warning(f"Z position {position.z} out of range [{z_low}, {z_high}]")
-                    warnings.warn(f"Z position {position.z} out of range [{z_low}, {z_high}]")
-            else:
-                logger.warning(f"Z limit values are not properly defined: {z_limits}")
-                warnings.warn(f"Z limit values are not properly defined: {z_limits}")
-        else:
-            logger.warning("Z limits not found in configuration")
-            warnings.warn("Z limits not found in configuration")
-
-    return _within_x_limit and _within_y_limit and _within_z_limit
+    return x_ok and y_ok and z_ok

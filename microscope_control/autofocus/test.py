@@ -160,8 +160,8 @@ def test_standard_autofocus_at_current_position(
                     Position(initial_pos.x, initial_pos.y, result["initial_z"])
                 )
                 logger.info("Returned to initial Z position after error")
-            except:
-                pass
+            except Exception as e:
+                logger.warning("Failed to return to initial position: %s", e)
 
     return result
 
@@ -273,8 +273,8 @@ def test_adaptive_autofocus_at_current_position(
                     Position(initial_pos.x, initial_pos.y, result["initial_z"])
                 )
                 logger.info("Returned to initial Z position after error")
-            except:
-                pass
+            except Exception as e:
+                logger.warning("Failed to return to initial position: %s", e)
 
     return result
 
@@ -764,8 +764,8 @@ def test_autofocus_at_current_position(
                     Position(initial_pos.x, initial_pos.y, result["initial_z"])
                 )
                 logger.info("Returned to initial Z position after error")
-            except:
-                pass
+            except Exception as e:
+                logger.warning("Failed to return to initial position: %s", e)
 
     return result
 
