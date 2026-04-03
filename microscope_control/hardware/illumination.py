@@ -114,14 +114,92 @@ class AnalogIllumination(Illumination):
         return (self._min_v, self._max_v)
 
 
+class DevicePropertyIllumination(Illumination):
+    """Illumination controlled by MM device State + Intensity properties.
+
+    For microscope-integrated light sources (Nikon DiaLamp, Lumencor,
+    CoolLED, etc.) that expose on/off via a State property and brightness
+    via an Intensity property -- as opposed to raw analog voltage control.
+
+    Args:
+        core: Pycromanager Core object
+        device_name: MM device name (e.g. 'DiaLamp')
+        state_property: MM property for on/off (default 'State')
+        intensity_property: MM property for brightness (default 'Intensity')
+        max_intensity: Maximum allowed intensity value (default 2100)
+        label: Human-readable label for logging
+    """
+
+    def __init__(self, core, device_name: str,
+                 state_property: str = "State",
+                 intensity_property: str = "Intensity",
+                 max_intensity: float = 2100.0,
+                 label: str = ""):
+        self._core = core
+        self._device = device_name
+        self._state_prop = state_property
+        self._intensity_prop = intensity_property
+        self._max_intensity = max_intensity
+        self._label = label or device_name
+        logger.info("Initialized DevicePropertyIllumination: %s (%s, max=%s)",
+                    self._label, device_name, max_intensity)
+
+    def on(self) -> None:
+        """Turn on the light source (set State=1)."""
+        self._core.set_property(self._device, self._state_prop, 1)
+        logger.debug("%s turned on", self._label)
+
+    def off(self) -> None:
+        """Turn off the light source (set State=0 and Intensity=0)."""
+        self._core.set_property(self._device, self._intensity_prop, 0)
+        self._core.set_property(self._device, self._state_prop, 0)
+        logger.debug("%s turned off", self._label)
+
+    def set_power(self, power: float) -> None:
+        """Set illumination intensity.
+
+        Automatically turns the source on if power > 0, off if power == 0.
+
+        Args:
+            power: Intensity level (clamped to 0 .. max_intensity)
+        """
+        intensity = max(0.0, min(power, self._max_intensity))
+        if intensity > 0:
+            self._core.set_property(self._device, self._state_prop, 1)
+        self._core.set_property(self._device, self._intensity_prop, intensity)
+        if intensity == 0:
+            self._core.set_property(self._device, self._state_prop, 0)
+        logger.debug("%s intensity set to %.0f", self._label, intensity)
+
+    def get_power(self) -> float:
+        try:
+            return float(self._core.get_property(
+                self._device, self._intensity_prop))
+        except Exception:
+            return 0.0
+
+    def get_power_range(self) -> tuple:
+        return (0.0, self._max_intensity)
+
+    def is_on(self) -> bool:
+        """Check State property rather than relying on intensity > 0."""
+        try:
+            return str(self._core.get_property(
+                self._device, self._state_prop)) == "1"
+        except Exception:
+            return False
+
+
 class LEDIllumination(AnalogIllumination):
     """LED controlled by analog voltage (e.g. NI DAQ output).
 
     Typical setup: LED-Dev1ao0 on NI DAQ, 0-5V range.
     """
 
-    def __init__(self, core, device_name: str = "LED-Dev1ao0",
+    def __init__(self, core, device_name: str = None,
                  max_voltage: float = 5.0, label: str = "LED"):
+        if not device_name:
+            raise ValueError("device_name is required for LEDIllumination")
         super().__init__(
             core, device_name,
             property_name="Voltage",
@@ -141,8 +219,10 @@ class PockelsCell(AnalogIllumination):
     Typical setup: PockelsCell-Dev1ao1 on NI DAQ, 0-1V range.
     """
 
-    def __init__(self, core, device_name: str = "PockelsCell-Dev1ao1",
+    def __init__(self, core, device_name: str = None,
                  max_voltage: float = 1.0, label: str = "Pockels Cell"):
+        if not device_name:
+            raise ValueError("device_name is required for PockelsCell")
         super().__init__(
             core, device_name,
             property_name="Voltage",

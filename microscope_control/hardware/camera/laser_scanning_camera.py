@@ -1,19 +1,22 @@
 """Laser scanning microscope camera implementation.
 
-For galvo-based scanning microscopes (e.g. OpenScan OSc-LSM) where the
-"camera" is actually a scanning detector. Key differences from area cameras:
+For galvo-based scanning microscopes where the "camera" is actually a
+scanning detector. Key differences from area cameras:
 
-- Resolution is configurable (256, 512, 1024, 2048) rather than fixed
+- Resolution is configurable (e.g. 256, 512, 1024, 2048) rather than fixed
 - "Exposure" is controlled by pixel dwell time (1/PixelRateHz)
 - Images are always square and monochrome (grayscale 16-bit from PMT)
 - No Bayer filter, no debayering, no white balance
 - Pixel size depends on scan resolution and zoom factor
 
-Reference: uw-loci/smart-wsi-scanner SPAcquisition class.
+All MM property names, valid resolutions, and valid pixel rates are read
+from the detector config dict so this class works with any scanning engine
+(OpenScan, PrairieView, ScanImage, etc.) that exposes resolution and
+pixel rate as MM device properties.
 """
 
 import logging
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 
 import numpy as np
 from pycromanager import Core, Studio
@@ -22,27 +25,18 @@ from microscope_control.hardware.camera.pycromanager_camera import PycromanagerC
 
 logger = logging.getLogger(__name__)
 
-# Valid scan resolutions for OpenScan LSM devices
-VALID_RESOLUTIONS = [256, 512, 1024, 2048]
-
-# Valid pixel rates (Hz) as strings (MM property values)
-VALID_PIXEL_RATES = [
-    "50000.0000", "100000.0000", "125000.0000",
-    "200000.0000", "250000.0000", "400000.0000",
-    "500000.0000", "625000.0000", "1000000.0000",
-    "1250000.0000",
-]
-
 
 class LaserScanningCamera(PycromanagerCamera):
-    """OpenScan OSc-LSM laser scanning microscope.
+    """Laser scanning microscope (galvo-based scanning detector).
 
-    Controls a galvo-based scanning detector via Micro-Manager. The "image"
-    is assembled from point samples as the galvo sweeps across the field.
+    Controls a scanning detector via Micro-Manager. The "image" is
+    assembled from point samples as the galvo sweeps across the field.
 
-    Key MM device properties:
-    - LSM-Resolution: scan grid size (256-2048, square)
-    - LSM-PixelRateHz: pixel clock frequency (controls dwell time)
+    All device property names are configurable via detector_config:
+    - resolution_property: MM property for scan grid size (default 'LSM-Resolution')
+    - pixel_rate_property: MM property for pixel clock Hz (default 'LSM-PixelRateHz')
+    - valid_resolutions: List of accepted resolution values (default [256, 512, 1024, 2048])
+    - base_pixel_size_um: Pixel size at base resolution -- REQUIRED, no default
 
     The actual detector (PMT) is controlled separately via the Detector
     abstraction. This class handles only the scan engine and image readout.
@@ -52,15 +46,36 @@ class LaserScanningCamera(PycromanagerCamera):
                  detector_config: Optional[Dict[str, Any]] = None):
         super().__init__(core, studio, detector_config)
 
-        # Base pixel size at 256 resolution (um/px) -- from config
-        self._base_pixel_size_um = self._detector_config.get(
-            "base_pixel_size_um", 0.509
+        cfg = self._detector_config or {}
+
+        # MM property names (configurable per scan engine)
+        self._resolution_property = cfg.get("resolution_property", "LSM-Resolution")
+        self._pixel_rate_property = cfg.get("pixel_rate_property", "LSM-PixelRateHz")
+
+        # Valid values (configurable per hardware)
+        self._valid_resolutions: List[int] = cfg.get(
+            "valid_resolutions", [256, 512, 1024, 2048]
         )
+
+        # Base pixel size at minimum resolution -- must come from config
+        self._base_pixel_size_um = cfg.get("base_pixel_size_um")
+        if self._base_pixel_size_um is None:
+            logger.warning(
+                "base_pixel_size_um not set in detector config for %s. "
+                "Pixel size calculations will be incorrect.", self._name,
+            )
+            self._base_pixel_size_um = 1.0  # safe fallback, obviously wrong
+
+        # Base resolution for pixel size scaling (smallest valid resolution)
+        self._base_resolution = min(self._valid_resolutions) if self._valid_resolutions else 256
+
         # Current resolution (read from device)
         self._resolution = self._read_resolution()
         logger.info(
-            "Initialized LaserScanningCamera: %s (resolution=%d)",
+            "Initialized LaserScanningCamera: %s (resolution=%d, "
+            "res_prop=%s, rate_prop=%s)",
             self._name, self._resolution,
+            self._resolution_property, self._pixel_rate_property,
         )
 
     # --- Resolution control ---
@@ -73,14 +88,14 @@ class LaserScanningCamera(PycromanagerCamera):
         """Set scan resolution.
 
         Args:
-            resolution: Pixels per line (256, 512, 1024, or 2048)
+            resolution: Pixels per line (must be in valid_resolutions)
         """
-        if resolution not in VALID_RESOLUTIONS:
+        if resolution not in self._valid_resolutions:
             raise ValueError(
                 f"Invalid resolution {resolution}. "
-                f"Valid values: {VALID_RESOLUTIONS}"
+                f"Valid values: {self._valid_resolutions}"
             )
-        self._core.set_property(self._name, "LSM-Resolution", resolution)
+        self._core.set_property(self._name, self._resolution_property, resolution)
         self._core.wait_for_device(self._name)
         self._resolution = resolution
         logger.info("LSM resolution set to %d", resolution)
@@ -88,16 +103,16 @@ class LaserScanningCamera(PycromanagerCamera):
     def _read_resolution(self) -> int:
         """Read current resolution from device."""
         try:
-            return int(self._core.get_property(self._name, "LSM-Resolution"))
+            return int(self._core.get_property(self._name, self._resolution_property))
         except Exception:
-            return 256  # safe default
+            return self._base_resolution
 
     # --- Pixel rate (dwell time) control ---
 
     def get_pixel_rate_hz(self) -> float:
         """Get current pixel clock rate in Hz."""
         try:
-            return float(self._core.get_property(self._name, "LSM-PixelRateHz"))
+            return float(self._core.get_property(self._name, self._pixel_rate_property))
         except Exception:
             return 250000.0
 
@@ -108,20 +123,10 @@ class LaserScanningCamera(PycromanagerCamera):
         longer integration time and better SNR but slower scanning.
 
         Args:
-            rate_hz: Pixel clock rate in Hz (50000 - 1250000)
+            rate_hz: Pixel clock rate in Hz
         """
-        # MM expects rate as a specific string format
         rate_str = f"{rate_hz:.4f}"
-        if rate_str not in VALID_PIXEL_RATES:
-            # Find the closest valid rate
-            closest = min(VALID_PIXEL_RATES,
-                          key=lambda r: abs(float(r) - rate_hz))
-            logger.warning(
-                "Rate %.0f Hz not in valid set, using closest: %s",
-                rate_hz, closest,
-            )
-            rate_str = closest
-        self._core.set_property(self._name, "LSM-PixelRateHz", rate_str)
+        self._core.set_property(self._name, self._pixel_rate_property, rate_str)
         self._core.wait_for_device(self._name)
         logger.info("LSM pixel rate set to %s Hz", rate_str)
 
@@ -183,10 +188,10 @@ class LaserScanningCamera(PycromanagerCamera):
     def get_pixel_size_um(self) -> float:
         """Pixel size scales inversely with resolution.
 
-        At base resolution (256), pixel size = base_pixel_size_um.
-        At higher resolutions, pixel size = base * 256 / resolution.
+        At base resolution, pixel size = base_pixel_size_um.
+        At higher resolutions, pixel size = base * base_resolution / resolution.
         """
-        return self._base_pixel_size_um * 256 / self._resolution
+        return self._base_pixel_size_um * self._base_resolution / self._resolution
 
     def extract_green_channel(self, img: np.ndarray) -> np.ndarray:
         """LSM images are already grayscale -- return as-is."""

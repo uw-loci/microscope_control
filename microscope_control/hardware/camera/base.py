@@ -172,6 +172,14 @@ class Camera(ABC):
         if img is None:
             raise ValueError("Input image 'img' must not be None for white balancing.")
 
+        # Guard: monochrome images (2D) cannot be white-balanced with RGB
+        # multipliers. Return the image with only luminance gain applied.
+        if img.ndim == 2:
+            if gain != 1.0:
+                img_wb = img.astype(np.float64) * gain
+                return np.clip(img_wb, 0, 255).astype(np.uint8)
+            return img
+
         if background_image is not None:
             r, g, b = background_image.mean((0, 1))
             r1, g1, b1 = (r, g, b) / max(r, g, b)
@@ -180,6 +188,74 @@ class Camera(ABC):
 
         img_wb = img.astype(np.float64) * gain / [r1, g1, b1]
         return np.clip(img_wb, 0, 255).astype(np.uint8)
+
+    # --- Per-channel exposure/gain control (optional capabilities) ---
+    # Default implementations are no-ops or return neutral values.
+    # Cameras with per-channel control (e.g. JAI 3-CCD) override these.
+    # Handler code checks supports_per_channel_exposure() before calling.
+
+    def get_channel_exposures(self) -> Dict[str, float]:
+        """Get per-channel exposure times in ms.
+
+        Returns:
+            Dict with 'red', 'green', 'blue' keys. Default: all equal
+            to the unified exposure.
+        """
+        exp = self.get_exposure()
+        return {"red": exp, "green": exp, "blue": exp}
+
+    def set_channel_exposures(self, red: float, green: float, blue: float,
+                              auto_enable: bool = True) -> None:
+        """Set independent per-channel exposure times.
+
+        Default: sets unified exposure to the green channel value.
+        Cameras with per-channel support override this.
+        """
+        self.set_exposure(green)
+
+    def is_individual_exposure_enabled(self) -> bool:
+        """Whether the camera is currently in per-channel exposure mode."""
+        return False
+
+    def enable_individual_exposure(self) -> None:
+        """Switch to per-channel exposure mode. No-op if not supported."""
+        pass
+
+    def disable_individual_exposure(self) -> None:
+        """Switch to unified exposure mode. No-op if not supported."""
+        pass
+
+    def get_unified_gain(self) -> float:
+        """Get the unified (all-channel) gain. Default: 1.0."""
+        return 1.0
+
+    def set_unified_gain(self, gain: float) -> None:
+        """Set unified gain for all channels. No-op if not supported."""
+        pass
+
+    def get_rb_analog_gains(self) -> Dict[str, float]:
+        """Get per-channel analog gains for R/B color correction.
+
+        Returns:
+            Dict with 'analog_red', 'analog_blue' keys. Default: 1.0 each.
+        """
+        return {"analog_red": 1.0, "analog_blue": 1.0}
+
+    def set_rb_analog_gains(self, analog_red: float, analog_blue: float) -> None:
+        """Set per-channel R/B analog gains. No-op if not supported."""
+        pass
+
+    def enable_individual_gain(self) -> None:
+        """Switch to per-channel gain mode. No-op if not supported."""
+        pass
+
+    def disable_individual_gain(self) -> None:
+        """Switch to unified gain mode. No-op if not supported."""
+        pass
+
+    def clear_awb_corrections(self) -> None:
+        """Clear any automatic white balance corrections. No-op if not supported."""
+        pass
 
     def get_image_dimensions(self) -> Tuple[int, int, int]:
         """Return (width, height, num_channels) of captured images.

@@ -111,6 +111,12 @@ class PycromanagerHardware(MicroscopeHardware):
         self.studio = studio
         self.settings = settings
 
+        # Stage inversion correction flag. Set by apply_mode_setup() when
+        # a profile requires software X-axis inversion because the merged
+        # MM config uses a different Invert-X setting than the modality
+        # originally expected. Acquisition/coordinate code checks this.
+        self.stage_invert_x_correction = False
+
         # Log microscope info
         microscope_info = settings.get("microscope", {})
         logger.info(
@@ -134,10 +140,9 @@ class PycromanagerHardware(MicroscopeHardware):
         self._illumination = self._create_illumination()
         self._detector = self._create_detector()
 
-        # CAMM-specific methods
-        if microscope_info.get("name", "") == "CAMM":
-            self.swap_objective_lens = self._camm_swap_objective_lens
-            logger.info("CAMM-specific methods initialized")
+        # Objective swap is available when config defines sequences
+        if self.settings.get("objective_swap_sequences"):
+            logger.info("Objective swap sequences found in config")
 
     # --- Camera registry (multi-camera support) ---
 
@@ -187,6 +192,10 @@ class PycromanagerHardware(MicroscopeHardware):
                                    detector_id: str):
         """Create the appropriate Camera subclass for a device.
 
+        Uses the ``camera_type`` field from detector config to select the
+        Camera subclass via a registry dict.  New camera types are added
+        by importing the class and adding one entry to CAMERA_TYPES.
+
         Args:
             device_name: MM device name (e.g. 'JAICamera', 'OSc-LSM', 'QCamera')
             detector_config: Config dict from id_detector section
@@ -196,12 +205,21 @@ class PycromanagerHardware(MicroscopeHardware):
         from microscope_control.hardware.camera.jai_camera import JAICamera
         from microscope_control.hardware.camera.laser_scanning_camera import LaserScanningCamera
 
-        if device_name == "JAICamera":
-            return JAICamera(self.core, self.studio, detector_config)
-        elif device_name == "OSc-LSM":
-            return LaserScanningCamera(self.core, self.studio, detector_config)
-        else:
-            return PycromanagerCamera(self.core, self.studio, detector_config)
+        CAMERA_TYPES = {
+            "jai": JAICamera,
+            "laser_scanning": LaserScanningCamera,
+            "generic": PycromanagerCamera,
+        }
+
+        camera_type = detector_config.get("camera_type", "generic")
+        cls = CAMERA_TYPES.get(camera_type, PycromanagerCamera)
+        if cls is PycromanagerCamera and camera_type != "generic":
+            logger.warning(
+                "Unknown camera_type '%s' for detector %s, "
+                "falling back to generic PycromanagerCamera",
+                camera_type, detector_id,
+            )
+        return cls(self.core, self.studio, detector_config)
 
     def _find_detector_id(self, camera_name: str) -> Optional[str]:
         """Find the detector ID for a given MM camera device name."""
@@ -274,15 +292,318 @@ class PycromanagerHardware(MicroscopeHardware):
         return self._camera_registry
 
     def _create_illumination(self):
-        """Create illumination source from config, or None."""
-        # Look for illumination config in modalities or top-level
-        # This is intentionally simple -- microscopes with multiple
-        # light sources will need to create them in modality-switching code
+        """Create illumination source from modality config, or None.
+
+        Searches modalities for an illumination or pockels_cell section
+        and creates the appropriate subclass. The first modality with
+        config is used as the default; mode-switching code can replace
+        it later via the illumination setter.
+        """
+        modalities = self.settings.get("modalities", {})
+        for mod_name, mod_config in modalities.items():
+            if not isinstance(mod_config, dict):
+                continue
+            source = self._build_illumination_from_config(mod_config)
+            if source is not None:
+                logger.info("Created default illumination: %s from modality '%s'",
+                            type(source).__name__, mod_name)
+                return source
         return None
 
-    def _create_detector(self):
-        """Create external detector from config, or None."""
+    def _build_illumination_from_config(self, mod_config):
+        """Build an Illumination instance from a modality config dict.
+
+        Checks for 'illumination' (LED/DiaLamp) and 'pockels_cell'
+        (laser power) sections. Returns the first one found, or None.
+        """
+        from microscope_control.hardware.illumination import (
+            LEDIllumination, DevicePropertyIllumination, PockelsCell,
+        )
+        # Check for transmitted/epi illumination (LED, DiaLamp, etc.)
+        illum = mod_config.get("illumination")
+        if isinstance(illum, dict) and illum.get("device"):
+            device = illum["device"]
+            illum_type = illum.get("type", "device_property")
+            try:
+                if illum_type == "analog_voltage":
+                    return LEDIllumination(
+                        self.core,
+                        device_name=device,
+                        max_voltage=illum.get("max_voltage", 5.0),
+                        label=illum.get("label", device),
+                    )
+                else:
+                    return DevicePropertyIllumination(
+                        self.core,
+                        device_name=device,
+                        state_property=illum.get("state_property", "State"),
+                        intensity_property=illum.get("intensity_property", "Intensity"),
+                        max_intensity=illum.get("max_intensity", 2100.0),
+                        label=illum.get("label", device),
+                    )
+            except Exception as e:
+                logger.warning("Could not create illumination for %s: %s", device, e)
+
+        # Check for Pockels cell (laser power modulation)
+        pockels = mod_config.get("pockels_cell")
+        if isinstance(pockels, dict) and pockels.get("device"):
+            device = pockels["device"]
+            try:
+                return PockelsCell(
+                    self.core,
+                    device_name=device,
+                    max_voltage=pockels.get("max_voltage", 1.0),
+                    label=pockels.get("label", "Pockels Cell"),
+                )
+            except Exception as e:
+                logger.warning("Could not create Pockels cell for %s: %s", device, e)
+
         return None
+
+    def get_illumination_for_modality(self, modality_name: str):
+        """Create and return the illumination source for a specific modality.
+
+        Looks up the modality in settings and builds the appropriate
+        Illumination instance. Does NOT change self._illumination --
+        callers should assign it if switching modes.
+
+        Args:
+            modality_name: Key in the modalities config (e.g. 'brightfield', '2p')
+
+        Returns:
+            Illumination instance, or None if not configured.
+        """
+        modalities = self.settings.get("modalities", {})
+        mod_config = modalities.get(modality_name)
+        if not isinstance(mod_config, dict):
+            return None
+        return self._build_illumination_from_config(mod_config)
+
+    def _create_detector(self):
+        """Create external detector (PMT) from modality config, or None.
+
+        Searches modalities for a pmt section and creates the appropriate
+        Detector subclass based on the device type.
+        """
+        from microscope_control.hardware.detector import PMTDetector, DCUDetector
+
+        modalities = self.settings.get("modalities", {})
+        for mod_name, mod_config in modalities.items():
+            if not isinstance(mod_config, dict):
+                continue
+            pmt = mod_config.get("pmt")
+            if not isinstance(pmt, dict):
+                continue
+            device = pmt.get("device")
+            if not device:
+                continue
+            try:
+                pmt_type = pmt.get("type", "dcc")
+                connector = pmt.get("connector", 1)
+                max_gain = pmt.get("max_gain_percent", 100.0)
+                if pmt_type == "dcu":
+                    det = DCUDetector(
+                        self.core,
+                        device_name=device,
+                        channel=connector,
+                        max_gain_percent=max_gain,
+                    )
+                else:
+                    det = PMTDetector(
+                        self.core,
+                        device_name=device,
+                        connector=connector,
+                        max_gain_percent=max_gain,
+                    )
+                logger.info("Created detector: %s (%s) from modality '%s'",
+                            type(det).__name__, device, mod_name)
+                return det
+            except Exception as e:
+                logger.warning("Could not create detector for %s: %s",
+                               device, e)
+        return None
+
+    # --- MM ConfigGroup preset application ---
+
+    def apply_config_preset(self, group: str, preset: str) -> None:
+        """Apply a Micro-Manager ConfigGroup preset.
+
+        This is the primary mechanism for switching light paths, filter
+        wheels, shutters, and other state devices. MM presets bundle
+        multiple device property changes into a single atomic operation.
+
+        Args:
+            group: ConfigGroup name (e.g. 'Light Path', 'Lens Turret')
+            preset: Preset name within the group (e.g. '2-R100 (BF Camera)')
+        """
+        logger.info("Applying MM config preset: [%s] -> '%s'", group, preset)
+        self.core.set_config(group, preset)
+        self.core.wait_for_config(group, preset)
+        logger.debug("Config preset applied successfully")
+
+    def apply_mode_setup(self, profile_name: str) -> None:
+        """Apply all setup steps for an acquisition profile.
+
+        SAFETY: This method enforces a strict sequence to protect PMTs
+        from bright light damage. Before any illumination or light path
+        changes, all PMT outputs are disabled and detector shutters are
+        closed. The sequence is:
+
+        1. SAFETY: Disable PMT outputs + close detector shutters
+        2. Turn off current illumination
+        3. Apply MM ConfigGroup presets (light path, filter, etc.)
+        4. Switch camera/detector
+        5. Switch illumination source and set intensity
+        6. Apply mode positions (Z, F stages)
+
+        Args:
+            profile_name: Key in acquisition_profiles (e.g. 'bf_20x')
+        """
+        profiles = self.settings.get("acquisition_profiles", {})
+        profile = profiles.get(profile_name)
+        if not profile:
+            logger.warning("No acquisition profile found for '%s'", profile_name)
+            return
+
+        logger.info("Applying mode setup for profile: %s", profile_name)
+
+        # === STEP 0: SAFETY -- protect PMTs before any light changes ===
+        self._safe_disable_pmt_and_shutters()
+
+        # === STEP 1: Turn off current illumination ===
+        if self._illumination is not None:
+            try:
+                self._illumination.off()
+                logger.info("Current illumination turned off")
+            except Exception as e:
+                logger.warning("Could not turn off illumination: %s", e)
+
+        # === STEP 2: Apply MM ConfigGroup presets ===
+        for preset_spec in profile.get("mm_setup_presets", []):
+            group = preset_spec.get("group")
+            preset = preset_spec.get("preset")
+            if group and preset:
+                self.apply_config_preset(group, preset)
+
+        # === STEP 3: Switch detector/camera if specified ===
+        detector_id = profile.get("detector")
+        if detector_id and detector_id != self._active_detector_id:
+            if detector_id in self._camera_registry:
+                self.set_active_camera(detector_id)
+            else:
+                logger.warning("Detector '%s' not in camera registry", detector_id)
+
+        # === STEP 4: Switch illumination source ===
+        modality_name = profile.get("modality")
+        if modality_name:
+            new_illum = self.get_illumination_for_modality(modality_name)
+            if new_illum is not None:
+                self._illumination = new_illum
+                logger.info("Switched illumination to %s for modality '%s'",
+                            type(new_illum).__name__, modality_name)
+
+        # === STEP 5: Set illumination intensity ===
+        illum_intensity = profile.get("illumination_intensity")
+        if illum_intensity is not None and self._illumination is not None:
+            self._illumination.set_power(illum_intensity)
+
+        # === STEP 6: Apply mode positions (Z, F stages) ===
+        mode_positions = self.settings.get("mode_positions", {})
+        mode_pos = mode_positions.get(profile_name)
+        if mode_pos:
+            z_pos = mode_pos.get("z")
+            if z_pos is not None:
+                logger.info("Setting mode Z position: %.1f", z_pos)
+                self._stage.move_z_no_wait(z_pos)
+            f_pos = mode_pos.get("f")
+            if f_pos is not None and hasattr(self._stage, 'move_f'):
+                logger.info("Setting mode F position: %.1f", f_pos)
+                self._stage.move_f(f_pos)
+
+        # === STEP 7: Stage inversion correction ===
+        # When BF and 2P MM configs are merged, one modality may need
+        # software X-axis inversion because the merged config uses a
+        # single Invert-X pre-init setting. Profiles that originally
+        # used a different inversion set stage_invert_x_correction: true.
+        self.stage_invert_x_correction = bool(
+            profile.get("stage_invert_x_correction", False)
+        )
+        if self.stage_invert_x_correction:
+            logger.info("Stage X-axis inversion correction ACTIVE for this profile")
+
+        logger.info("Mode setup complete for profile: %s", profile_name)
+
+    def _safe_disable_pmt_and_shutters(self) -> None:
+        """SAFETY: Disable all PMT outputs and close detector shutters.
+
+        Called before ANY light path or illumination change to prevent
+        PMT damage from bright light. This method is intentionally
+        conservative -- it will attempt to disable everything even if
+        some steps fail, and waits for the system after each step.
+
+        Reads the ``pmt_safety`` section from config for device-specific
+        shutter control. If no pmt_safety config exists, still attempts
+        to disable the detector via the Detector abstraction.
+
+        Config example::
+
+            pmt_safety:
+              detector_shutter:
+                device: 'Arduino-Switch'
+                closed_state: '0'          # String state, never boolean
+                closed_label: 'Closed and Off'
+              laser_shutter:
+                device: 'LaserShutter'
+                closed_state: '0'
+        """
+        logger.info("SAFETY: Disabling PMTs and closing shutters")
+
+        # 1. Disable PMT via Detector abstraction (if configured)
+        if self._detector is not None:
+            try:
+                # Use disable_all_channels if available (multi-channel PMTs)
+                if hasattr(self._detector, 'disable_all_channels'):
+                    self._detector.disable_all_channels()
+                else:
+                    self._detector.disable()
+                logger.info("SAFETY: PMT disabled")
+            except Exception as e:
+                logger.error("SAFETY WARNING: Could not disable PMT: %s", e)
+
+        # 2. Close detector shutters via config-driven device properties
+        pmt_safety = self.settings.get("pmt_safety", {})
+
+        for shutter_key in ("detector_shutter", "laser_shutter"):
+            shutter_config = pmt_safety.get(shutter_key)
+            if not isinstance(shutter_config, dict):
+                continue
+            device = shutter_config.get("device")
+            if not device:
+                continue
+            try:
+                # Prefer ConfigGroup preset if specified
+                preset_group = shutter_config.get("preset_group")
+                preset_name = shutter_config.get("closed_preset")
+                if preset_group and preset_name:
+                    self.apply_config_preset(preset_group, preset_name)
+                else:
+                    # Direct property set with explicit string state
+                    closed_state = str(shutter_config.get("closed_state", "0"))
+                    self.core.set_property(device, "State", closed_state)
+                self.core.wait_for_system()
+                logger.info("SAFETY: %s closed (%s)", shutter_key, device)
+            except Exception as e:
+                logger.error(
+                    "SAFETY WARNING: Could not close %s (%s): %s",
+                    shutter_key, device, e,
+                )
+
+        # 3. Final system wait to ensure all safety states are applied
+        try:
+            self.core.wait_for_system()
+        except Exception:
+            pass
+        logger.info("SAFETY: PMT protection sequence complete")
 
     def _create_stage(self):
         """Create the Stage instance for this microscope."""
@@ -315,17 +636,43 @@ class PycromanagerHardware(MicroscopeHardware):
                 f"Expected device '{r_device_name}' in id_stage section."
             )
 
-        # Create the appropriate rotation stage based on device type
+        # Use rotation_type from config to select subclass via registry.
+        # Falls back to matching device name for backward compatibility.
+        stage_config = self.settings.get("id_stage", {}).get(r_device_name, {})
+        rotation_type = stage_config.get("rotation_type", "").lower()
+
+        ROTATION_TYPES = {
+            "piz": PIZRotationStage,
+            "thor": ThorRotationStage,
+            "dummy": DummyRotationStage,
+        }
+
         try:
-            if mm_device == "PIZStage":
-                offset = self.settings.get("ppm_pizstage_offset", 50280.0)
+            if rotation_type in ROTATION_TYPES:
+                cls = ROTATION_TYPES[rotation_type]
+            else:
+                logger.debug(
+                    "No rotation_type in config for '%s', using device name '%s'",
+                    r_device_name, mm_device,
+                )
+                # Legacy fallback: match on device name
+                cls = None
+
+            if cls == PIZRotationStage or (cls is None and "PIZ" in mm_device.upper()):
+                offset = stage_config.get(
+                    "piz_offset",
+                    self.settings.get("ppm_pizstage_offset", 50280.0),
+                )
                 stage = PIZRotationStage(self.core, mm_device, offset)
-            elif mm_device == "KBD101_Thor_Rotation":
+            elif cls == ThorRotationStage or (cls is None and "Thor" in mm_device):
                 stage = ThorRotationStage(self.core, mm_device)
+            elif cls == DummyRotationStage:
+                stage = DummyRotationStage()
             else:
                 raise ValueError(
                     f"Unknown rotation device: {mm_device}. "
-                    f"Supported: PIZStage, KBD101_Thor_Rotation"
+                    f"Set 'rotation_type' in id_stage config to one of: "
+                    f"{list(ROTATION_TYPES.keys())}"
                 )
             # Verify we can read the current angle
             _ = stage.get_angle()
@@ -986,53 +1333,119 @@ class PycromanagerHardware(MicroscopeHardware):
     # delegated through MicroscopeHardware -> self._rotation_stage.
     # See hardware/rotation.py for PIZRotationStage, ThorRotationStage, DummyRotationStage.
 
-    def _camm_swap_objective_lens(self, desired_imaging_mode: Dict[str, Any]):
-        """
-        Swap objective lens for CAMM microscope.
+    def swap_objective(self, target_profile: str) -> None:
+        """Swap objective lens using config-driven sequences.
+
+        Reads ``objective_swap_sequences`` from settings to determine the
+        safe order of operations for switching objectives. Different
+        objectives may require different Z/turret/F staging sequences
+        (e.g., low-mag objectives can move Z first, high-mag must move
+        the turret first to avoid collisions).
+
+        Config example::
+
+            objective_swap_sequences:
+              low_mag:
+                objectives: ['OBJ_4X_001']
+                sequence:
+                  - {action: set_focus_device, device_key: z_stage}
+                  - {action: move_position, device_key: z_stage, value_key: z}
+                  - {action: set_turret}
+                  - {action: set_focus_device, device_key: f_stage}
+              high_mag:
+                objectives: ['OBJ_20X_001']
+                sequence:
+                  - {action: set_turret}
+                  - {action: set_focus_device, device_key: z_stage}
+                  - {action: move_position, device_key: z_stage, value_key: z}
+                  - {action: set_focus_device, device_key: f_stage}
+                  - {action: move_position, device_key: f_stage, value_key: f}
 
         Args:
-            desired_imaging_mode: Dictionary containing imaging mode configuration
+            target_profile: Acquisition profile name whose objective to switch to.
         """
-        # Get objective slider device from settings
+        swap_sequences = self.settings.get("objective_swap_sequences")
+        if not swap_sequences:
+            logger.debug("No objective_swap_sequences in config, skipping")
+            return
+
+        profiles = self.settings.get("acquisition_profiles", {})
+        profile = profiles.get(target_profile, {})
+        target_objective = profile.get("objective")
+        if not target_objective:
+            logger.debug("No objective in profile '%s'", target_profile)
+            return
+
+        # Find which sequence group this objective belongs to
+        sequence_steps = None
+        for group_name, group_config in swap_sequences.items():
+            if not isinstance(group_config, dict):
+                continue
+            obj_list = group_config.get("objectives", [])
+            if target_objective in obj_list:
+                sequence_steps = group_config.get("sequence", [])
+                logger.info("Objective swap: using '%s' sequence for %s",
+                            group_name, target_objective)
+                break
+
+        if sequence_steps is None:
+            logger.debug("Objective '%s' not in any swap sequence, skipping",
+                         target_objective)
+            return
+
+        # Get turret device and desired position from config
         obj_slider = self.settings.get("obj_slider")
         if not obj_slider:
-            raise ValueError("No objective slider configuration found")
+            logger.warning("No obj_slider config, cannot swap objective")
+            return
 
-        current_slider_position = self.core.get_property(*obj_slider)
-        desired_position = desired_imaging_mode.get("objective_position_label")
+        # Check if turret is already at the right position
+        mode_positions = self.settings.get("mode_positions", {})
+        mode_pos = mode_positions.get(target_profile, {})
+        desired_turret_label = mode_pos.get("turret_label")
 
-        if not desired_position:
-            raise ValueError("No objective position label in imaging mode")
+        if desired_turret_label:
+            current_label = self.core.get_property(*obj_slider)
+            if current_label == desired_turret_label:
+                logger.info("Objective already at %s, no swap needed",
+                            desired_turret_label)
+                return
 
-        if desired_position != current_slider_position:
-            mode_name = desired_imaging_mode.get("name", "")
-            stage_config = self.settings.get("stage", {})
-            z_stage = stage_config.get("z_stage")
-            f_stage = stage_config.get("f_stage")
+        # Execute the sequence
+        stage_config = self.settings.get("stage", {})
+        for step in sequence_steps:
+            if not isinstance(step, dict):
+                continue
+            action = step.get("action")
+            device_key = step.get("device_key")
 
-            if not z_stage or not f_stage:
-                raise ValueError("Stage devices not properly configured")
+            if action == "set_focus_device" and device_key:
+                device = stage_config.get(device_key)
+                if device:
+                    self.core.set_focus_device(device)
+                    logger.debug("Focus device set to %s", device)
 
-            # Handle different objectives differently
-            if mode_name.startswith("4X"):
-                self.core.set_focus_device(z_stage)
-                self.core.set_position(desired_imaging_mode.get("z", 0))
-                self.core.wait_for_device(z_stage)
-                self.core.set_property(*obj_slider, desired_position)
-                self.core.set_focus_device(f_stage)
+            elif action == "move_position" and device_key:
+                device = stage_config.get(device_key)
+                value_key = step.get("value_key")
+                value = mode_pos.get(value_key, 0) if value_key else 0
+                if device:
+                    self.core.set_position(value)
+                    self.core.wait_for_device(device)
+                    logger.debug("Moved %s to %.1f", device, value)
+
+            elif action == "set_turret":
+                if desired_turret_label and obj_slider:
+                    self.core.set_property(*obj_slider, desired_turret_label)
+                    self.core.wait_for_device(obj_slider[0])
+                    logger.debug("Turret set to %s", desired_turret_label)
+
+            elif action == "wait":
                 self.core.wait_for_system()
 
-            elif mode_name.startswith("20X"):
-                self.core.set_property(*obj_slider, desired_position)
-                self.core.wait_for_device(obj_slider[0])
-                self.core.set_focus_device(z_stage)
-                self.core.set_position(desired_imaging_mode.get("z", 0))
-                self.core.set_focus_device(f_stage)
-                self.core.set_position(desired_imaging_mode.get("f", 0))
-                self.core.wait_for_system()
-
+        # Always restore Z as the focus device
+        z_stage = stage_config.get("z_stage")
+        if z_stage:
             self.core.set_focus_device(z_stage)
 
-            # Update current imaging mode in settings
-            self.settings["imaging_mode"] = desired_imaging_mode
-            logger.info(f"Swapped to objective: {desired_position}")
+        logger.info("Objective swap complete for profile: %s", target_profile)
