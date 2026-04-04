@@ -20,7 +20,7 @@ dependencies = [
     "scikit-image>=0.21.0",
     # opencv: Install separately via conda on Windows: conda install -c conda-forge opencv
     # or via pip elsewhere: pip install opencv-python-headless>=4.8.0
-    "microscope-imaging>=0.1.0",  # For debayering
+    "microscope-imageprocessing>=0.1.0",  # For debayering
 ]
 
 [project.optional-dependencies]
