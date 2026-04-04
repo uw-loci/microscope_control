@@ -26,8 +26,8 @@ White balance can be achieved through **hardware controls** (before digitization
 
 | Control | What It Does | Where It Lives |
 |---------|-------------|----------------|
-| **Post-processing gain** | Multiplies pixel values per channel after capture | `ppm_library/pipeline.py` |
-| **Background correction** | Divides image by a background reference image | `ppm_library/pipeline.py` |
+| **Post-processing gain** | Multiplies pixel values per channel after capture | `microscope_imaging/pipeline.py` |
+| **Background correction** | Divides image by a background reference image | `microscope_imaging/pipeline.py` |
 
 ### Hardware vs Software WB Tradeoffs
 

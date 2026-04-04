@@ -301,7 +301,7 @@ class PycromanagerCamera(Camera):
         Returns:
             Debayered RGB image, uint16
         """
-        from ppm_library.debayering import CPUDebayer
+        from microscope_imaging.debayering import CPUDebayer
 
         pattern = self._bayer_pattern or "GRBG"
         bit_depth = self._bit_depth or 14

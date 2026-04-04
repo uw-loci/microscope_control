@@ -25,15 +25,15 @@ Hardware control library for microscopes via Pycromanager (Micro-Manager).
 - Git (for `pip install git+https://...` commands)
 - Micro-Manager 2.0+
 
-⚠️ **Important**: This package depends on `ppm-library` and requires Micro-Manager 2.0+.
+⚠️ **Important**: This package depends on `microscope-imaging` and requires Micro-Manager 2.0+.
 See the [QPSC Installation Guide](https://github.com/uw-loci/QPSC#automated-installation-windows) for complete setup instructions.
 
 ### Quick Install (from GitHub)
 
 **Install dependencies first:**
 ```bash
-# 1. Install ppm-library
-pip install git+https://github.com/uw-loci/ppm_library.git
+# 1. Install microscope-imaging
+pip install git+https://github.com/uw-loci/microscope_imaging.git
 
 # 2. Then install microscope-control
 pip install git+https://github.com/uw-loci/microscope_control.git
