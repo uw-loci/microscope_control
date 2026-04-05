@@ -147,20 +147,19 @@ class JAICamera(PycromanagerCamera):
         Returns:
             Dict with 'red', 'green', 'blue' keys in milliseconds
         """
-        return {
-            "red": float(self._core.get_property("JAICamera", "Exposure_Red")),
-            "green": float(self._core.get_property("JAICamera", "Exposure_Green")),
-            "blue": float(self._core.get_property("JAICamera", "Exposure_Blue")),
-        }
+        return self.properties.get_channel_exposures()
 
     def set_unified_gain(self, gain: float) -> None:
-        """Set unified gain applied to all channels (1.0 - 8.0x)."""
-        self.properties.disable_individual_gain()
-        self._core.set_property("JAICamera", "Gain", str(gain))
+        """Set unified gain applied to all channels (1.0 - 8.0x).
+
+        Delegates to JAICameraProperties which handles clamping,
+        conditional GainIsIndividual toggle, and read-back verification.
+        """
+        self.properties.set_unified_gain(gain)
 
     def get_unified_gain(self) -> float:
         """Get unified gain value."""
-        return float(self._core.get_property("JAICamera", "Gain"))
+        return self.properties.get_unified_gain()
 
     def set_rb_analog_gains(self, analog_red: float, analog_blue: float) -> None:
         """Set per-channel analog gains for red and blue.
@@ -175,23 +174,24 @@ class JAICamera(PycromanagerCamera):
         """Get current red/blue analog gain values.
 
         Returns:
-            Dict with 'analog_red', 'analog_blue' keys
+            Dict with 'analog_red', 'analog_blue' keys (Camera ABC convention).
+            Delegates to JAICameraProperties which returns 'red'/'blue' keys,
+            then remaps to the ABC key names.
         """
+        props = self.properties.get_rb_analog_gains()
         return {
-            "analog_red": float(self._core.get_property("JAICamera", "Gain_AnalogRed")),
-            "analog_blue": float(self._core.get_property("JAICamera", "Gain_AnalogBlue")),
+            "analog_red": props.get("red", 1.0),
+            "analog_blue": props.get("blue", 1.0),
         }
 
     def clear_awb_corrections(self) -> None:
         """Clear accumulated auto-white-balance corrections.
 
-        Sets WhiteBalance to Off and waits for device, which resets
-        the AWB state. Note: the MM GUI does NOT call wait_for_device
-        after setting this property, so AWB corrections persist in
-        the GUI but are properly cleared via this method.
+        Delegates to JAICameraProperties which sets WhiteBalance=Off
+        (with wait_for_device to clear AWB state) and resets analog
+        R/B gains to 1.0 for a clean starting state.
         """
-        self._core.set_property("JAICamera", "WhiteBalance", "Off")
-        self._core.wait_for_device("JAICamera")
+        self.properties.clear_awb_corrections()
 
     def enable_individual_exposure(self) -> None:
         """Enable per-channel exposure mode."""
