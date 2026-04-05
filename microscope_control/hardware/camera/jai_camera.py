@@ -155,7 +155,18 @@ class JAICamera(PycromanagerCamera):
         Delegates to JAICameraProperties which handles clamping,
         conditional GainIsIndividual toggle, and read-back verification.
         """
+        logger.info(
+            "JAICamera.set_unified_gain(%.2f) -- before: Gain=%s, GainIsIndividual=%s",
+            gain,
+            self._safe_get("Gain"),
+            self._safe_get("GainIsIndividual"),
+        )
         self.properties.set_unified_gain(gain)
+        logger.info(
+            "JAICamera.set_unified_gain -- after: Gain=%s, GainIsIndividual=%s",
+            self._safe_get("Gain"),
+            self._safe_get("GainIsIndividual"),
+        )
 
     def get_unified_gain(self) -> float:
         """Get unified gain value."""
@@ -168,7 +179,25 @@ class JAICamera(PycromanagerCamera):
             analog_red: Red analog gain (0.47 - 4.0x)
             analog_blue: Blue analog gain (0.47 - 4.0x)
         """
+        logger.info(
+            "JAICamera.set_rb_analog_gains(R=%.3f, B=%.3f) -- before: aR=%s, aB=%s",
+            analog_red, analog_blue,
+            self._safe_get("Gain_AnalogRed"),
+            self._safe_get("Gain_AnalogBlue"),
+        )
         self.properties.set_rb_analog_gains(red=analog_red, blue=analog_blue)
+        logger.info(
+            "JAICamera.set_rb_analog_gains -- after: aR=%s, aB=%s",
+            self._safe_get("Gain_AnalogRed"),
+            self._safe_get("Gain_AnalogBlue"),
+        )
+
+    def _safe_get(self, prop: str) -> str:
+        """Read a camera property, returning '?' on failure."""
+        try:
+            return self._core.get_property("JAICamera", prop)
+        except Exception:
+            return "?"
 
     def get_rb_analog_gains(self) -> Dict[str, float]:
         """Get current red/blue analog gain values.
@@ -207,4 +236,14 @@ class JAICamera(PycromanagerCamera):
 
     def disable_individual_gain(self) -> None:
         """Disable per-channel gain mode (use unified gain)."""
+        logger.info(
+            "JAICamera.disable_individual_gain -- before: GainIsIndividual=%s, Gain=%s",
+            self._safe_get("GainIsIndividual"),
+            self._safe_get("Gain"),
+        )
         self.properties.disable_individual_gain()
+        logger.info(
+            "JAICamera.disable_individual_gain -- after: GainIsIndividual=%s, Gain=%s",
+            self._safe_get("GainIsIndividual"),
+            self._safe_get("Gain"),
+        )
