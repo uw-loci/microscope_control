@@ -169,8 +169,7 @@ class JAICamera(PycromanagerCamera):
             analog_red: Red analog gain (0.47 - 4.0x)
             analog_blue: Blue analog gain (0.47 - 4.0x)
         """
-        self.properties.set_rb_analog_gains(analog_red=analog_red,
-                                            analog_blue=analog_blue)
+        self.properties.set_rb_analog_gains(red=analog_red, blue=analog_blue)
 
     def get_rb_analog_gains(self) -> Dict[str, float]:
         """Get current red/blue analog gain values.
