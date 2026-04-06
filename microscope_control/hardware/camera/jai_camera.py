@@ -213,6 +213,38 @@ class JAICamera(PycromanagerCamera):
             "analog_blue": props.get("blue", 1.0),
         }
 
+    def apply_settings(self, exposures, unified_gain=1.0, analog_red=1.0,
+                        analog_blue=1.0, individual_exposure=True):
+        """Apply all camera settings atomically, stopping streaming once.
+
+        JAI camera properties cannot be changed while streaming. This method
+        stops streaming once, applies all settings, then returns. The caller
+        restarts streaming if needed.
+        """
+        self.stop_if_streaming()
+
+        if individual_exposure:
+            self.properties.enable_individual_exposure()
+            self.properties.set_channel_exposures(
+                red=exposures.get("r", exposures.get("all", 1.0)),
+                green=exposures.get("g", exposures.get("all", 1.0)),
+                blue=exposures.get("b", exposures.get("all", 1.0)),
+            )
+        else:
+            self.properties.disable_individual_exposure()
+            exp = exposures.get("all", exposures.get("g", 1.0))
+            self._core.set_exposure(exp)
+
+        self.set_unified_gain(unified_gain)
+        self.set_rb_analog_gains(analog_red=analog_red, analog_blue=analog_blue)
+        self.disable_individual_gain()
+
+        logger.info(
+            "JAI apply_settings: mode=%s, exp=%s, gain=%.2f, aR=%.3f, aB=%.3f",
+            "individual" if individual_exposure else "unified",
+            exposures, unified_gain, analog_red, analog_blue,
+        )
+
     def clear_awb_corrections(self) -> None:
         """Clear accumulated auto-white-balance corrections.
 

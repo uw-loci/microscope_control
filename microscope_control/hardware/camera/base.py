@@ -253,6 +253,50 @@ class Camera(ABC):
         """Switch to unified gain mode. No-op if not supported."""
         pass
 
+    def apply_settings(
+        self,
+        exposures: Dict[str, float],
+        unified_gain: float = 1.0,
+        analog_red: float = 1.0,
+        analog_blue: float = 1.0,
+        individual_exposure: bool = True,
+    ) -> None:
+        """Apply camera mode, exposures, and gains atomically.
+
+        Consolidates enable/disable_individual_exposure + set_exposure /
+        set_channel_exposures + set_unified_gain + set_rb_analog_gains into
+        one call. Subclasses that need to stop streaming before changing
+        properties do so once instead of per-setting.
+
+        Default implementation calls the individual methods sequentially.
+        Override for cameras that benefit from batching (e.g. JAI).
+
+        Args:
+            exposures: {'r': ms, 'g': ms, 'b': ms} for per-channel,
+                       or {'all': ms} for unified.
+            unified_gain: Unified gain value (1.0 = no gain)
+            analog_red: R analog gain (1.0 = no correction)
+            analog_blue: B analog gain (1.0 = no correction)
+            individual_exposure: True for per-channel, False for unified
+        """
+        if individual_exposure and self.supports_per_channel_exposure():
+            self.enable_individual_exposure()
+            self.set_channel_exposures(
+                red=exposures.get("r", exposures.get("all", 50.0)),
+                green=exposures.get("g", exposures.get("all", 50.0)),
+                blue=exposures.get("b", exposures.get("all", 50.0)),
+                auto_enable=False,
+            )
+        else:
+            self.disable_individual_exposure()
+            # Use green or 'all' as the unified exposure
+            exp = exposures.get("all", exposures.get("g", 50.0))
+            self._core.set_exposure(exp)
+
+        self.set_unified_gain(unified_gain)
+        self.set_rb_analog_gains(analog_red=analog_red, analog_blue=analog_blue)
+        self.disable_individual_gain()
+
     def clear_awb_corrections(self) -> None:
         """Clear any automatic white balance corrections. No-op if not supported."""
         pass
