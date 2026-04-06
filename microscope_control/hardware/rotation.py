@@ -103,22 +103,30 @@ class RotationStage(ABC):
 class PIZRotationStage(RotationStage):
     """PI nano-positioning stage for polarization rotation.
 
-    Conversion: device_position = (theta * 1000) + offset
-    where offset is a calibration constant from polarizer calibration.
+    Conversion: device_position = (theta * hw_per_deg) + offset
+    where offset is a calibration constant from polarizer calibration
+    and hw_per_deg is the hardware units (encoder counts) per degree
+    for this specific PIZ stage model.
     """
 
-    def __init__(self, core, device_name: str, offset: float):
+    def __init__(self, core, device_name: str, offset: float,
+                 units_per_deg: float):
         """
         Args:
             core: Pycromanager Core object
             device_name: MM device name (e.g. "PIZStage")
             offset: Calibration offset for angle-to-position conversion
+            units_per_deg: Hardware units (encoder counts) per degree.
+                Must be specified in config -- different PIZ stage models
+                use different scales.
         """
         self._core = core
         self._device = device_name
         self._offset = offset
-        logger.info("Initialized PIZRotationStage (device=%s, offset=%.1f)",
-                    device_name, offset)
+        self._units_per_deg = float(units_per_deg)
+        logger.info("Initialized PIZRotationStage (device=%s, offset=%.1f, "
+                    "units_per_deg=%.1f)", device_name, offset,
+                    self._units_per_deg)
 
     def set_angle(self, theta: float) -> None:
         pos = self._angle_to_device(theta)
@@ -152,7 +160,7 @@ class PIZRotationStage(RotationStage):
 
     @property
     def hw_per_deg(self) -> float:
-        return 1000.0
+        return self._units_per_deg
 
     def set_raw_position(self, hw_pos: float) -> None:
         self._core.set_position(self._device, hw_pos)
@@ -165,28 +173,39 @@ class PIZRotationStage(RotationStage):
 
     def _angle_to_device(self, theta: float) -> float:
         """Convert birefringence angle (degrees) to PIZ stage position."""
-        return (theta * 1000) + self._offset
+        return (theta * self._units_per_deg) + self._offset
 
     def _device_to_angle(self, position: float) -> float:
         """Convert PIZ stage position to birefringence angle (degrees)."""
-        return (position - self._offset) / 1000.0
+        return (position - self._offset) / self._units_per_deg
 
 
 class ThorRotationStage(RotationStage):
     """Thorlabs KBD101 rotation mount for polarization rotation.
 
-    Conversion: device_position = -2 * theta + 276
+    Conversion: device_position = -units_per_deg * theta + offset
+    where units_per_deg and offset are hardware-specific constants
+    read from config.
     """
 
-    def __init__(self, core, device_name: str):
+    def __init__(self, core, device_name: str, units_per_deg: float,
+                 offset: float):
         """
         Args:
             core: Pycromanager Core object
             device_name: MM device name (e.g. "KBD101_Thor_Rotation")
+            units_per_deg: Hardware units per degree for this stage model.
+                Must be specified in config.
+            offset: Calibration offset for angle-to-position conversion.
+                Must be specified in config.
         """
         self._core = core
         self._device = device_name
-        logger.info("Initialized ThorRotationStage (device=%s)", device_name)
+        self._units_per_deg = float(units_per_deg)
+        self._offset = float(offset)
+        logger.info("Initialized ThorRotationStage (device=%s, "
+                    "units_per_deg=%.1f, offset=%.1f)",
+                    device_name, self._units_per_deg, self._offset)
 
     def set_angle(self, theta: float) -> None:
         pos = self._angle_to_device(theta)
@@ -220,7 +239,7 @@ class ThorRotationStage(RotationStage):
 
     @property
     def hw_per_deg(self) -> float:
-        return 2.0
+        return self._units_per_deg
 
     def set_raw_position(self, hw_pos: float) -> None:
         self._core.set_position(self._device, hw_pos)
@@ -231,15 +250,13 @@ class ThorRotationStage(RotationStage):
 
     # --- Internal conversion ---
 
-    @staticmethod
-    def _angle_to_device(theta: float) -> float:
+    def _angle_to_device(self, theta: float) -> float:
         """Convert birefringence angle (degrees) to Thor stage position."""
-        return -2 * theta + 276
+        return -self._units_per_deg * theta + self._offset
 
-    @staticmethod
-    def _device_to_angle(position: float) -> float:
+    def _device_to_angle(self, position: float) -> float:
         """Convert Thor stage position to birefringence angle (degrees)."""
-        return (276 - position) / 2
+        return (self._offset - position) / self._units_per_deg
 
 
 class DummyRotationStage(RotationStage):

@@ -324,12 +324,30 @@ class PycromanagerHardware(MicroscopeHardware):
         if isinstance(illum, dict) and illum.get("device"):
             device = illum["device"]
             illum_type = illum.get("type", "device_property")
+            # Validate required config BEFORE construction (not inside
+            # try/except, so missing config is not silently swallowed)
+            if illum_type == "analog_voltage":
+                if "max_voltage" not in illum:
+                    raise ValueError(
+                        f"Illumination 'max_voltage' not specified in "
+                        f"config for device '{device}'. Add max_voltage "
+                        f"to the illumination section in your microscope "
+                        f"config YAML."
+                    )
+            else:
+                if "max_intensity" not in illum:
+                    raise ValueError(
+                        f"Illumination 'max_intensity' not specified in "
+                        f"config for device '{device}'. Add max_intensity "
+                        f"to the illumination section in your microscope "
+                        f"config YAML."
+                    )
             try:
                 if illum_type == "analog_voltage":
                     return LEDIllumination(
                         self.core,
                         device_name=device,
-                        max_voltage=illum.get("max_voltage", 5.0),
+                        max_voltage=illum["max_voltage"],
                         label=illum.get("label", device),
                     )
                 else:
@@ -338,7 +356,7 @@ class PycromanagerHardware(MicroscopeHardware):
                         device_name=device,
                         state_property=illum.get("state_property", "State"),
                         intensity_property=illum.get("intensity_property", "Intensity"),
-                        max_intensity=illum.get("max_intensity", 2100.0),
+                        max_intensity=illum["max_intensity"],
                         label=illum.get("label", device),
                     )
             except Exception as e:
@@ -348,11 +366,17 @@ class PycromanagerHardware(MicroscopeHardware):
         pockels = mod_config.get("pockels_cell")
         if isinstance(pockels, dict) and pockels.get("device"):
             device = pockels["device"]
+            if "max_voltage" not in pockels:
+                raise ValueError(
+                    f"Pockels cell 'max_voltage' not specified in config "
+                    f"for device '{device}'. Add max_voltage to the "
+                    f"pockels_cell section in your microscope config YAML."
+                )
             try:
                 return PockelsCell(
                     self.core,
                     device_name=device,
-                    max_voltage=pockels.get("max_voltage", 1.0),
+                    max_voltage=pockels["max_voltage"],
                     label=pockels.get("label", "Pockels Cell"),
                 )
             except Exception as e:
@@ -397,10 +421,24 @@ class PycromanagerHardware(MicroscopeHardware):
             device = pmt.get("device")
             if not device:
                 continue
+            # Validate required config BEFORE construction (not inside
+            # try/except, so missing config is not silently swallowed)
+            if "connector" not in pmt:
+                raise ValueError(
+                    f"PMT 'connector' not specified in config for "
+                    f"device '{device}'. Add connector to the pmt "
+                    f"section in your microscope config YAML."
+                )
+            if "max_gain_percent" not in pmt:
+                raise ValueError(
+                    f"PMT 'max_gain_percent' not specified in config "
+                    f"for device '{device}'. Add max_gain_percent to "
+                    f"the pmt section in your microscope config YAML."
+                )
             try:
                 pmt_type = pmt.get("type", "dcc")
-                connector = pmt.get("connector", 1)
-                max_gain = pmt.get("max_gain_percent", 100.0)
+                connector = pmt["connector"]
+                max_gain = pmt["max_gain_percent"]
                 if pmt_type == "dcu":
                     det = DCUDetector(
                         self.core,
@@ -669,9 +707,36 @@ class PycromanagerHardware(MicroscopeHardware):
                         "Run Polarizer Calibration to determine this value."
                     )
                 offset = float(offset)
-                stage = PIZRotationStage(self.core, mm_device, offset)
+                units_per_deg = stage_config.get("units_per_deg")
+                if units_per_deg is None:
+                    raise ValueError(
+                        f"PIZ rotation stage 'units_per_deg' not specified "
+                        f"in config for device '{r_device_name}'. "
+                        f"Add units_per_deg to the id_stage section in your "
+                        f"microscope config YAML (e.g. units_per_deg: 1000.0)."
+                    )
+                stage = PIZRotationStage(self.core, mm_device, offset,
+                                         float(units_per_deg))
             elif cls == ThorRotationStage or (cls is None and "Thor" in mm_device):
-                stage = ThorRotationStage(self.core, mm_device)
+                units_per_deg = stage_config.get("units_per_deg")
+                if units_per_deg is None:
+                    raise ValueError(
+                        f"Thor rotation stage 'units_per_deg' not specified "
+                        f"in config for device '{r_device_name}'. "
+                        f"Add units_per_deg to the id_stage section in your "
+                        f"microscope config YAML (e.g. units_per_deg: 2.0)."
+                    )
+                thor_offset = stage_config.get("thor_offset")
+                if thor_offset is None:
+                    raise ValueError(
+                        f"Thor rotation stage 'thor_offset' not specified "
+                        f"in config for device '{r_device_name}'. "
+                        f"Add thor_offset to the id_stage section in your "
+                        f"microscope config YAML (e.g. thor_offset: 276)."
+                    )
+                stage = ThorRotationStage(self.core, mm_device,
+                                          float(units_per_deg),
+                                          float(thor_offset))
             elif cls == DummyRotationStage:
                 stage = DummyRotationStage()
             else:
@@ -1135,11 +1200,18 @@ class PycromanagerHardware(MicroscopeHardware):
         """
         initial_z = self.get_z_position()
 
-        # Get Z limits
+        # Get Z limits -- required to prevent stage collisions
         stage_limits = self.settings.get("stage", {}).get("limits", {})
         z_limits = stage_limits.get("z_um", {})
-        z_min = z_limits.get("low", -10000)
-        z_max = z_limits.get("high", 10000)
+        if "low" not in z_limits or "high" not in z_limits:
+            raise ValueError(
+                "Z stage limits (stage.limits.z_um.low and "
+                "stage.limits.z_um.high) not specified in microscope "
+                "config YAML. These are required to prevent stage "
+                "collisions during autofocus sweeps."
+            )
+        z_min = z_limits["low"]
+        z_max = z_limits["high"]
 
         half = range_um / 2.0
         z_start = max(initial_z - half, z_min + 5)
