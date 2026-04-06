@@ -2043,7 +2043,10 @@ class JAIWhiteBalanceCalibrator:
         self.jai_props.set_rb_analog_gains(red=1.0, blue=1.0)
         self.hardware.set_exposure(initial_exposure_ms)
 
-        # Step 2: Converge single exposure to target mean intensity
+        # Step 2: Converge GREEN channel to target intensity.
+        # Green is the reference channel -- R and B will be corrected by
+        # analog gains in step 4. Using overall mean would cause R/G to
+        # saturate while B remains low, making gain computation impossible.
         exposure_ms = initial_exposure_ms
         converged = False
         measured = 0.0
@@ -2052,7 +2055,11 @@ class JAIWhiteBalanceCalibrator:
             image, _ = self.hardware.snap_image()
             if image is None:
                 raise RuntimeError("Failed to snap image during simple WB")
-            measured = float(np.mean(image))
+            # Use green channel (index 1) as the convergence target
+            if image.ndim == 3 and image.shape[2] >= 3:
+                measured = float(np.mean(image[:, :, 1]))
+            else:
+                measured = float(np.mean(image))
 
             logger.info(
                 "Simple WB iter %d: exp=%.3fms, mean=%.1f (target=%.1f)",
