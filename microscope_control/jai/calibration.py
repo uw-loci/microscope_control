@@ -2043,10 +2043,12 @@ class JAIWhiteBalanceCalibrator:
         self.jai_props.set_rb_analog_gains(red=1.0, blue=1.0)
         self.hardware.set_exposure(initial_exposure_ms)
 
-        # Step 2: Converge GREEN channel to target intensity.
-        # Green is the reference channel -- R and B will be corrected by
-        # analog gains in step 4. Using overall mean would cause R/G to
-        # saturate while B remains low, making gain computation impossible.
+        # Step 2: Converge the BRIGHTEST channel to target intensity.
+        # With unified exposure, the brightest channel (typically red on JAI)
+        # saturates first. We must keep it below 255 so that analog gains
+        # can boost the dimmer channels upward to match.
+        # If we targeted green or overall mean, the brightest channel would
+        # clip and no analog gain can bring it back down.
         exposure_ms = initial_exposure_ms
         converged = False
         measured = 0.0
@@ -2055,9 +2057,10 @@ class JAIWhiteBalanceCalibrator:
             image, _ = self.hardware.snap_image()
             if image is None:
                 raise RuntimeError("Failed to snap image during simple WB")
-            # Use green channel (index 1) as the convergence target
+            # Use the brightest channel mean as the convergence target
             if image.ndim == 3 and image.shape[2] >= 3:
-                measured = float(np.mean(image[:, :, 1]))
+                ch_means = [float(np.mean(image[:, :, c])) for c in range(3)]
+                measured = max(ch_means)
             else:
                 measured = float(np.mean(image))
 
@@ -2094,18 +2097,24 @@ class JAIWhiteBalanceCalibrator:
             means["red"], means["green"], means["blue"]
         )
 
-        # Step 4: Compute analog R/B gains for color balance
-        # Green is reference channel -- adjust R and B to match green
-        analog_red = means["green"] / max(means["red"], 1.0)
-        analog_blue = means["green"] / max(means["blue"], 1.0)
+        # Step 4: Compute analog R/B gains for color balance.
+        # Green is the reference (no adjustable analog gain). Bring R and B
+        # to match green's level. The brightest channel was converged to
+        # the user's target, so if R > G, analog_red < 1.0 (attenuate R)
+        # and analog_blue > 1.0 (boost B).
+        green_mean = means["green"]
+        analog_red = green_mean / max(means["red"], 1.0)
+        analog_blue = green_mean / max(means["blue"], 1.0)
 
         # Clamp to JAI analog gain range (0.47 - 4.0)
         analog_red = max(0.47, min(analog_red, 4.0))
         analog_blue = max(0.47, min(analog_blue, 4.0))
 
         logger.info(
-            "Simple WB analog gains: R=%.3f, B=%.3f (to match G=%.1f)",
-            analog_red, analog_blue, means["green"]
+            "Simple WB analog gains: R=%.3f, B=%.3f (equalizing to G=%.1f, "
+            "from R=%.1f, B=%.1f)",
+            analog_red, analog_blue, green_mean,
+            means["red"], means["blue"]
         )
 
         # Step 5: Apply analog gains and verify
