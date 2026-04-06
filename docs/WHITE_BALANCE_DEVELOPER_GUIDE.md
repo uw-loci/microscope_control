@@ -84,16 +84,42 @@ Acquisition time (during tile capture):
 
 ### Calibration Algorithm Summary
 
-The `JAIWhiteBalanceCalibrator.calibrate_simple()` method:
+#### Simple WB (`calibrate_simple()`)
 
-1. Starts with a user-provided initial exposure (applied to all 3 channels)
-2. Captures a frame and measures mean intensity per channel
-3. Adjusts per-channel exposures proportionally to reach the target intensity
-4. If any channel's exposure would exceed the soft cap, uses per-channel gain instead
-5. Iterates until all channels are within tolerance of the target, or max iterations reached
-6. Saves the final per-channel exposures and gains
+Simple WB calibrates the uncrossed (90 deg) angle using the full per-channel
+exposure algorithm, then other angles use unified exposure with only brightness
+adjustment.
 
-For PPM (`calibrate_ppm()`), this process repeats independently for each of the 4 polarizer angles, with gains reset to 1.0 between angles to prevent carryover.
+**Why per-channel exposure is required for JAI white balance:**
+The JAI camera's analog R/B gains do NOT behave as true linear multipliers in
+unified exposure mode. Testing showed:
+- `analog_red=0.9` cannot attenuate a saturated R channel (255 stays 255)
+- `analog_blue=4.0` only reaches ~187 instead of the expected ~212 (53*4)
+- Individual-exposure-with-identical-values behaves differently from true
+  unified exposure mode (the gains interact differently)
+
+Therefore, accurate R=G=B=target white balance on the JAI requires per-channel
+exposure adjustment, which the full `calibrate()` method provides.
+
+**Simple WB flow:**
+1. At uncrossed (90 deg): run full 2-phase per-channel calibration -> R=G=B=target
+2. Extract unified gain and analog R/B gains from the result
+3. At other angles: switch to unified exposure mode, keep analog gains, adjust
+   only the single exposure time to reach each angle's target intensity
+4. Save: uncrossed gets per-channel R/G/B exposures, other angles get unified exposure
+
+**Preset application:**
+- "Uncrossed (Simple WB)" button: applies per-channel exposures (length 3 array,
+  triggers individual exposure mode on camera)
+- Other angle presets (from PPM WB): also per-channel
+- During acquisition, "Simple" WB mode uses unified exposure for non-uncrossed
+  angles with the analog gains from the uncrossed calibration
+
+#### Full PPM WB (`calibrate_ppm()`)
+
+For PPM (`calibrate_ppm()`), the full per-channel calibration runs independently
+for each of the 4 polarizer angles, with gains reset to 1.0 between angles to
+prevent carryover. Each angle gets its own per-channel exposures and gains.
 
 ### PPM Multi-Angle Calibration
 
