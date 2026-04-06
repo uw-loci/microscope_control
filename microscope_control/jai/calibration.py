@@ -1987,28 +1987,45 @@ class JAIWhiteBalanceCalibrator:
         base_gain: Optional[float] = None,
     ) -> WhiteBalanceResult:
         """
-        Run simple white balance calibration at a single exposure.
+        Run simple white balance calibration using unified exposure + analog gains.
 
-        This is a convenience method for basic white balance calibration
-        at the current PPM angle (no rotation). Use this for non-PPM imaging
-        or when you want to calibrate at the current angle only.
+        Unlike the full PPM calibration, this never uses per-channel exposures.
+        All channels share one exposure time. Color balance is achieved solely
+        through analog R/B gains.
+
+        Algorithm:
+          1. Set unified exposure mode with base unified gain
+          2. Iteratively adjust the single exposure until mean hits target
+          3. Measure per-channel means at converged exposure
+          4. Compute analog R/B gains: gain = mean_G / mean_channel
+          5. Apply gains and verify
+
+        This is run at the uncrossed (90 deg) angle. The resulting analog
+        gains are then kept constant while other angles adjust only exposure.
 
         Args:
-            initial_exposure_ms: Starting exposure time for all channels (ms)
-            target: Target intensity (0-255 for 8-bit)
+            initial_exposure_ms: Starting exposure time (ms)
+            target: Target mean intensity (0-255 for 8-bit)
             tolerance: Acceptable deviation from target
             output_path: Optional path to save calibration results
-            gain_threshold_ratio: Optional exposure ratio threshold (default 2.0)
-            max_iterations: Optional max calibration iterations (default 30)
-            calibrate_black_level: Optional whether to calibrate black level (default True)
-            base_gain: Optional unified gain starting value (default 5.0)
+            gain_threshold_ratio: Unused (kept for API compatibility)
+            max_iterations: Max iterations for exposure convergence (default 30)
+            calibrate_black_level: Unused (kept for API compatibility)
+            base_gain: Unified gain value (default 1.0)
 
         Returns:
-            WhiteBalanceResult with calibrated per-channel exposures
+            WhiteBalanceResult with unified exposure and analog R/B gains
         """
-        logger.info(f"Starting simple white balance calibration (initial exp={initial_exposure_ms}ms)")
+        max_iter = max_iterations if max_iterations is not None else 30
+        unified_gain = base_gain if base_gain is not None else 1.0
 
-        # Stop live mode if running - camera properties cannot be changed during live streaming
+        logger.info(
+            "Starting simple white balance (unified exposure, target=%.1f, "
+            "tolerance=%.1f, initial_exp=%.2fms, unified_gain=%.1f)",
+            target, tolerance, initial_exposure_ms, unified_gain
+        )
+
+        # Stop live mode if running
         if hasattr(self.hardware, 'camera'):
             self.hardware.camera.stop_if_streaming()
         elif self.hardware.core.is_sequence_running():
@@ -2016,44 +2033,115 @@ class JAIWhiteBalanceCalibrator:
                 self.hardware.studio.live().set_live_mode(False)
         logger.info("Ensured camera not streaming before calibration")
 
-        # Set initial exposure on all channels
-        self.jai_props.set_channel_exposures(
-            red=initial_exposure_ms,
-            green=initial_exposure_ms,
-            blue=initial_exposure_ms,
+        # Step 1: Set unified exposure mode (single exposure for all channels)
+        self.jai_props.disable_individual_exposure()
+        self.jai_props.set_unified_gain(unified_gain)
+        self.jai_props.set_rb_analog_gains(red=1.0, blue=1.0)
+        self.hardware.set_exposure(initial_exposure_ms)
+
+        # Step 2: Converge single exposure to target mean intensity
+        exposure_ms = initial_exposure_ms
+        converged = False
+        measured = 0.0
+
+        for iteration in range(max_iter):
+            image, _ = self.hardware.snap_image()
+            if image is None:
+                raise RuntimeError("Failed to snap image during simple WB")
+            measured = float(np.mean(image))
+
+            logger.info(
+                "Simple WB iter %d: exp=%.3fms, mean=%.1f (target=%.1f)",
+                iteration, exposure_ms, measured, target
+            )
+
+            if abs(measured - target) <= tolerance:
+                converged = True
+                logger.info("Simple WB exposure converged at iteration %d", iteration)
+                break
+
+            if measured < 1.0:
+                exposure_ms *= 5.0
+            else:
+                exposure_ms *= target / measured
+
+            # Clamp exposure to safe range
+            exposure_ms = max(0.1, min(exposure_ms, 7900.0))
+            self.hardware.set_exposure(exposure_ms)
+
+        if not converged:
+            logger.warning(
+                "Simple WB exposure did not converge after %d iterations "
+                "(mean=%.1f, target=%.1f)", max_iter, measured, target
+            )
+
+        # Step 3: Measure per-channel means at converged exposure
+        means, sat_pct = self._capture_and_analyze()
+        logger.info(
+            "Simple WB per-channel at converged exposure: "
+            "R=%.1f, G=%.1f, B=%.1f",
+            means["red"], means["green"], means["blue"]
         )
 
-        # Build config
-        config_kwargs = {
-            "target_value": target,
-            "tolerance": tolerance,
-        }
-        if gain_threshold_ratio is not None:
-            config_kwargs["gain_threshold_ratio"] = gain_threshold_ratio
-        if max_iterations is not None:
-            config_kwargs["max_iterations"] = max_iterations
-        if calibrate_black_level is not None:
-            config_kwargs["calibrate_black_level"] = calibrate_black_level
-        if base_gain is not None:
-            config_kwargs["base_gain"] = base_gain
+        # Step 4: Compute analog R/B gains for color balance
+        # Green is reference channel -- adjust R and B to match green
+        analog_red = means["green"] / max(means["red"], 1.0)
+        analog_blue = means["green"] / max(means["blue"], 1.0)
 
-        config = CalibrationConfig(**config_kwargs)
+        # Clamp to JAI analog gain range (0.47 - 4.0)
+        analog_red = max(0.47, min(analog_red, 4.0))
+        analog_blue = max(0.47, min(analog_blue, 4.0))
 
         logger.info(
-            f"Simple WB config: target={target}, tolerance={tolerance}, "
-            f"gain_threshold={config.gain_threshold_ratio}, "
-            f"max_iter={config.max_iterations}, calibrate_bl={config.calibrate_black_level}, "
-            f"base_gain={config.base_gain}"
+            "Simple WB analog gains: R=%.3f, B=%.3f (to match G=%.1f)",
+            analog_red, analog_blue, means["green"]
         )
 
-        # Run 2-phase calibration without PPM rotation
-        result = self.calibrate(
-            config=config,
-            output_path=output_path,
-            rotation_callback=None,
-            defocus_callback=None,
+        # Step 5: Apply analog gains and verify
+        self.jai_props.set_rb_analog_gains(red=analog_red, blue=analog_blue)
+        time.sleep(0.1)
+
+        verify_means, verify_sat = self._capture_and_analyze()
+        logger.info(
+            "Simple WB verification: R=%.1f, G=%.1f, B=%.1f | "
+            "Sat: R=%.1f%%, G=%.1f%%, B=%.1f%%",
+            verify_means["red"], verify_means["green"], verify_means["blue"],
+            verify_sat["red"], verify_sat["green"], verify_sat["blue"]
         )
-        result.wb_method = "manual_simple"
+
+        # Save results if output path provided
+        if output_path is not None:
+            output_path.mkdir(parents=True, exist_ok=True)
+            try:
+                verification_img, _ = self.hardware.snap_image()
+                if verification_img is not None:
+                    import tifffile
+                    tifffile.imwrite(
+                        str(output_path / "white_balance_verification.tif"),
+                        verification_img
+                    )
+                    logger.info("Saved verification image to %s", output_path)
+            except Exception as e:
+                logger.warning("Failed to save verification image: %s", e)
+
+        result = WhiteBalanceResult(
+            exposures_ms={
+                "red": exposure_ms,
+                "green": exposure_ms,
+                "blue": exposure_ms,
+            },
+            black_levels={"red": 0, "green": 0, "blue": 0},
+            final_means=verify_means,
+            target_value=target,
+            unified_gain=unified_gain,
+            analog_red=analog_red,
+            analog_blue=analog_blue,
+            converged=converged,
+            iterations=iteration + 1 if converged else max_iter,
+            saturation_pct=verify_sat,
+            wb_method="manual_simple",
+        )
+
         return result
 
     def calibrate_ppm(
