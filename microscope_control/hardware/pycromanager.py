@@ -942,11 +942,13 @@ class PycromanagerHardware(MicroscopeHardware):
                 - 'original_z': Original Z position before autofocus
                 - 'validation': Full validation dict
         """
+        # Stop streaming -- snap_image() cannot run during sequence acquisition
+        self.camera.stop_if_streaming()
+
         steps = np.linspace(0, search_range, n_steps) - (search_range / 2)
 
         current_pos = self.get_current_position()
         z_steps = current_pos.z + steps
-        # print(z_steps)
         try:
             scores = []
             fallback_scores = []  # p98_p2 computed alongside primary metric
@@ -1121,10 +1123,11 @@ class PycromanagerHardware(MicroscopeHardware):
 
     def _score_single_metric(self, pixels, img_w, img_h, nch, cy, cx,
                              metric_name="normalized_variance"):
-        """Score a frame with a single focus metric on 512x512 center crop.
+        """Score a frame with a single focus metric on center crop.
 
-        Selects the best non-saturated channel (B, G, R order, mean < 245)
-        and computes the requested metric on the center crop.
+        Crop size: min(512, image_dim) to handle cameras smaller than 512px.
+        Selects the best non-saturated channel for multi-channel images.
+        Saturation threshold is derived from image dtype (8-bit: 245, 16-bit: ~64000).
 
         Args:
             pixels: Raw pixel buffer from core.get_tagged_image().pix
@@ -1139,20 +1142,31 @@ class PycromanagerHardware(MicroscopeHardware):
         Returns:
             (score, ch_mean) tuple -- the focus score and channel mean intensity.
         """
+        # Derive saturation threshold from image dtype
+        if pixels.dtype == np.uint16:
+            sat_threshold = 64000.0
+        elif pixels.dtype == np.uint8:
+            sat_threshold = 245.0
+        else:
+            sat_threshold = 245.0  # fallback for other dtypes
+
+        # Crop size: use 512x512 or smaller if image is smaller
+        crop_half = min(256, cy, cx, img_h - cy, img_w - cx)
+
         if nch > 1:
             img = pixels.reshape(img_h, img_w, nch)
             # Find best channel (non-saturated, prefer B then G then R)
             best_ch = None
             for ch in [0, 1, 2]:  # B, G, R in BGRA
-                roi_test = img[cy - 256:cy + 256, cx - 256:cx + 256, ch]
-                if float(np.mean(roi_test)) < 245:
+                roi_test = img[cy - crop_half:cy + crop_half, cx - crop_half:cx + crop_half, ch]
+                if float(np.mean(roi_test)) < sat_threshold:
                     best_ch = ch
                     break
             if best_ch is None:
                 best_ch = 1  # fallback to green
-            roi = img[cy - 256:cy + 256, cx - 256:cx + 256, best_ch].astype(np.float32)
+            roi = img[cy - crop_half:cy + crop_half, cx - crop_half:cx + crop_half, best_ch].astype(np.float32)
         else:
-            roi = pixels.reshape(img_h, img_w)[cy - 256:cy + 256, cx - 256:cx + 256].astype(np.float32)
+            roi = pixels.reshape(img_h, img_w)[cy - crop_half:cy + crop_half, cx - crop_half:cx + crop_half].astype(np.float32)
 
         ch_mean = float(np.mean(roi))
 
@@ -1198,6 +1212,9 @@ class PycromanagerHardware(MicroscopeHardware):
         Returns:
             The best-focus Z position (or current Z if sweep failed).
         """
+        # Stop streaming -- snap_image() cannot run during sequence acquisition
+        self.camera.stop_if_streaming()
+
         initial_z = self.get_z_position()
 
         # Get Z limits -- required to prevent stage collisions
