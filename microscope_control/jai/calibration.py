@@ -2017,7 +2017,11 @@ class JAIWhiteBalanceCalibrator:
             WhiteBalanceResult with unified exposure and analog R/B gains
         """
         max_iter = max_iterations if max_iterations is not None else 30
-        unified_gain = base_gain if base_gain is not None else 1.0
+        # Simple WB always starts at gain 1.0 -- the base_gain parameter is
+        # a hint for the full PPM calibration's noise-aware selection, not a
+        # literal value. High gain (e.g. 8x) saturates R/G at uncrossed,
+        # making analog gain computation meaningless.
+        unified_gain = 1.0
 
         logger.info(
             "Starting simple white balance (unified exposure, target=%.1f, "
