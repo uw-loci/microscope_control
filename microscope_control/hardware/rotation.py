@@ -104,10 +104,10 @@ class PIZRotationStage(RotationStage):
     """PI nano-positioning stage for polarization rotation.
 
     Conversion: device_position = (theta * 1000) + offset
-    where offset is a calibration constant (default 50280.0).
+    where offset is a calibration constant from polarizer calibration.
     """
 
-    def __init__(self, core, device_name: str, offset: float = 50280.0):
+    def __init__(self, core, device_name: str, offset: float):
         """
         Args:
             core: Pycromanager Core object

@@ -659,10 +659,16 @@ class PycromanagerHardware(MicroscopeHardware):
                 cls = None
 
             if cls == PIZRotationStage or (cls is None and "PIZ" in mm_device.upper()):
-                offset = stage_config.get(
-                    "piz_offset",
-                    self.settings.get("ppm_pizstage_offset", 50280.0),
-                )
+                offset = stage_config.get("piz_offset")
+                if offset is None:
+                    offset = self.settings.get("ppm_pizstage_offset")
+                if offset is None:
+                    raise ValueError(
+                        "PIZ rotation stage requires ppm_pizstage_offset in "
+                        "config YAML (or piz_offset in stage config). "
+                        "Run Polarizer Calibration to determine this value."
+                    )
+                offset = float(offset)
                 stage = PIZRotationStage(self.core, mm_device, offset)
             elif cls == ThorRotationStage or (cls is None and "Thor" in mm_device):
                 stage = ThorRotationStage(self.core, mm_device)
