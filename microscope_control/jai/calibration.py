@@ -2043,12 +2043,11 @@ class JAIWhiteBalanceCalibrator:
         self.jai_props.set_rb_analog_gains(red=1.0, blue=1.0)
         self.hardware.set_exposure(initial_exposure_ms)
 
-        # Step 2: Converge the BRIGHTEST channel to target intensity.
-        # With unified exposure, the brightest channel (typically red on JAI)
-        # saturates first. We must keep it below 255 so that analog gains
-        # can boost the dimmer channels upward to match.
-        # If we targeted green or overall mean, the brightest channel would
-        # clip and no analog gain can bring it back down.
+        # Step 2: Converge GREEN channel to target intensity using true
+        # unified exposure mode. Green is the reference channel (no
+        # adjustable analog gain). R and B are corrected by analog gains.
+        # NOTE: This only works with TRUE unified exposure mode on the JAI
+        # camera. Individual-exposure-with-same-values behaves differently.
         exposure_ms = initial_exposure_ms
         converged = False
         measured = 0.0
@@ -2057,10 +2056,9 @@ class JAIWhiteBalanceCalibrator:
             image, _ = self.hardware.snap_image()
             if image is None:
                 raise RuntimeError("Failed to snap image during simple WB")
-            # Use the brightest channel mean as the convergence target
+            # Use green channel (index 1) as the convergence target
             if image.ndim == 3 and image.shape[2] >= 3:
-                ch_means = [float(np.mean(image[:, :, c])) for c in range(3)]
-                measured = max(ch_means)
+                measured = float(np.mean(image[:, :, 1]))
             else:
                 measured = float(np.mean(image))
 
@@ -2099,9 +2097,9 @@ class JAIWhiteBalanceCalibrator:
 
         # Step 4: Compute analog R/B gains for color balance.
         # Green is the reference (no adjustable analog gain). Bring R and B
-        # to match green's level. The brightest channel was converged to
-        # the user's target, so if R > G, analog_red < 1.0 (attenuate R)
-        # and analog_blue > 1.0 (boost B).
+        # to match green's level. In true unified exposure mode, the JAI
+        # analog gains act as post-sensor scalars that correctly modify
+        # the per-channel intensity.
         green_mean = means["green"]
         analog_red = green_mean / max(means["red"], 1.0)
         analog_blue = green_mean / max(means["blue"], 1.0)
@@ -2111,10 +2109,8 @@ class JAIWhiteBalanceCalibrator:
         analog_blue = max(0.47, min(analog_blue, 4.0))
 
         logger.info(
-            "Simple WB analog gains: R=%.3f, B=%.3f (equalizing to G=%.1f, "
-            "from R=%.1f, B=%.1f)",
-            analog_red, analog_blue, green_mean,
-            means["red"], means["blue"]
+            "Simple WB analog gains: R=%.3f, B=%.3f (to match G=%.1f)",
+            analog_red, analog_blue, green_mean
         )
 
         # Step 5: Apply analog gains and verify
