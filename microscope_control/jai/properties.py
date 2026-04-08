@@ -636,7 +636,7 @@ class JAICameraProperties:
         self._set_property(self.GAIN_DIGITAL_RED, red_clamped)
         self._set_property(self.GAIN_DIGITAL_BLUE, blue_clamped)
 
-        logger.info(f"Set digital gains: R={red_clamped:.2f}, B={blue_clamped:.2f}")
+        logger.debug(f"Set digital gains: R={red_clamped:.2f}, B={blue_clamped:.2f}")
 
     def get_digital_gains(self) -> Dict[str, float]:
         """
@@ -660,7 +660,7 @@ class JAICameraProperties:
             value: Black level value
         """
         self._set_property(self.BLACK_LEVEL_ALL, value)
-        logger.info(f"Set global black level to {value}")
+        logger.debug(f"Set global black level to {value}")
 
     def set_black_levels(self, red: float, blue: float, all_channels: Optional[float] = None) -> None:
         """
@@ -679,7 +679,7 @@ class JAICameraProperties:
         self._set_property(self.BLACK_LEVEL_RED, red)
         self._set_property(self.BLACK_LEVEL_BLUE, blue)
 
-        logger.info(f"Set black levels: R={red}, B={blue}, All={all_channels}")
+        logger.debug(f"Set black levels: R={red}, B={blue}, All={all_channels}")
 
     def get_black_levels(self) -> Dict[str, float]:
         """
