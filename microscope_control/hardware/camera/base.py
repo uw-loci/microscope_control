@@ -297,6 +297,35 @@ class Camera(ABC):
         self.set_rb_analog_gains(analog_red=analog_red, analog_blue=analog_blue)
         self.disable_individual_gain()
 
+    # --- Per-property state tracking ---
+    # Tracks the last value sent to hardware for each property, allowing
+    # setters to skip redundant I/O when the value hasn't changed.
+    _tracked_state = None  # Initialized lazily on first _update_tracked_state
+
+    def invalidate_settings_state(self):
+        """Reset tracked state so next setter calls go through to hardware."""
+        self._tracked_state = None
+
+    def _state_matches(self, key, value):
+        """Check if tracked state matches incoming value.
+
+        Uses tolerance of 0.005 for float comparisons.
+        """
+        if self._tracked_state is None:
+            return False
+        tracked = self._tracked_state.get(key)
+        if tracked is None:
+            return False
+        if isinstance(value, float) and isinstance(tracked, float):
+            return abs(tracked - value) < 0.005
+        return tracked == value
+
+    def _update_tracked_state(self, key, value):
+        """Update tracked state for a property after hardware write."""
+        if self._tracked_state is None:
+            self._tracked_state = {}
+        self._tracked_state[key] = value
+
     def clear_awb_corrections(self) -> None:
         """Clear any automatic white balance corrections. No-op if not supported."""
         pass

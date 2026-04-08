@@ -42,9 +42,6 @@ class JAICamera(PycromanagerCamera):
 
         # Lazily create JAICameraProperties when first needed
         self._properties = None
-        # Cache last-applied settings to skip redundant hardware I/O.
-        # During acquisition, the same angle gets identical settings for every tile.
-        self._last_applied = None
         logger.info("Initialized JAICamera (3-CCD prism, no debayering)")
 
     @property
@@ -134,7 +131,6 @@ class JAICamera(PycromanagerCamera):
     def set_channel_exposures(self, red: float, green: float, blue: float,
                               auto_enable: bool = True) -> None:
         """Set per-channel exposure times in milliseconds."""
-        self._last_applied = None
         self.properties.set_channel_exposures(red, green, blue,
                                               auto_enable=auto_enable)
 
@@ -148,7 +144,9 @@ class JAICamera(PycromanagerCamera):
 
     def set_unified_gain(self, gain: float) -> None:
         """Set unified gain applied to all channels (1.0 - 8.0x)."""
-        self._last_applied = None
+        if self._state_matches("unified_gain", gain):
+            logger.debug("set_unified_gain(%.2f): skipped (no change)", gain)
+            return
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "JAICamera.set_unified_gain(%.2f) -- before: Gain=%s, GainIsIndividual=%s",
@@ -157,6 +155,7 @@ class JAICamera(PycromanagerCamera):
                 self._safe_get("GainIsIndividual"),
             )
         self.properties.set_unified_gain(gain)
+        self._update_tracked_state("unified_gain", gain)
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "JAICamera.set_unified_gain -- after: Gain=%s, GainIsIndividual=%s",
@@ -170,7 +169,13 @@ class JAICamera(PycromanagerCamera):
 
     def set_rb_analog_gains(self, analog_red: float, analog_blue: float) -> None:
         """Set per-channel analog gains for red and blue."""
-        self._last_applied = None
+        if (self._state_matches("analog_red", analog_red)
+                and self._state_matches("analog_blue", analog_blue)):
+            logger.debug(
+                "set_rb_analog_gains(R=%.3f, B=%.3f): skipped (no change)",
+                analog_red, analog_blue,
+            )
+            return
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "JAICamera.set_rb_analog_gains(R=%.3f, B=%.3f) -- before: aR=%s, aB=%s",
@@ -179,6 +184,8 @@ class JAICamera(PycromanagerCamera):
                 self._safe_get("Gain_AnalogBlue"),
             )
         self.properties.set_rb_analog_gains(red=analog_red, blue=analog_blue)
+        self._update_tracked_state("analog_red", analog_red)
+        self._update_tracked_state("analog_blue", analog_blue)
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "JAICamera.set_rb_analog_gains -- after: aR=%s, aB=%s",
@@ -216,40 +223,34 @@ class JAICamera(PycromanagerCamera):
         stops streaming once, applies all settings, then returns. The caller
         restarts streaming if needed.
 
-        Uses a cache to skip redundant hardware I/O when the same settings
-        are applied repeatedly (e.g., same angle across tiles in acquisition).
+        Per-property state tracking in each setter skips redundant hardware
+        I/O automatically. Only properties whose values have actually changed
+        are written to hardware.
 
         Args:
-            force: If True, bypass cache and always apply settings.
+            force: If True, invalidate tracked state and apply everything.
         """
-        # Build cache key from all settings
-        exp_key = tuple(sorted(exposures.items()))
-        settings_key = (individual_exposure, exp_key, unified_gain,
-                        round(analog_red, 4), round(analog_blue, 4))
-
-        if not force and self._last_applied == settings_key:
-            logger.debug("JAI apply_settings: skipped (same as last applied)")
-            return
+        if force:
+            self.invalidate_settings_state()
 
         self.stop_if_streaming()
 
         if individual_exposure:
-            self.properties.enable_individual_exposure()
-            self.properties.set_channel_exposures(
+            self.enable_individual_exposure()
+            self.set_channel_exposures(
                 red=exposures.get("r", exposures.get("all", 1.0)),
                 green=exposures.get("g", exposures.get("all", 1.0)),
                 blue=exposures.get("b", exposures.get("all", 1.0)),
+                auto_enable=False,
             )
         else:
-            self.properties.disable_individual_exposure()
+            self.disable_individual_exposure()
             exp = exposures.get("all", exposures.get("g", 1.0))
             self._core.set_exposure(exp)
 
         self.set_unified_gain(unified_gain)
         self.set_rb_analog_gains(analog_red=analog_red, analog_blue=analog_blue)
         self.disable_individual_gain()
-
-        self._last_applied = settings_key
 
         logger.info(
             "JAI apply_settings: mode=%s, exp=%s, gain=%.2f, aR=%.3f, aB=%.3f",
@@ -259,18 +260,24 @@ class JAICamera(PycromanagerCamera):
 
     def clear_awb_corrections(self) -> None:
         """Clear accumulated auto-white-balance corrections."""
-        self._last_applied = None
+        self.invalidate_settings_state()
         self.properties.clear_awb_corrections()
 
     def enable_individual_exposure(self) -> None:
         """Enable per-channel exposure mode."""
-        self._last_applied = None
+        if self._state_matches("individual_exposure", True):
+            logger.debug("enable_individual_exposure: skipped (no change)")
+            return
         self.properties.enable_individual_exposure()
+        self._update_tracked_state("individual_exposure", True)
 
     def disable_individual_exposure(self) -> None:
         """Disable per-channel exposure mode (use unified exposure)."""
-        self._last_applied = None
+        if self._state_matches("individual_exposure", False):
+            logger.debug("disable_individual_exposure: skipped (no change)")
+            return
         self.properties.disable_individual_exposure()
+        self._update_tracked_state("individual_exposure", False)
 
     def enable_individual_gain(self) -> None:
         """Enable per-channel gain mode."""
@@ -278,6 +285,9 @@ class JAICamera(PycromanagerCamera):
 
     def disable_individual_gain(self) -> None:
         """Disable per-channel gain mode (use unified gain)."""
+        if self._state_matches("individual_gain", False):
+            logger.debug("disable_individual_gain: skipped (no change)")
+            return
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "JAICamera.disable_individual_gain -- before: GainIsIndividual=%s, Gain=%s",
@@ -285,6 +295,7 @@ class JAICamera(PycromanagerCamera):
                 self._safe_get("Gain"),
             )
         self.properties.disable_individual_gain()
+        self._update_tracked_state("individual_gain", False)
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "JAICamera.disable_individual_gain -- after: GainIsIndividual=%s, Gain=%s",
