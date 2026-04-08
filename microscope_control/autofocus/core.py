@@ -117,21 +117,28 @@ class AutofocusUtils:
 
         # Note: grids with < 9 tiles are handled by the early return above (AF at every position)
 
-        # Build autofocus position list starting with the computed first position
+        # Build autofocus position list starting with the computed first position.
+        # Check distance from ALL previous AF positions (not just the last one)
+        # to avoid "AF pillar" artifacts in serpentine scans. In a serpentine
+        # pattern, consecutive tile indices zigzag in Y. Checking only the last
+        # AF position causes repeated AF at the top/bottom of each column because
+        # the scan reverses direction and quickly exceeds the distance threshold
+        # from the previous column's AF.
         af_positions = [first_af_index]
-        af_xy_pos = positions[first_af_index]
+        af_xy_coords = [positions[first_af_index]]
 
         for ix, pos in enumerate(positions):
             if ix == first_af_index:
-                continue  # Already added as first AF position
+                continue
 
-            # Calculate distance from last AF position
-            dist_to_last_af_xy_pos = cdist([af_xy_pos], [pos])[0][0]
+            # Check distance to ALL previous AF positions
+            distances = cdist([pos], af_xy_coords)[0]
+            min_dist = float(np.min(distances))
 
-            # If we've moved more than the AF minimum distance, add new AF point
-            if dist_to_last_af_xy_pos > af_min_distance:
+            # Only add AF if far enough from every existing AF position
+            if min_dist > af_min_distance:
                 af_positions.append(ix)
-                af_xy_pos = pos  # Update last autofocus position
+                af_xy_coords.append(pos)
 
         return af_positions, af_min_distance
 
