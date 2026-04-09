@@ -495,15 +495,36 @@ class PycromanagerHardware(MicroscopeHardware):
         6. Apply mode positions (Z, F stages)
 
         Args:
-            profile_name: Key in acquisition_profiles (e.g. 'bf_20x')
+            profile_name: Key in acquisition_profiles. May include a
+                trailing "_<counter>" suffix from the Java extension
+                (e.g. ``Brightfield_10x_8``), which is stripped before
+                lookup. Accepts both the canonical form
+                (``Brightfield_10x``) and legacy short forms
+                (``bf_10x``) via fallback matching.
         """
         profiles = self.settings.get("acquisition_profiles", {})
-        profile = profiles.get(profile_name)
-        if not profile:
-            logger.warning("No acquisition profile found for '%s'", profile_name)
+
+        # Resolve profile key, stripping any trailing "_<counter>" suffix
+        # that the Java extension appends (e.g. Brightfield_10x_8 -> _8).
+        resolved_key = self._resolve_profile_key(profile_name, profiles)
+        if resolved_key is None:
+            logger.warning(
+                "No acquisition profile found for '%s' (tried exact match, "
+                "stripped counter suffix, and short-form fallback). "
+                "Available profiles: %s",
+                profile_name, sorted(profiles.keys()),
+            )
             return
 
-        logger.info("Applying mode setup for profile: %s", profile_name)
+        profile = profiles[resolved_key]
+        if resolved_key != profile_name:
+            logger.info(
+                "Applying mode setup for profile: %s (resolved from '%s')",
+                resolved_key, profile_name,
+            )
+        else:
+            logger.info("Applying mode setup for profile: %s", resolved_key)
+        profile_name = resolved_key  # Use the resolved key for the rest of the method
 
         # === STEP 0: SAFETY -- protect PMTs before any light changes ===
         self._safe_disable_pmt_and_shutters()
@@ -642,6 +663,71 @@ class PycromanagerHardware(MicroscopeHardware):
         except Exception:
             pass
         logger.info("SAFETY: PMT protection sequence complete")
+
+    @staticmethod
+    def _resolve_profile_key(profile_name: str, profiles: dict) -> "str | None":
+        """Match a scan_type / profile_name against the acquisition_profiles dict.
+
+        The Java extension sends scan_type as ``<Modality>_<Objective>_<counter>``
+        (e.g. ``Brightfield_10x_8``). The counter varies across acquisitions
+        and cannot be a stable profile key, so this helper tries several
+        lookup strategies in order:
+
+        1. Exact match (legacy behaviour)
+        2. Strip a trailing ``_<digits>`` counter and retry
+        3. Translate ``Modality_Objective`` to a short form by taking the
+           first two letters of the modality (``bf_10x``, ``fl_10x``, etc.)
+        4. Case-insensitive matching against all keys
+
+        Returns the matched key (as stored in the profiles dict), or
+        ``None`` if no match can be found.
+        """
+        if not profile_name or not isinstance(profiles, dict) or not profiles:
+            return None
+
+        # Strategy 1: exact match
+        if profile_name in profiles:
+            return profile_name
+
+        # Strategy 2: strip trailing "_<digits>" counter
+        import re
+        stripped = re.sub(r"_\d+$", "", profile_name)
+        if stripped != profile_name and stripped in profiles:
+            return stripped
+
+        # Strategy 3: short-form translation for common modality names.
+        # "Brightfield_10x" -> "bf_10x", "Fluorescence_20x" -> "fl_20x"
+        short_form = None
+        parts = stripped.split("_", 1)
+        if len(parts) == 2:
+            modality_short_forms = {
+                "brightfield": "bf",
+                "fluorescence": "fl",
+                "widefield": "wf",
+                "polarized": "ppm",
+                "ppm": "ppm",
+                "laserscanning": "ls",
+                "multiphoton": "2p",
+                "shg": "shg",
+            }
+            short = modality_short_forms.get(parts[0].lower())
+            if short:
+                short_form = short + "_" + parts[1]
+                if short_form in profiles:
+                    return short_form
+
+        # Strategy 4: case-insensitive match against all keys
+        stripped_lower = stripped.lower()
+        for key in profiles:
+            if key.lower() == stripped_lower:
+                return key
+        if short_form:
+            short_lower = short_form.lower()
+            for key in profiles:
+                if key.lower() == short_lower:
+                    return key
+
+        return None
 
     def _create_stage(self):
         """Create the Stage instance for this microscope."""
