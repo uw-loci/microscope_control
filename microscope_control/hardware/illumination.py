@@ -145,14 +145,20 @@ class DevicePropertyIllumination(Illumination):
                     self._label, device_name, max_intensity)
 
     def on(self) -> None:
-        """Turn on the light source (set State=1)."""
-        self._core.set_property(self._device, self._state_prop, 1)
+        """Turn on the light source (set State=1).
+
+        State is passed as the string "1" because pycromanager
+        serializes numeric arguments to float strings like
+        "1.000000", which MM rejects for discrete-valued properties
+        (DiaLamp, Nikon LightPath, etc.).
+        """
+        self._core.set_property(self._device, self._state_prop, "1")
         logger.debug("%s turned on", self._label)
 
     def off(self) -> None:
         """Turn off the light source (set State=0 and Intensity=0)."""
         self._core.set_property(self._device, self._intensity_prop, 0)
-        self._core.set_property(self._device, self._state_prop, 0)
+        self._core.set_property(self._device, self._state_prop, "0")
         logger.debug("%s turned off", self._label)
 
     def set_power(self, power: float) -> None:
@@ -165,10 +171,12 @@ class DevicePropertyIllumination(Illumination):
         """
         intensity = max(0.0, min(power, self._max_intensity))
         if intensity > 0:
-            self._core.set_property(self._device, self._state_prop, 1)
+            # String "1" avoids pycromanager float-string coercion that
+            # MM rejects on discrete State properties.
+            self._core.set_property(self._device, self._state_prop, "1")
         self._core.set_property(self._device, self._intensity_prop, intensity)
         if intensity == 0:
-            self._core.set_property(self._device, self._state_prop, 0)
+            self._core.set_property(self._device, self._state_prop, "0")
         logger.debug("%s intensity set to %.0f", self._label, intensity)
 
     def get_power(self) -> float:
