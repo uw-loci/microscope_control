@@ -479,6 +479,79 @@ class PycromanagerHardware(MicroscopeHardware):
         self.core.wait_for_config(group, preset)
         logger.debug("Config preset applied successfully")
 
+    def apply_profile_illumination(self, profile_name: str) -> Optional[float]:
+        """Apply ONLY the illumination intensity from an acquisition profile.
+
+        This is a surgical subset of :meth:`apply_mode_setup` intended for
+        background collection and other workflows that need the profile's
+        lamp level without disturbing the rest of the hardware state.
+        Specifically, this method DOES NOT:
+
+        * Move any stages (Z/F)
+        * Switch cameras or detectors
+        * Apply MM ConfigGroup presets (light path, filter wheels, ...)
+        * Disable PMTs or shutters
+
+        It only reads ``illumination_intensity`` from the resolved profile
+        and calls ``self._illumination.set_power(intensity)`` if both the
+        profile value and the active illumination device are available.
+
+        Background collection uses this to guarantee the sensor sees the
+        same lamp level at collection time that the subsequent tiled
+        acquisition will use, without disrupting the user's manually
+        positioned blank area or the current detector/optics state.
+
+        Args:
+            profile_name: Key in ``acquisition_profiles``. May include a
+                trailing ``_<counter>`` suffix (stripped via
+                :meth:`_resolve_profile_key`).
+
+        Returns:
+            The illumination intensity that was applied, or ``None`` if
+            the profile could not be resolved, the profile has no
+            ``illumination_intensity`` entry, or no illumination device
+            is active.
+        """
+        profiles = self.settings.get("acquisition_profiles", {})
+        resolved_key = self._resolve_profile_key(profile_name, profiles)
+        if resolved_key is None:
+            logger.warning(
+                "apply_profile_illumination: no acquisition profile found for '%s'. "
+                "Available profiles: %s",
+                profile_name, sorted(profiles.keys()),
+            )
+            return None
+
+        profile = profiles[resolved_key]
+        illum_intensity = profile.get("illumination_intensity")
+        if illum_intensity is None:
+            logger.info(
+                "apply_profile_illumination: profile '%s' has no illumination_intensity; skipping",
+                resolved_key,
+            )
+            return None
+
+        if self._illumination is None:
+            logger.info(
+                "apply_profile_illumination: no active illumination device; cannot set intensity %s for profile '%s'",
+                illum_intensity, resolved_key,
+            )
+            return None
+
+        try:
+            self._illumination.set_power(illum_intensity)
+            logger.info(
+                "apply_profile_illumination: set illumination to %s from profile '%s'",
+                illum_intensity, resolved_key,
+            )
+            return float(illum_intensity)
+        except Exception as e:
+            logger.warning(
+                "apply_profile_illumination: failed to set illumination %s for profile '%s': %s",
+                illum_intensity, resolved_key, e,
+            )
+            return None
+
     def apply_mode_setup(self, profile_name: str) -> None:
         """Apply all setup steps for an acquisition profile.
 
