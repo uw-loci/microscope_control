@@ -117,28 +117,52 @@ class AutofocusUtils:
 
         # Note: grids with < 9 tiles are handled by the early return above (AF at every position)
 
-        # Build autofocus position list starting with the computed first position.
-        # Check distance from ALL previous AF positions (not just the last one)
-        # to avoid "AF pillar" artifacts in serpentine scans. In a serpentine
-        # pattern, consecutive tile indices zigzag in Y. Checking only the last
-        # AF position causes repeated AF at the top/bottom of each column because
-        # the scan reverses direction and quickly exceeds the distance threshold
-        # from the previous column's AF.
-        af_positions = [first_af_index]
-        af_xy_coords = [positions[first_af_index]]
+        # Build autofocus positions using a SPATIAL GRID approach.
+        #
+        # The previous greedy scan-order algorithm checked distance from all
+        # previous AF positions, which prevented the original "AF at every
+        # column reversal" bug but still produced vertical pillars: the
+        # serpentine scan order and fixed distance threshold conspire to
+        # re-select the same X columns in each batch of AF rows.
+        #
+        # Instead, we lay a uniform rectangular lattice of target points
+        # over the scan area with spacing = af_min_distance, then map each
+        # lattice point to the nearest actual tile position. This produces
+        # an evenly distributed set of AF positions regardless of scan order.
+        pos_array = np.array(positions)
+        x_min, y_min = pos_array.min(axis=0)
+        x_max, y_max = pos_array.max(axis=0)
 
-        for ix, pos in enumerate(positions):
-            if ix == first_af_index:
-                continue
+        # Create grid of target AF positions, centered in the scan area.
+        # Offset by half the spacing so points aren't on the edges.
+        half = af_min_distance / 2.0
+        grid_xs = np.arange(x_min + half, x_max + half, af_min_distance)
+        grid_ys = np.arange(y_min + half, y_max + half, af_min_distance)
 
-            # Check distance to ALL previous AF positions
-            distances = cdist([pos], af_xy_coords)[0]
-            min_dist = float(np.min(distances))
+        if len(grid_xs) == 0:
+            grid_xs = np.array([(x_min + x_max) / 2.0])
+        if len(grid_ys) == 0:
+            grid_ys = np.array([(y_min + y_max) / 2.0])
 
-            # Only add AF if far enough from every existing AF position
-            if min_dist > af_min_distance:
-                af_positions.append(ix)
-                af_xy_coords.append(pos)
+        # Build all grid points and find the nearest tile for each
+        grid_points = np.array([(gx, gy) for gx in grid_xs for gy in grid_ys])
+        dists = cdist(grid_points, pos_array)
+        nearest_tile_indices = set(int(np.argmin(row)) for row in dists)
+
+        # Ensure the computed first-AF tile is included
+        nearest_tile_indices.add(first_af_index)
+
+        # Sort by scan order so the first AF in the acquisition is
+        # the preferred WSI-scored or diagonal-offset tile
+        af_positions = sorted(nearest_tile_indices)
+
+        logger.info(
+            "Spatial grid AF: %d target grid points -> %d unique tile positions "
+            "(spacing=%.0f um, grid %dx%d over %.0fx%.0f um area)",
+            len(grid_points), len(af_positions),
+            af_min_distance, len(grid_xs), len(grid_ys),
+            x_max - x_min, y_max - y_min,
+        )
 
         return af_positions, af_min_distance
 
