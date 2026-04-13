@@ -635,9 +635,27 @@ class PycromanagerHardware(MicroscopeHardware):
                             type(new_illum).__name__, modality_name)
 
         # === STEP 5: Set illumination intensity ===
+        # Channel-based profiles (widefield IF, BF+IF) drive illumination
+        # per-channel through the channel library's device_properties, so the
+        # profile-level illumination_intensity is meaningless -- and on some
+        # hardware (OWS3 LappMainBranch1 where the legacy intensity_property
+        # is the discrete "State" property) calling set_power() with a float
+        # like 1.0 throws "Invalid property value" and crashes the whole
+        # apply_mode_setup path before the channel loop ever runs. Skip the
+        # legacy set_power entirely when channels are declared.
+        profile_has_channels = bool(profile.get("channels"))
         illum_intensity = profile.get("illumination_intensity")
         if illum_intensity is not None and self._illumination is not None:
-            self._illumination.set_power(illum_intensity)
+            if profile_has_channels:
+                logger.info(
+                    "Skipping profile-level illumination_intensity=%s for '%s': "
+                    "profile is channel-based and the per-channel device_properties "
+                    "drive illumination.",
+                    illum_intensity,
+                    profile_name,
+                )
+            else:
+                self._illumination.set_power(illum_intensity)
 
         # === STEP 6: Apply mode positions (Z, F stages) ===
         mode_positions = self.settings.get("mode_positions", {})
