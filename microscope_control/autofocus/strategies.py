@@ -182,10 +182,11 @@ class DenseTextureStrategy:
         self._score_fn = _resolve_score_metric(self.score_metric_name)
 
     def is_valid(self, image, logger_=None) -> Tuple[bool, Dict[str, Any]]:
-        # Delegate to the existing has_sufficient_tissue with the strategy's
-        # parameters. This is the bridge that lets dense_texture be a
-        # zero-behavior-change wrapper around current logic during migration.
-        ok, stats = AutofocusUtils.has_sufficient_tissue(
+        # Delegate to has_sufficient_signal (renamed from has_sufficient_tissue
+        # on 2026-04-13) with the strategy's parameters. This is the bridge
+        # that lets dense_texture be a zero-behavior-change wrapper around
+        # current logic during migration.
+        ok, stats = AutofocusUtils.has_sufficient_signal(
             image,
             texture_threshold=self.texture_threshold,
             tissue_area_threshold=self.tissue_area_threshold,

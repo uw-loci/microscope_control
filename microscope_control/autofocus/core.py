@@ -255,7 +255,7 @@ class AutofocusUtils:
         return float(np.mean(gradient_magnitude * weight_mask))
 
     @staticmethod
-    def has_sufficient_tissue(
+    def has_sufficient_signal(
         image: np.ndarray,
         texture_threshold: float = 0.02,
         tissue_area_threshold: float = 0.15,
@@ -265,7 +265,22 @@ class AutofocusUtils:
         rgb_brightness_threshold: float = 240.0,
     ):
         """
-        Determine if image has sufficient tissue texture for reliable autofocus.
+        Determine if image has sufficient signal for reliable autofocus.
+
+        Renamed from has_sufficient_tissue (2026-04-13): the "tissue" term
+        is a brightfield-era name that is actively misleading on
+        fluorescence runs where the validity question is "are there bright
+        spots above the noise floor", not "is there dense stained tissue
+        across the field". The underlying logic is still the brightfield
+        texture-plus-area check; per-modality logic (including the sparse-
+        fluorescence case) is now dispatched through
+        microscope_control.autofocus.strategies. This function remains as
+        the dense_texture strategy's underlying implementation and as a
+        thin compatibility shim for callers that have not migrated.
+
+        The old name {@code has_sufficient_tissue} is kept as a module-
+        level alias below; it logs a one-time deprecation warning on the
+        first call and otherwise forwards to this function.
 
         Args:
             image: Input image (grayscale or RGB)
@@ -430,6 +445,22 @@ class AutofocusUtils:
             return has_tissue, stats
         else:
             return has_tissue
+
+    # Deprecated alias: has_sufficient_tissue -> has_sufficient_signal (2026-04-13).
+    # The "tissue" term is brightfield-era and misleading on fluorescence runs.
+    # Keeps callers working during migration; logs a one-time deprecation hint.
+    _sig_deprecation_logged = False
+
+    @staticmethod
+    def has_sufficient_tissue(*args, **kwargs):
+        """Deprecated alias for has_sufficient_signal. Log once, forward."""
+        if not AutofocusUtils._sig_deprecation_logged:
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                "has_sufficient_tissue is deprecated; use has_sufficient_signal (same signature)"
+            )
+            AutofocusUtils._sig_deprecation_logged = True
+        return AutofocusUtils.has_sufficient_signal(*args, **kwargs)
 
     @staticmethod
     def defer_autofocus_to_next_tile(
