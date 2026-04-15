@@ -5,6 +5,7 @@ Any microscope control backend that can move XY and Z axes can implement
 the Stage interface to work with the QPSC acquisition system.
 """
 
+import threading
 import time
 import logging
 from abc import ABC, abstractmethod
@@ -169,6 +170,20 @@ class PycromanagerStage(Stage):
         """
         self._core = core
         self._settings = settings
+        # Reentrant lock guarding every stage operation. Serializes concurrent
+        # access from multiple client threads (position pollers, Z scroll,
+        # acquisition workflow, Smooth Focus, background cache) so that:
+        #   - no two move_z() calls can retarget the Prior stage mid-wait,
+        #     which was causing wait_z busy-poll to hang for the full 10 s
+        #     timeout during rapid Z scroll (2026-04-15 incident),
+        #   - get_xyz() reads don't interleave mid-move and return mixed
+        #     pre/post-move coordinates,
+        #   - secondary Z (F-stage) operations that temporarily rebind the
+        #     MM focus device can't race with a primary Z move.
+        # Reentrant so that composed operations (move_to_position, which
+        # calls move_z_no_wait + wait_z) can hold the lock at the top level
+        # and have the inner calls re-enter it cheaply.
+        self._lock = threading.RLock()
         logger.info("Initialized PycromanagerStage")
 
     @property
@@ -176,6 +191,18 @@ class PycromanagerStage(Stage):
         """Access to the underlying MM Core (for autofocus and other
         low-level operations that need direct Z control)."""
         return self._core
+
+    @property
+    def lock(self) -> threading.RLock:
+        """The stage's reentrant serialization lock.
+
+        Composed operations like ``PycromanagerHardware.move_to_position``
+        should acquire this lock at the top level so the non-blocking set
+        and the subsequent wait run as an atomic unit. Individual stage
+        method calls also acquire this lock internally; the RLock allows
+        those inner acquires to succeed without deadlock.
+        """
+        return self._lock
 
     def _ensure_z_device(self) -> None:
         """Ensure the correct Z focus device is active.
@@ -255,48 +282,57 @@ class PycromanagerStage(Stage):
     # --- XY operations ---
 
     def move_xy(self, x: float, y: float) -> None:
-        self._core.set_xy_position(x, y)
-        self._core.wait_for_device(self._core.get_xy_stage_device())
-        logger.debug("move_xy: X=%.2f, Y=%.2f", x, y)
+        with self._lock:
+            self._core.set_xy_position(x, y)
+            self._core.wait_for_device(self._core.get_xy_stage_device())
+            logger.debug("move_xy: X=%.2f, Y=%.2f", x, y)
 
     def move_xy_no_wait(self, x: float, y: float) -> None:
-        self._core.set_xy_position(x, y)
-        logger.debug("move_xy_no_wait: target X=%.2f, Y=%.2f", x, y)
+        with self._lock:
+            self._core.set_xy_position(x, y)
+            logger.debug("move_xy_no_wait: target X=%.2f, Y=%.2f", x, y)
 
     def get_xy(self) -> Tuple[float, float]:
-        return self._core.get_x_position(), self._core.get_y_position()
+        with self._lock:
+            return self._core.get_x_position(), self._core.get_y_position()
 
     def wait_xy(self) -> None:
-        self._core.wait_for_device(self._core.get_xy_stage_device())
+        with self._lock:
+            self._core.wait_for_device(self._core.get_xy_stage_device())
 
     # --- Z operations ---
 
     def move_z(self, z: float) -> None:
-        self._ensure_z_device()
-        self._core.set_position(z)
-        self._wait_z_via_busy()
-        logger.debug("move_z: Z=%.2f", z)
+        with self._lock:
+            self._ensure_z_device()
+            self._core.set_position(z)
+            self._wait_z_via_busy()
+            logger.debug("move_z: Z=%.2f", z)
 
     def move_z_no_wait(self, z: float) -> None:
-        self._ensure_z_device()
-        self._core.set_position(z)
-        logger.debug("move_z_no_wait: target Z=%.2f", z)
+        with self._lock:
+            self._ensure_z_device()
+            self._core.set_position(z)
+            logger.debug("move_z_no_wait: target Z=%.2f", z)
 
     def get_z(self) -> float:
-        return self._core.get_position()
+        with self._lock:
+            return self._core.get_position()
 
     def wait_z(self) -> None:
-        self._wait_z_via_busy()
+        with self._lock:
+            self._wait_z_via_busy()
 
     # --- Combined (optimized) ---
 
     def get_xyz(self) -> Tuple[float, float, float]:
         """Get XYZ in a single call (no redundant device queries)."""
-        return (
-            self._core.get_x_position(),
-            self._core.get_y_position(),
-            self._core.get_position(),
-        )
+        with self._lock:
+            return (
+                self._core.get_x_position(),
+                self._core.get_y_position(),
+                self._core.get_position(),
+            )
 
     # --- Secondary Z (condenser / F-stage) ---
 
@@ -320,20 +356,22 @@ class PycromanagerStage(Stage):
         Temporarily switches the MM focus device to the F-stage,
         issues the move, waits, then switches back to the primary Z.
         """
-        self._ensure_secondary_z_device()
-        self._core.set_position(z)
-        self._core.wait_for_device(self._core.get_focus_device())
-        logger.debug("move_secondary_z (F-stage): %.2f", z)
-        # Switch back to primary Z
-        self._ensure_z_device()
+        with self._lock:
+            self._ensure_secondary_z_device()
+            self._core.set_position(z)
+            self._core.wait_for_device(self._core.get_focus_device())
+            logger.debug("move_secondary_z (F-stage): %.2f", z)
+            # Switch back to primary Z
+            self._ensure_z_device()
 
     def get_secondary_z(self) -> float:
         """Get current condenser / F-stage position."""
-        self._ensure_secondary_z_device()
-        pos = self._core.get_position()
-        # Switch back to primary Z
-        self._ensure_z_device()
-        return pos
+        with self._lock:
+            self._ensure_secondary_z_device()
+            pos = self._core.get_position()
+            # Switch back to primary Z
+            self._ensure_z_device()
+            return pos
 
     # --- Objective turret ---
 
@@ -351,14 +389,16 @@ class PycromanagerStage(Stage):
         turret = self._settings.get("obj_slider")
         if not turret:
             raise RuntimeError("No objective turret (obj_slider) configured")
-        # obj_slider is [device_name, property_name] in config
-        self._core.set_property(turret[0], turret[1], label)
-        self._core.wait_for_device(turret[0])
-        logger.info("Turret set to %s", label)
+        with self._lock:
+            # obj_slider is [device_name, property_name] in config
+            self._core.set_property(turret[0], turret[1], label)
+            self._core.wait_for_device(turret[0])
+            logger.info("Turret set to %s", label)
 
     def get_turret_position(self) -> str:
         """Get current turret position label."""
         turret = self._settings.get("obj_slider")
         if not turret:
             raise RuntimeError("No objective turret configured")
-        return self._core.get_property(turret[0], turret[1])
+        with self._lock:
+            return self._core.get_property(turret[0], turret[1])

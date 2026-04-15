@@ -1052,6 +1052,14 @@ class PycromanagerHardware(MicroscopeHardware):
 
         Only moves axes that are explicitly specified (not None).
         For example, Position(x, y) moves XY only without touching Z.
+
+        The entire non-blocking-set + wait sequence runs under the stage's
+        reentrant lock so that concurrent callers from multiple client
+        threads (rapid Z scroll, position pollers, acquisition, Smooth
+        Focus) are serialized. Without this lock, overlapping move_z
+        calls caused the 2026-04-15 Z scroll incident where wait_z
+        busy-poll hung for the full 10 s timeout because the stage kept
+        getting retargeted mid-wait.
         """
         t_total = time.perf_counter()
 
@@ -1065,25 +1073,26 @@ class PycromanagerHardware(MicroscopeHardware):
             logger.info(f"Requested position: {position}")
             raise ValueError(f"Position out of range: {position}")
 
-        # Issue moves (non-blocking)
-        t0 = time.perf_counter()
-        if has_z:
-            self._stage.move_z_no_wait(position.z)
-        if has_xy:
-            self._stage.move_xy_no_wait(position.x, position.y)
-        t_set = (time.perf_counter() - t0) * 1000
+        with self._stage.lock:
+            # Issue moves (non-blocking)
+            t0 = time.perf_counter()
+            if has_z:
+                self._stage.move_z_no_wait(position.z)
+            if has_xy:
+                self._stage.move_xy_no_wait(position.x, position.y)
+            t_set = (time.perf_counter() - t0) * 1000
 
-        # Wait for completion
-        t_wait_xy = 0
-        t_wait_z = 0
-        if has_xy:
-            t0 = time.perf_counter()
-            self._stage.wait_xy()
-            t_wait_xy = (time.perf_counter() - t0) * 1000
-        if has_z:
-            t0 = time.perf_counter()
-            self._stage.wait_z()
-            t_wait_z = (time.perf_counter() - t0) * 1000
+            # Wait for completion
+            t_wait_xy = 0
+            t_wait_z = 0
+            if has_xy:
+                t0 = time.perf_counter()
+                self._stage.wait_xy()
+                t_wait_xy = (time.perf_counter() - t0) * 1000
+            if has_z:
+                t0 = time.perf_counter()
+                self._stage.wait_z()
+                t_wait_z = (time.perf_counter() - t0) * 1000
 
         t_total_ms = (time.perf_counter() - t_total) * 1000
         logger.debug(

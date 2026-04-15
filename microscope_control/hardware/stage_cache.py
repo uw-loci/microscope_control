@@ -66,16 +66,22 @@ class StagePositionCache:
     def __init__(
         self,
         stage: Stage,
-        poll_interval_s: float = 0.1,
+        poll_interval_s: float = 0.5,
         retry_backoff_s: float = 0.5,
     ):
         """
         Args:
             stage: The Stage instance to poll.
-            poll_interval_s: Time between background polls. 0.1 s
-                is enough for the live position display (which
-                refreshes at 500 ms) and keeps the serial line at
-                ~10 Hz of cache traffic.
+            poll_interval_s: Time between background polls. 0.5 s
+                is fast enough for the 500 ms live position display
+                refresh and keeps contention with stage operations
+                low. Earlier 0.1 s (10 Hz) was too aggressive -- it
+                added constant serial traffic that competed with
+                Z-scroll move_z busy-polls for the Prior stage's
+                single serial bus and made the 2026-04-15 connection
+                storm much worse. With the stage-level RLock now
+                serializing all stage access, high-frequency cache
+                polling just queues behind moves and adds no value.
             retry_backoff_s: How long to sleep after a polling
                 error before trying again. Kept short so transient
                 serial blips don't visibly stale the cache.
