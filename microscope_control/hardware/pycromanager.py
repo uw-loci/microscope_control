@@ -821,9 +821,36 @@ class PycromanagerHardware(MicroscopeHardware):
         return None
 
     def _create_stage(self):
-        """Create the Stage instance for this microscope."""
+        """Create the Stage instance and (re)build the position cache.
+
+        The stage and its background-polling cache have the same
+        lifetime: any time we rebuild the stage (initial construction
+        or config reload), we tear down the old cache thread and start
+        a fresh one bound to the new stage. This keeps cache and
+        hardware in lockstep without requiring callers (e.g. the
+        CONFIG handler) to remember to update both.
+        """
         from microscope_control.hardware.stage import PycromanagerStage
-        return PycromanagerStage(self.core, self.settings)
+        from microscope_control.hardware.stage_cache import StagePositionCache
+
+        new_stage = PycromanagerStage(self.core, self.settings)
+
+        # Replace any existing cache. On first construction
+        # _stage_cache won't exist yet; on config reload it does
+        # and its polling thread must be stopped before we drop
+        # the reference.
+        old_cache = getattr(self, "_stage_cache", None)
+        if old_cache is not None:
+            try:
+                old_cache.stop()
+            except Exception as e:
+                logger.warning(
+                    "Could not cleanly stop previous StagePositionCache: %s", e,
+                )
+        self._stage_cache = StagePositionCache(new_stage)
+        self._stage_cache.start()
+
+        return new_stage
 
     def _create_rotation_stage(self):
         """Create the appropriate RotationStage subclass, or None."""
@@ -955,6 +982,19 @@ class PycromanagerHardware(MicroscopeHardware):
     def stage(self):
         """The XYZ stage attached to this microscope."""
         return self._stage
+
+    @property
+    def stage_cache(self):
+        """Background-polled cache of the latest XYZ stage position.
+
+        Use ``hardware.stage_cache.get_cached_position()`` for non-
+        critical reads (live position display, frame overlays,
+        progress logging) -- they hit an in-memory snapshot instead
+        of the serial bus. Critical reads (focus-scan endpoints,
+        per-tile metadata) should call ``force_refresh()`` or use
+        ``get_current_position()`` which always live-queries.
+        """
+        return self._stage_cache
 
     @property
     def rotation_stage(self):
