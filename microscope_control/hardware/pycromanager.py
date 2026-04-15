@@ -577,6 +577,17 @@ class PycromanagerHardware(MicroscopeHardware):
         """
         profiles = self.settings.get("acquisition_profiles", {})
 
+        # Microscopes without profile-based mode setup (e.g. PPM) have no
+        # acquisition_profiles section at all. That is a valid configuration;
+        # workflow.py calls apply_mode_setup unconditionally, so skip quietly
+        # instead of logging a misleading "no profile found" warning.
+        if not profiles:
+            logger.debug(
+                "apply_mode_setup('%s'): no acquisition_profiles configured; skipping",
+                profile_name,
+            )
+            return
+
         # Resolve profile key, stripping any trailing "_<counter>" suffix
         # that the Java extension appends (e.g. Brightfield_10x_8 -> _8).
         resolved_key = self._resolve_profile_key(profile_name, profiles)
