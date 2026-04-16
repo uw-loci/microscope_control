@@ -1429,6 +1429,7 @@ class PycromanagerHardware(MicroscopeHardware):
         range_um=10.0,
         n_steps=5,
         score_metric="normalized_variance",
+        max_retries=2,
     ) -> float:
         """Drift check using stepped Z sweep with blocking moves and snaps.
 
@@ -1438,9 +1439,9 @@ class PycromanagerHardware(MicroscopeHardware):
         channel.
 
         When the peak is at a boundary (monotonic profile), retries up to
-        2 additional times shifting the window in the peak direction,
-        matching the Smooth Focus edge-retry pattern.  Total coverage is
-        up to 3x range_um, clamped to stage Z limits.
+        max_retries additional times shifting the window in the peak
+        direction. Total coverage is up to (max_retries+1) * range_um,
+        clamped to stage Z limits.
 
         If sweep fails for any reason, returns starting Z unchanged.
 
@@ -1450,11 +1451,12 @@ class PycromanagerHardware(MicroscopeHardware):
             score_metric: Focus metric name passed to _score_single_metric().
                 One of "normalized_variance" (default), "laplacian_variance",
                 "sobel", "brenner_gradient", "p98_p2".
+            max_retries: Additional sweep attempts on boundary peaks (default 2).
+                0 disables retries. Each retry extends range by one window.
 
         Returns:
             The best-focus Z position (or current Z if sweep failed).
         """
-        MAX_EDGE_RETRIES = 2
 
         self.camera.stop_if_streaming()
 
@@ -1557,8 +1559,8 @@ class PycromanagerHardware(MicroscopeHardware):
         scores = np.array([m[1] for m in measurements])
         best_idx = int(np.argmax(scores))
 
-        # --- Edge-retry loop (up to MAX_EDGE_RETRIES additional attempts) ---
-        for retry in range(MAX_EDGE_RETRIES):
+        # --- Edge-retry loop (up to max_retries additional attempts) ---
+        for retry in range(max_retries):
             if best_idx != 0 and best_idx != len(z_arr) - 1:
                 break
 
