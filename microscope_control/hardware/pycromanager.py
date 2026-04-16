@@ -1571,9 +1571,97 @@ class PycromanagerHardware(MicroscopeHardware):
 
         best_idx = int(np.argmax(scores))
 
-        # If peak is at either boundary, the profile is monotonic or noisy
-        # -- no real focus peak found. Keep current Z.
+        # If peak is at either boundary, the profile is monotonic -- true
+        # focus is outside the sweep window. Check if scores show a real
+        # trend (range >= 2%) and if so, extend the sweep once in the peak
+        # direction. This prevents dead zones where autofocus can never
+        # recover from a bad starting Z.
         if best_idx == 0 or best_idx == len(measurements) - 1:
+            boundary_score_range = float(scores.max() - scores.min())
+            boundary_range_pct = boundary_score_range / max(float(scores.mean()), 1.0) * 100
+
+            if boundary_range_pct >= 2.0:
+                boundary_z = z_arr[best_idx]
+                if best_idx == len(measurements) - 1:
+                    ext_center = boundary_z + half
+                else:
+                    ext_center = boundary_z - half
+                ext_start = max(ext_center - half, z_min + 5)
+                ext_end = min(ext_center + half, z_max - 5)
+                ext_range = ext_end - ext_start
+
+                if ext_range >= 1.0:
+                    logger.info(
+                        f"Sweep drift check: peak at boundary (idx={best_idx}), "
+                        f"score trend {boundary_range_pct:.1f}% -- extending "
+                        f"sweep [{ext_start:.1f} -> {ext_end:.1f}]")
+
+                    ext_step = ext_range / n_steps
+                    ext_z_positions = [ext_start + i * ext_step
+                                       for i in range(n_steps + 1)]
+                    ext_measurements = []
+                    try:
+                        self.core.set_position(ext_z_positions[0])
+                        self.core.wait_for_device(z_dev)
+                        for i in range(len(ext_z_positions)):
+                            actual_z = self.core.get_position()
+                            self.core.snap_image()
+                            if i < len(ext_z_positions) - 1:
+                                self.core.set_position(ext_z_positions[i + 1])
+                            tagged = self.core.get_tagged_image()
+                            pixels = tagged.pix
+                            score, ch_mean = self._score_single_metric(
+                                pixels, img_w, img_h, nch, cy, cx,
+                                score_metric)
+                            if i < len(ext_z_positions) - 1:
+                                self.core.wait_for_device(z_dev)
+                            ext_measurements.append((actual_z, score))
+                    except Exception as e:
+                        logger.warning(
+                            f"Sweep extension failed: {e}")
+
+                    elapsed = (time.perf_counter() - t0) * 1000
+
+                    if len(ext_measurements) >= 3:
+                        ext_z_arr = np.array(
+                            [m[0] for m in ext_measurements])
+                        ext_scores = np.array(
+                            [m[1] for m in ext_measurements])
+                        ext_best_idx = int(np.argmax(ext_scores))
+
+                        if (ext_best_idx > 0
+                                and ext_best_idx < len(ext_measurements) - 1):
+                            ext_best_z = ext_z_arr[ext_best_idx]
+                            ez0 = ext_z_arr[ext_best_idx - 1]
+                            ez1 = ext_z_arr[ext_best_idx]
+                            ez2 = ext_z_arr[ext_best_idx + 1]
+                            es0 = ext_scores[ext_best_idx - 1]
+                            es1 = ext_scores[ext_best_idx]
+                            es2 = ext_scores[ext_best_idx + 1]
+                            denom = 2.0 * (es0 - 2.0 * es1 + es2)
+                            if abs(denom) > 1e-6:
+                                z_peak = ez1 - ((es2 - es0) * (ez2 - ez0)
+                                                / (2.0 * denom))
+                                if min(ez0, ez2) <= z_peak <= max(ez0, ez2):
+                                    ext_best_z = z_peak
+
+                            drift = ext_best_z - initial_z
+                            self.core.set_position(ext_best_z)
+                            self.core.wait_for_device(z_dev)
+                            logger.info(
+                                f"Sweep drift check (extended): "
+                                f"{drift:+.2f}um "
+                                f"({len(measurements)+len(ext_measurements)}"
+                                f" pts in {elapsed:.0f}ms)")
+                            return ext_best_z
+
+                    logger.info(
+                        f"Sweep drift check: extension also at boundary, "
+                        f"keeping current Z ({elapsed:.0f}ms)")
+                    self.core.set_position(initial_z)
+                    self.core.wait_for_device(z_dev)
+                    return initial_z
+
             logger.info(f"Sweep drift check: peak at boundary (idx={best_idx}), "
                        f"keeping current Z ({elapsed:.0f}ms)")
             self.core.set_position(initial_z)
