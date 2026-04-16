@@ -248,6 +248,22 @@ class PycromanagerCamera(Camera):
             height = self._core.get_image_height()
             nchannels = self._core.get_number_of_components()
 
+            # Validate pixel count matches current dimensions before reshape.
+            # After an ROI change the circular buffer may still hold a frame
+            # captured at the OLD dimensions while get_image_width/height
+            # already reflect the NEW ROI.  Reshaping would crash; skip the
+            # stale frame instead and let the next call pick up a good one.
+            expected = int(height) * int(width) * max(int(nchannels), 1)
+            actual = pixels.size
+            if actual != expected:
+                logger.debug(
+                    "Skipping stale live frame: pixel count %d does not match "
+                    "current dimensions %dx%dx%d (expected %d) -- likely ROI "
+                    "transition race",
+                    actual, width, height, nchannels, expected,
+                )
+                return None, None
+
             processed = self._process_raw_image(pixels, width, height, nchannels)
 
             meta = {
