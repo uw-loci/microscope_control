@@ -1601,12 +1601,18 @@ class PycromanagerHardware(MicroscopeHardware):
 
         # --- Evaluate final result ---
         if best_idx == 0 or best_idx == len(z_arr) - 1:
+            # Peak is at boundary (monotonic slope) even after retries.
+            # Move to the best Z found -- it's better than initial_z
+            # even if we didn't find a true peak.
+            best_z = float(z_arr[best_idx])
+            drift = best_z - initial_z
             logger.info(
                 f"Sweep drift check: peak at boundary after all attempts, "
-                f"keeping current Z ({elapsed:.0f}ms)")
-            self.core.set_position(initial_z)
+                f"moving to best Z={best_z:.2f} (drift {drift:+.2f}um) "
+                f"({elapsed:.0f}ms)")
+            self.core.set_position(best_z)
             self.core.wait_for_device(z_dev)
-            return initial_z
+            return best_z
 
         start_idx = int(np.argmin(np.abs(z_arr - initial_z)))
         start_score = scores[start_idx]
