@@ -1437,6 +1437,11 @@ class PycromanagerHardware(MicroscopeHardware):
         with the specified metric on center-crop of the best non-saturated
         channel.
 
+        When the peak is at a boundary (monotonic profile), retries up to
+        2 additional times shifting the window in the peak direction,
+        matching the Smooth Focus edge-retry pattern.  Total coverage is
+        up to 3x range_um, clamped to stage Z limits.
+
         If sweep fails for any reason, returns starting Z unchanged.
 
         Args:
@@ -1449,12 +1454,12 @@ class PycromanagerHardware(MicroscopeHardware):
         Returns:
             The best-focus Z position (or current Z if sweep failed).
         """
-        # Stop streaming -- snap_image() cannot run during sequence acquisition
+        MAX_EDGE_RETRIES = 2
+
         self.camera.stop_if_streaming()
 
         initial_z = self.get_z_position()
 
-        # Get Z limits -- required to prevent stage collisions
         stage_limits = self.settings.get("stage", {}).get("limits", {})
         z_limits = stage_limits.get("z_um", {})
         if "low" not in z_limits or "high" not in z_limits:
@@ -1468,207 +1473,139 @@ class PycromanagerHardware(MicroscopeHardware):
         z_max = z_limits["high"]
 
         half = range_um / 2.0
-        z_start = max(initial_z - half, z_min + 5)
-        z_end = min(initial_z + half, z_max - 5)
 
-        actual_range = z_end - z_start
-        if actual_range < 1.0:
-            logger.warning("Sweep drift check: range too small "
-                          f"({actual_range:.1f}um), keeping current Z")
-            return initial_z
-
-        step = actual_range / n_steps
-
-        # Z device setup
         stage_config = self.settings.get("stage", {})
         z_stage_device = stage_config.get("z_stage", None)
         if z_stage_device and self.core.get_focus_device() != z_stage_device:
             self.core.set_focus_device(z_stage_device)
         z_dev = z_stage_device or self.core.get_focus_device()
 
-        # Cache image dimensions
         img_w = self.core.get_image_width()
         img_h = self.core.get_image_height()
         nch = self.core.get_number_of_components()
         cy, cx = img_h // 2, img_w // 2
 
-        # Log camera state for diagnostics
+        def _sweep_one_window(z_positions_list):
+            """Run pipelined snap+move sweep, return [(actual_z, score)]."""
+            result = []
+            try:
+                self.core.set_position(z_positions_list[0])
+                self.core.wait_for_device(z_dev)
+                for i in range(len(z_positions_list)):
+                    actual_z = self.core.get_position()
+                    self.core.snap_image()
+                    if i < len(z_positions_list) - 1:
+                        self.core.set_position(z_positions_list[i + 1])
+                    tagged = self.core.get_tagged_image()
+                    pixels = tagged.pix
+                    sc, _ = self._score_single_metric(
+                        pixels, img_w, img_h, nch, cy, cx, score_metric)
+                    if i < len(z_positions_list) - 1:
+                        self.core.wait_for_device(z_dev)
+                    result.append((actual_z, sc))
+            except Exception as e:
+                logger.warning(f"Sweep window failed at step: {e}")
+            return result
+
+        def _make_z_positions(center):
+            """Build clamped Z position list for a sweep centered at center."""
+            s = max(center - half, z_min + 5)
+            e = min(center + half, z_max - 5)
+            rng = e - s
+            if rng < 1.0:
+                return []
+            stp = rng / n_steps
+            return [s + i * stp for i in range(n_steps + 1)]
+
+        # --- First attempt ---
+        current_center = initial_z
+        z_positions = _make_z_positions(current_center)
+        if not z_positions:
+            logger.warning("Sweep drift check: range too small, keeping current Z")
+            return initial_z
+
         try:
             exposure = self.core.get_exposure()
-            logger.info(f"Sweep drift check: [{z_start:.1f} -> {z_end:.1f}] "
-                       f"step={step:.1f}um, range={actual_range:.1f}um, "
-                       f"current={initial_z:.1f}, exposure={exposure:.2f}ms, "
-                       f"img={img_w}x{img_h}x{nch}")
+            logger.info(
+                f"Sweep drift check: [{z_positions[0]:.1f} -> "
+                f"{z_positions[-1]:.1f}] "
+                f"step={z_positions[1]-z_positions[0]:.1f}um, "
+                f"range={z_positions[-1]-z_positions[0]:.1f}um, "
+                f"current={initial_z:.1f}, exposure={exposure:.2f}ms, "
+                f"img={img_w}x{img_h}x{nch}")
         except Exception:
-            logger.info(f"Sweep drift check: [{z_start:.1f} -> {z_end:.1f}] "
-                       f"step={step:.1f}um, current={initial_z:.1f}")
+            logger.info(
+                f"Sweep drift check: [{z_positions[0]:.1f} -> "
+                f"{z_positions[-1]:.1f}], current={initial_z:.1f}")
 
         t0 = time.perf_counter()
-        measurements = []
-        z_positions = [z_start + i * step for i in range(n_steps + 1)]
+        total_pts = 0
 
-        try:
-            # Pipelined sweep: overlap Z movement with snap/score.
-            # After snapping at position i, immediately issue move to
-            # position i+1 (non-blocking). The stage moves during
-            # get_tagged_image + score, so the next wait_for_device
-            # returns instantly. Per-step time = max(snap, move) not
-            # snap + move.
-
-            # Move to first position (blocking, no overlap possible)
-            self.core.set_position(z_positions[0])
-            self.core.wait_for_device(z_dev)
-
-            for i in range(len(z_positions)):
-                t_step = time.perf_counter()
-
-                # Stage is already at z_positions[i] (moved in previous
-                # iteration or in the initial blocking move above)
-                actual_z = self.core.get_position()
-
-                # Snap at current position
-                self.core.snap_image()
-
-                # Immediately issue move to NEXT position (non-blocking).
-                # Stage starts moving while we read + score this frame.
-                if i < len(z_positions) - 1:
-                    self.core.set_position(z_positions[i + 1])
-
-                # Read image and score (stage moving in background)
-                tagged = self.core.get_tagged_image()
-                pixels = tagged.pix
-                score, ch_mean = self._score_single_metric(
-                    pixels, img_w, img_h, nch, cy, cx, score_metric)
-
-                # Wait for stage to arrive at next position (likely
-                # already there -- move takes ~190ms, read+score ~10ms)
-                if i < len(z_positions) - 1:
-                    self.core.wait_for_device(z_dev)
-
-                t_total = (time.perf_counter() - t_step) * 1000
-                measurements.append((actual_z, score))
-                logger.debug(
-                    f"  Sweep step {i}: z={actual_z:.2f} score={score:.1f} "
-                    f"mean={ch_mean:.0f} {t_total:.0f}ms")
-
-        except Exception as e:
-            logger.warning(f"Sweep drift check failed at step: {e}")
-
+        measurements = _sweep_one_window(z_positions)
+        total_pts += len(measurements)
         elapsed = (time.perf_counter() - t0) * 1000
 
         if len(measurements) < 3:
-            logger.warning(f"Sweep drift check: only {len(measurements)} "
-                          f"measurements in {elapsed:.0f}ms, keeping current Z")
+            logger.warning(
+                f"Sweep drift check: only {len(measurements)} "
+                f"measurements in {elapsed:.0f}ms, keeping current Z")
             self.core.set_position(initial_z)
             self.core.wait_for_device(z_dev)
             return initial_z
 
-        # Log the full score profile for diagnostics
         z_arr = np.array([m[0] for m in measurements])
         scores = np.array([m[1] for m in measurements])
-        profile = " | ".join(f"{z:.1f}:{s:.0f}" for z, s in measurements)
-        logger.debug(f"Sweep scores: {profile}")
-
         best_idx = int(np.argmax(scores))
 
-        # If peak is at either boundary, the profile is monotonic -- true
-        # focus is outside the sweep window. Check if scores show a real
-        # trend (range >= 2%) and if so, extend the sweep once in the peak
-        # direction. This prevents dead zones where autofocus can never
-        # recover from a bad starting Z.
-        if best_idx == 0 or best_idx == len(measurements) - 1:
-            boundary_score_range = float(scores.max() - scores.min())
-            boundary_range_pct = boundary_score_range / max(float(scores.mean()), 1.0) * 100
+        # --- Edge-retry loop (up to MAX_EDGE_RETRIES additional attempts) ---
+        for retry in range(MAX_EDGE_RETRIES):
+            if best_idx != 0 and best_idx != len(z_arr) - 1:
+                break
 
-            if boundary_range_pct >= 2.0:
-                boundary_z = z_arr[best_idx]
-                if best_idx == len(measurements) - 1:
-                    ext_center = boundary_z + half
-                else:
-                    ext_center = boundary_z - half
-                ext_start = max(ext_center - half, z_min + 5)
-                ext_end = min(ext_center + half, z_max - 5)
-                ext_range = ext_end - ext_start
+            sr = float(scores.max() - scores.min())
+            sr_pct = sr / max(float(scores.mean()), 1.0) * 100
+            if sr_pct < 2.0:
+                break
 
-                if ext_range >= 1.0:
-                    logger.info(
-                        f"Sweep drift check: peak at boundary (idx={best_idx}), "
-                        f"score trend {boundary_range_pct:.1f}% -- extending "
-                        f"sweep [{ext_start:.1f} -> {ext_end:.1f}]")
+            boundary_z = z_arr[best_idx]
+            if best_idx == len(z_arr) - 1:
+                new_center = boundary_z + half
+            else:
+                new_center = boundary_z - half
 
-                    ext_step = ext_range / n_steps
-                    ext_z_positions = [ext_start + i * ext_step
-                                       for i in range(n_steps + 1)]
-                    ext_measurements = []
-                    try:
-                        self.core.set_position(ext_z_positions[0])
-                        self.core.wait_for_device(z_dev)
-                        for i in range(len(ext_z_positions)):
-                            actual_z = self.core.get_position()
-                            self.core.snap_image()
-                            if i < len(ext_z_positions) - 1:
-                                self.core.set_position(ext_z_positions[i + 1])
-                            tagged = self.core.get_tagged_image()
-                            pixels = tagged.pix
-                            score, ch_mean = self._score_single_metric(
-                                pixels, img_w, img_h, nch, cy, cx,
-                                score_metric)
-                            if i < len(ext_z_positions) - 1:
-                                self.core.wait_for_device(z_dev)
-                            ext_measurements.append((actual_z, score))
-                    except Exception as e:
-                        logger.warning(
-                            f"Sweep extension failed: {e}")
+            ext_positions = _make_z_positions(new_center)
+            if not ext_positions:
+                logger.info(
+                    f"Sweep retry {retry+1}: window would exceed Z limits, "
+                    f"stopping")
+                break
 
-                    elapsed = (time.perf_counter() - t0) * 1000
+            logger.info(
+                f"Sweep drift check: peak at boundary (idx={best_idx}), "
+                f"score trend {sr_pct:.1f}% -- retry {retry+1} "
+                f"[{ext_positions[0]:.1f} -> {ext_positions[-1]:.1f}]")
 
-                    if len(ext_measurements) >= 3:
-                        ext_z_arr = np.array(
-                            [m[0] for m in ext_measurements])
-                        ext_scores = np.array(
-                            [m[1] for m in ext_measurements])
-                        ext_best_idx = int(np.argmax(ext_scores))
+            ext_measurements = _sweep_one_window(ext_positions)
+            total_pts += len(ext_measurements)
 
-                        if (ext_best_idx > 0
-                                and ext_best_idx < len(ext_measurements) - 1):
-                            ext_best_z = ext_z_arr[ext_best_idx]
-                            ez0 = ext_z_arr[ext_best_idx - 1]
-                            ez1 = ext_z_arr[ext_best_idx]
-                            ez2 = ext_z_arr[ext_best_idx + 1]
-                            es0 = ext_scores[ext_best_idx - 1]
-                            es1 = ext_scores[ext_best_idx]
-                            es2 = ext_scores[ext_best_idx + 1]
-                            denom = 2.0 * (es0 - 2.0 * es1 + es2)
-                            if abs(denom) > 1e-6:
-                                z_peak = ez1 - ((es2 - es0) * (ez2 - ez0)
-                                                / (2.0 * denom))
-                                if min(ez0, ez2) <= z_peak <= max(ez0, ez2):
-                                    ext_best_z = z_peak
+            if len(ext_measurements) < 3:
+                break
 
-                            drift = ext_best_z - initial_z
-                            self.core.set_position(ext_best_z)
-                            self.core.wait_for_device(z_dev)
-                            logger.info(
-                                f"Sweep drift check (extended): "
-                                f"{drift:+.2f}um "
-                                f"({len(measurements)+len(ext_measurements)}"
-                                f" pts in {elapsed:.0f}ms)")
-                            return ext_best_z
+            z_arr = np.array([m[0] for m in ext_measurements])
+            scores = np.array([m[1] for m in ext_measurements])
+            best_idx = int(np.argmax(scores))
 
-                    logger.info(
-                        f"Sweep drift check: extension also at boundary, "
-                        f"keeping current Z ({elapsed:.0f}ms)")
-                    self.core.set_position(initial_z)
-                    self.core.wait_for_device(z_dev)
-                    return initial_z
+        elapsed = (time.perf_counter() - t0) * 1000
 
-            logger.info(f"Sweep drift check: peak at boundary (idx={best_idx}), "
-                       f"keeping current Z ({elapsed:.0f}ms)")
+        # --- Evaluate final result ---
+        if best_idx == 0 or best_idx == len(z_arr) - 1:
+            logger.info(
+                f"Sweep drift check: peak at boundary after all attempts, "
+                f"keeping current Z ({elapsed:.0f}ms)")
             self.core.set_position(initial_z)
             self.core.wait_for_device(z_dev)
             return initial_z
 
-        # Check if peak is meaningfully better than starting position.
         start_idx = int(np.argmin(np.abs(z_arr - initial_z)))
         start_score = scores[start_idx]
         peak_score = scores[best_idx]
@@ -1676,24 +1613,17 @@ class PycromanagerHardware(MicroscopeHardware):
         score_range = float(scores.max() - scores.min())
         score_range_pct = score_range / max(float(scores.mean()), 1.0) * 100
 
-        logger.debug(f"  Sweep analysis: best_idx={best_idx} best_z={z_arr[best_idx]:.1f} "
-                   f"peak={peak_score:.1f} start={start_score:.1f} "
-                   f"improvement={improvement:.1%} "
-                   f"range={score_range:.1f} ({score_range_pct:.1f}%)")
-
-        # If score range across the whole sweep is <2%, the metric isn't
-        # discriminating focus. Keep current Z.
         if score_range_pct < 2.0:
-            logger.info(f"Sweep drift check: score range {score_range_pct:.1f}% "
-                       f"< 2% -- metric not discriminating focus, "
-                       f"keeping current Z ({elapsed:.0f}ms)")
+            logger.info(
+                f"Sweep drift check: score range {score_range_pct:.1f}% "
+                f"< 2% -- metric not discriminating focus, "
+                f"keeping current Z ({elapsed:.0f}ms)")
             self.core.set_position(initial_z)
             self.core.wait_for_device(z_dev)
             return initial_z
 
         best_z = z_arr[best_idx]
 
-        # Quadratic interpolation around interior peak
         z0, z1, z2 = z_arr[best_idx - 1], z_arr[best_idx], z_arr[best_idx + 1]
         s0, s1, s2 = scores[best_idx - 1], scores[best_idx], scores[best_idx + 1]
         denom = 2.0 * (s0 - 2.0 * s1 + s2)
@@ -1702,13 +1632,13 @@ class PycromanagerHardware(MicroscopeHardware):
             if min(z0, z2) <= z_peak <= max(z0, z2):
                 best_z = z_peak
 
-        # Move to best Z
         drift = best_z - initial_z
         self.core.set_position(best_z)
         self.core.wait_for_device(z_dev)
 
-        logger.info(f"Sweep drift check: {drift:+.2f}um, improvement {improvement:.1%} "
-                    f"({len(measurements)} pts in {elapsed:.0f}ms)")
+        logger.info(
+            f"Sweep drift check: {drift:+.2f}um, improvement "
+            f"{improvement:.1%} ({total_pts} pts in {elapsed:.0f}ms)")
         return best_z
 
     def white_balance(self, img=None, background_image=None, gain=1.0,
