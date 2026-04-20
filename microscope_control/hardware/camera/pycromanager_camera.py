@@ -225,11 +225,30 @@ class PycromanagerCamera(Camera):
 
     def stop_continuous_acquisition(self) -> None:
         try:
-            if self._core.is_sequence_running():
-                self._core.stop_sequence_acquisition()
-                logger.info("Continuous sequence acquisition stopped")
-            else:
+            if not self._core.is_sequence_running():
                 logger.debug("No sequence running, nothing to stop")
+                return
+            self._core.stop_sequence_acquisition()
+            time.sleep(0.05)
+            # Verify the stop actually took effect
+            if self._core.is_sequence_running():
+                logger.warning("Sequence still running after stop -- retrying")
+                self._core.stop_sequence_acquisition()
+                time.sleep(0.1)
+                if self._core.is_sequence_running():
+                    logger.warning(
+                        "Sequence STILL running after retry -- "
+                        "attempting studio live mode off"
+                    )
+                    if self._studio is not None:
+                        try:
+                            self._studio.live().set_live_mode(False)
+                            time.sleep(0.1)
+                        except Exception as e2:
+                            logger.error(
+                                "Failed to stop via studio fallback: %s", e2
+                            )
+            logger.info("Continuous sequence acquisition stopped")
         except Exception as e:
             logger.error("Failed to stop continuous acquisition: %s", e)
             raise
