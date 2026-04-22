@@ -9,13 +9,17 @@ Usage:
     1. Start Micro-Manager with your hardware configuration loaded
     2. Run this script from the microscope_control venv:
 
-        python tools/dump_device_properties.py
+        python tools/dump_device_properties.py --config PPM
+        python tools/dump_device_properties.py --config OWS3_widefield
+        python tools/dump_device_properties.py --config OWS3_multiphoton
 
     3. The output file is written to the current directory:
-        mm_device_properties_<hostname>_<date>.txt
+        mm_device_properties_PPM_20260422.txt
 
-    To specify an output path:
-        python tools/dump_device_properties.py --output /path/to/output.txt
+    The --config label identifies which MM .cfg was loaded, since
+    available devices and properties change between configurations
+    (e.g., OWS3 widefield has camera + XY stage, multiphoton adds
+    the laser scanning PMTs and galvo mirrors).
 
 When to use:
     - After initial hardware setup to document all available properties
@@ -38,8 +42,16 @@ import platform
 import sys
 
 
-def dump_properties(output_path=None):
-    """Connect to Micro-Manager and dump all device properties."""
+def dump_properties(output_path=None, config_label=None):
+    """Connect to Micro-Manager and dump all device properties.
+
+    Args:
+        output_path: Output file path. If None, auto-generated from
+                     config_label (or hostname) + date.
+        config_label: Label identifying which MM config is loaded
+                      (e.g., "PPM", "OWS3_widefield", "OWS3_multiphoton").
+                      Included in the default filename and file header.
+    """
     try:
         from pycromanager import Core
     except ImportError:
@@ -55,9 +67,9 @@ def dump_properties(output_path=None):
 
     # Default output filename
     if output_path is None:
-        hostname = platform.node().replace(" ", "_")
+        label = config_label or platform.node().replace(" ", "_")
         date = datetime.date.today().strftime("%Y%m%d")
-        output_path = f"mm_device_properties_{hostname}_{date}.txt"
+        output_path = f"mm_device_properties_{label}_{date}.txt"
 
     devices = list(core.get_loaded_devices())
     print(f"Found {len(devices)} loaded devices")
@@ -65,6 +77,8 @@ def dump_properties(output_path=None):
     lines = []
     lines.append(f"Micro-Manager Device Properties Dump")
     lines.append(f"Generated: {datetime.datetime.now().isoformat()}")
+    if config_label:
+        lines.append(f"MM Config: {config_label}")
     lines.append(f"Host: {platform.node()}")
     lines.append(f"OS: {platform.system()} {platform.release()}")
     lines.append(f"Devices: {len(devices)}")
@@ -129,14 +143,25 @@ def dump_properties(output_path=None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Dump all Micro-Manager device properties to a text file."
+        description="Dump all Micro-Manager device properties to a text file.",
+        epilog="Examples:\n"
+               "  python dump_device_properties.py --config PPM\n"
+               "  python dump_device_properties.py --config OWS3_widefield\n"
+               "  python dump_device_properties.py --config OWS3_multiphoton\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--config", "-c",
+        help="Label for the MM config currently loaded (e.g., PPM, "
+             "OWS3_widefield, OWS3_multiphoton). Used in the filename "
+             "and file header.",
     )
     parser.add_argument(
         "--output", "-o",
-        help="Output file path (default: mm_device_properties_<host>_<date>.txt)",
+        help="Output file path (default: mm_device_properties_<config>_<date>.txt)",
     )
     args = parser.parse_args()
-    dump_properties(args.output)
+    dump_properties(args.output, args.config)
 
 
 if __name__ == "__main__":
