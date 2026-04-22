@@ -42,6 +42,22 @@ import platform
 import sys
 
 
+def _to_list(str_vector):
+    """Convert a Micro-Manager StrVector to a Python list of strings.
+
+    Pycromanager's mmcorej_StrVector is not directly iterable with list().
+    Access elements by index instead.
+    """
+    try:
+        return [str(str_vector.get(i)) for i in range(str_vector.size())]
+    except (AttributeError, TypeError):
+        # Fallback for newer versions where list() might work
+        try:
+            return [str(s) for s in str_vector]
+        except TypeError:
+            return []
+
+
 def dump_properties(output_path=None, config_label=None):
     """Connect to Micro-Manager and dump all device properties.
 
@@ -71,7 +87,7 @@ def dump_properties(output_path=None, config_label=None):
         date = datetime.date.today().strftime("%Y%m%d")
         output_path = f"mm_device_properties_{label}_{date}.txt"
 
-    devices = list(core.get_loaded_devices())
+    devices = _to_list(core.get_loaded_devices())
     print(f"Found {len(devices)} loaded devices")
 
     lines = []
@@ -100,7 +116,7 @@ def dump_properties(output_path=None, config_label=None):
     # Per-device properties
     for dev in devices:
         try:
-            props = list(core.get_device_property_names(dev))
+            props = _to_list(core.get_device_property_names(dev))
         except Exception:
             props = []
 
@@ -123,7 +139,7 @@ def dump_properties(output_path=None, config_label=None):
             # Check if property has allowed values
             allowed = ""
             try:
-                vals = list(core.get_allowed_property_values(dev, prop))
+                vals = _to_list(core.get_allowed_property_values(dev, prop))
                 if vals:
                     allowed = f"  allowed: {vals}"
             except Exception:
