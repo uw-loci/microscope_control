@@ -912,13 +912,22 @@ class PycromanagerHardware(MicroscopeHardware):
                 cls = None
 
             if cls == PIZRotationStage or (cls is None and "PIZ" in mm_device.upper()):
+                # Fallback chain for PIZ offset:
+                #   1. id_stage.<device>.piz_offset  (per-stage)
+                #   2. modalities.<mod>.pizstage_offset  (per-modality, new canonical)
+                #   3. top-level ppm_pizstage_offset  (legacy)
                 offset = stage_config.get("piz_offset")
+                if offset is None:
+                    for _mn, _mc in self.settings.get("modalities", {}).items():
+                        if isinstance(_mc, dict) and "pizstage_offset" in _mc:
+                            offset = _mc["pizstage_offset"]
+                            break
                 if offset is None:
                     offset = self.settings.get("ppm_pizstage_offset")
                 if offset is None:
                     raise ValueError(
-                        "PIZ rotation stage requires ppm_pizstage_offset in "
-                        "config YAML (or piz_offset in stage config). "
+                        "PIZ rotation stage requires pizstage_offset in the "
+                        "modality config (or piz_offset in stage config). "
                         "Run Polarizer Calibration to determine this value."
                     )
                 offset = float(offset)
@@ -1047,10 +1056,13 @@ class PycromanagerHardware(MicroscopeHardware):
                 continue
             rot_stage = mod_config.get("rotation_stage", {})
             if isinstance(rot_stage, dict) and rot_stage.get("device"):
-                # Check if optics are disabled (ppm_optics == "NA")
-                optics_disabled = (
-                    self.settings.get("ppm_optics", "ZCutQuartz") == "NA"
-                )
+                # Check if optics are disabled.
+                # Canonical: modalities.<mod>.optics == "NA"
+                # Legacy fallback: top-level ppm_optics == "NA"
+                optics_value = mod_config.get("optics")
+                if optics_value is None:
+                    optics_value = self.settings.get("ppm_optics", "ZCutQuartz")
+                optics_disabled = (str(optics_value) == "NA")
                 return (rot_stage["device"], optics_disabled)
         return None
 
