@@ -148,6 +148,27 @@ class Camera(ABC):
                 value, self.get_name(),
             )
 
+    # --- Exposure / gain ranges (Camera Control v2 phase 2) ---
+    # Used by GETCAP to populate the dialog spinners with hardware-honest
+    # bounds instead of hardcoded constants in the Java UI. PycromanagerCamera
+    # overrides these to read the MM property limits; cameras that don't expose
+    # limits return safe wide defaults.
+
+    def get_min_exposure_ms(self) -> float:
+        """Return the camera's minimum supported exposure in ms. Default: 0.01."""
+        return 0.01
+
+    def get_max_exposure_ms(self) -> float:
+        """Return the camera's maximum supported exposure in ms. Default: 10000."""
+        return 10000.0
+
+    def get_gain_range(self) -> "tuple[float, float] | None":
+        """Return (min, max) gain, or None when the camera doesn't expose gain.
+
+        Default: None. Subclasses with MM "Gain" property override.
+        """
+        return None
+
     def start_continuous_acquisition(self) -> None:
         """Start continuous frame acquisition into a circular buffer.
 

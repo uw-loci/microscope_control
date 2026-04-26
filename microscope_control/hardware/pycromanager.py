@@ -140,6 +140,13 @@ class PycromanagerHardware(MicroscopeHardware):
         self._illumination = self._create_illumination()
         self._detector = self._create_detector()
 
+        # Last successfully applied acquisition profile name (set by
+        # apply_mode_setup). Used by GETCAP to answer "what's the current
+        # state?" without the caller having to remember the last profile.
+        # Strip any trailing "_<counter>" suffix to match the canonical
+        # name in acquisition_profiles.
+        self._active_profile: "str | None" = None
+
         # Objective swap is available when config defines sequences
         if self.settings.get("objective_swap_sequences"):
             logger.info("Objective swap sequences found in config")
@@ -696,6 +703,7 @@ class PycromanagerHardware(MicroscopeHardware):
             logger.info("Stage X-axis inversion correction ACTIVE for this profile")
 
         logger.info("Mode setup complete for profile: %s", profile_name)
+        self._active_profile = profile_name
 
     def _disable_all_modality_illuminations(self) -> None:
         """Turn off every illumination source declared in the modalities config.

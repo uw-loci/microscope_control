@@ -250,6 +250,32 @@ class PycromanagerCamera(Camera):
         self._core.set_property(self._name, "Binning", target)
         logger.info("Camera %s binning set to %s", self._name, target)
 
+    # --- Exposure / gain ranges (Camera Control v2 phase 2) ---
+
+    def get_min_exposure_ms(self) -> float:
+        try:
+            return float(self._core.get_property_lower_limit(self._name, "Exposure"))
+        except Exception:
+            return super().get_min_exposure_ms()
+
+    def get_max_exposure_ms(self) -> float:
+        try:
+            return float(self._core.get_property_upper_limit(self._name, "Exposure"))
+        except Exception:
+            return super().get_max_exposure_ms()
+
+    def get_gain_range(self) -> "tuple[float, float] | None":
+        # Most pycromanager-driven cameras expose a "Gain" property.
+        # JAI subclasses override to provide unified-vs-analog semantics.
+        try:
+            lo = float(self._core.get_property_lower_limit(self._name, "Gain"))
+            hi = float(self._core.get_property_upper_limit(self._name, "Gain"))
+            if hi > lo:
+                return (lo, hi)
+        except Exception:
+            pass
+        return None
+
     def extract_green_channel(self, img: np.ndarray) -> np.ndarray:
         """Extract green channel from Bayer-pattern image for autofocus.
 
