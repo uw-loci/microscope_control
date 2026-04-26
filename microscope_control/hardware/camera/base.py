@@ -113,6 +113,41 @@ class Camera(ABC):
         """Whether the camera supports hardware-level white balance."""
         return False
 
+    # --- Binning (optional capability) ---
+    # MM cameras typically expose a "Binning" property whose allowed values
+    # describe the supported binning factors. Cameras whose MM device does
+    # NOT expose that property (or for which binning is meaningless) keep
+    # the safe default of [1] from the base class. PycromanagerCamera and
+    # subclasses override these to read/write the actual MM property.
+
+    def get_available_binnings(self) -> "list[int]":
+        """Return supported binning factors as ascending ints.
+
+        Default: ``[1]`` (no binning). Subclasses with MM "Binning" support
+        override to query ``core.get_allowed_property_values``.
+        """
+        return [1]
+
+    def get_binning(self) -> int:
+        """Return the current binning factor.
+
+        Default: 1. Subclasses override to read MM "Binning" property.
+        """
+        return 1
+
+    def set_binning(self, value: int) -> None:
+        """Set the binning factor. No-op when only ``[1]`` is supported.
+
+        Subclasses override to write MM "Binning" property. Callers should
+        treat this as best-effort and re-query ``get_binning()`` if the
+        post-write value matters (some cameras snap to nearest supported).
+        """
+        if value != 1:
+            logger.warning(
+                "set_binning(%d) ignored: %s reports no binning support",
+                value, self.get_name(),
+            )
+
     def start_continuous_acquisition(self) -> None:
         """Start continuous frame acquisition into a circular buffer.
 

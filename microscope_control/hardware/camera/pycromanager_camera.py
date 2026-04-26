@@ -188,6 +188,68 @@ class PycromanagerCamera(Camera):
     def get_pixel_size_um(self) -> float:
         return self._core.get_pixel_size_um()
 
+    # --- Binning ---
+    # Reads / writes / queries MM's "Binning" device property. Cameras that
+    # don't expose that property (or for which the allowed-values query
+    # fails) fall back gracefully to [1] / no-op via the base class
+    # behaviour -- the helpers here catch and log so a missing property
+    # doesn't break GETCAP responses.
+
+    def get_available_binnings(self) -> "list[int]":
+        try:
+            values = self._core.get_allowed_property_values(self._name, "Binning")
+        except Exception as e:
+            logger.debug("Camera %s exposes no Binning allowed-values: %s",
+                         self._name, e)
+            return [1]
+        out: set = set()
+        for v in values:
+            try:
+                # MM sometimes reports "1x1" / "2x2" formats; sometimes just
+                # the integer factor. Accept both, normalize to int.
+                s = str(v).strip()
+                if "x" in s.lower():
+                    s = s.lower().split("x", 1)[0]
+                out.add(int(s))
+            except (ValueError, TypeError):
+                continue
+        return sorted(out) if out else [1]
+
+    def get_binning(self) -> int:
+        try:
+            raw = str(self._core.get_property(self._name, "Binning")).strip()
+            if "x" in raw.lower():
+                raw = raw.lower().split("x", 1)[0]
+            return int(raw)
+        except Exception as e:
+            logger.debug("Camera %s could not read Binning: %s", self._name, e)
+            return 1
+
+    def set_binning(self, value: int) -> None:
+        if value < 1:
+            raise ValueError(f"Binning value must be >= 1, got {value}")
+        # Probe allowed values once so we honour whatever the camera
+        # accepts (some MM drivers want "2x2", some want "2"). Default
+        # encoding is the bare integer.
+        try:
+            allowed = self._core.get_allowed_property_values(self._name, "Binning")
+        except Exception:
+            allowed = []
+        target = str(value)
+        for candidate in allowed:
+            cs = str(candidate).strip()
+            try:
+                if cs == target:
+                    target = cs
+                    break
+                if "x" in cs.lower() and cs.lower().split("x", 1)[0] == target:
+                    target = cs
+                    break
+            except Exception:
+                continue
+        self._core.set_property(self._name, "Binning", target)
+        logger.info("Camera %s binning set to %s", self._name, target)
+
     def extract_green_channel(self, img: np.ndarray) -> np.ndarray:
         """Extract green channel from Bayer-pattern image for autofocus.
 
