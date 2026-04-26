@@ -144,6 +144,21 @@ class DevicePropertyIllumination(Illumination):
         logger.info("Initialized DevicePropertyIllumination: %s (%s, max=%s)",
                     self._label, device_name, max_intensity)
 
+    def _is_binary(self) -> bool:
+        """True when this source has no separate intensity property.
+
+        Some MM device adapters expose a single enumerated "State" property
+        with discrete values like "0"/"1" and no continuous intensity
+        knob. Configs declare these by pointing both ``state_property``
+        and ``intensity_property`` at the same MM property name (e.g.
+        Epi LED on OWS3: both = ``State``). For these sources, the
+        intensity write must be a string-encoded enumerated value, never
+        a float -- pycromanager's set_property serializes Python floats
+        as ``"1.000000"`` which MM rejects against the enumerated allowed
+        set.
+        """
+        return self._state_prop == self._intensity_prop
+
     def on(self) -> None:
         """Turn on the light source (set State=1).
 
@@ -157,7 +172,8 @@ class DevicePropertyIllumination(Illumination):
 
     def off(self) -> None:
         """Turn off the light source (set State=0 and Intensity=0)."""
-        self._core.set_property(self._device, self._intensity_prop, 0)
+        if not self._is_binary():
+            self._core.set_property(self._device, self._intensity_prop, 0)
         self._core.set_property(self._device, self._state_prop, "0")
         logger.debug("%s turned off", self._label)
 
@@ -165,11 +181,27 @@ class DevicePropertyIllumination(Illumination):
         """Set illumination intensity.
 
         Automatically turns the source on if power > 0, off if power == 0.
+        For binary sources (state_property == intensity_property) the
+        intensity write is skipped -- the State write IS the intensity --
+        and the value is encoded as the string ``"1"`` so MM doesn't
+        reject ``"1.000000"`` against its enumerated allowed set.
 
         Args:
             power: Intensity level (clamped to 0 .. max_intensity)
         """
         intensity = max(0.0, min(power, self._max_intensity))
+        if self._is_binary():
+            # Binary source: only the State property exists. Treat any
+            # non-zero power as "on" (State="1"), zero as "off"
+            # (State="0"). Skip the redundant intensity write entirely.
+            self._core.set_property(
+                self._device, self._state_prop, "1" if intensity > 0 else "0",
+            )
+            logger.debug(
+                "%s (binary) state set to %s", self._label, "ON" if intensity > 0 else "OFF",
+            )
+            return
+
         if intensity > 0:
             # String "1" avoids pycromanager float-string coercion that
             # MM rejects on discrete State properties.
