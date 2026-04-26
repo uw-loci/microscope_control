@@ -613,13 +613,16 @@ class PycromanagerHardware(MicroscopeHardware):
         # === STEP 0: SAFETY -- protect PMTs before any light changes ===
         self._safe_disable_pmt_and_shutters()
 
-        # === STEP 1: Turn off current illumination ===
-        if self._illumination is not None:
-            try:
-                self._illumination.off()
-                logger.info("Current illumination turned off")
-            except Exception as e:
-                logger.warning("Could not turn off illumination: %s", e)
+        # === STEP 1: Turn off ALL configured illumination sources ===
+        # Not just self._illumination -- profile A may have enabled a light
+        # via an mm_setup_presets ConfigGroup write rather than through the
+        # tracked _illumination object, in which case .off() on the current
+        # one is a no-op for the light that's actually emitting. Symptom
+        # observed 2026-04-26 on OWS3: switching FL -> BF preset left the
+        # fluorescence LED on, saturating the brightfield image.
+        # Iterate every modality's illumination config and call .off() so
+        # the new profile starts from a known-dark state.
+        self._disable_all_modality_illuminations()
 
         # === STEP 2: Apply MM ConfigGroup presets ===
         for preset_spec in profile.get("mm_setup_presets", []):
@@ -693,6 +696,71 @@ class PycromanagerHardware(MicroscopeHardware):
             logger.info("Stage X-axis inversion correction ACTIVE for this profile")
 
         logger.info("Mode setup complete for profile: %s", profile_name)
+
+    def _disable_all_modality_illuminations(self) -> None:
+        """Turn off every illumination source declared in the modalities config.
+
+        Symmetric-teardown helper for profile switches: iterate every
+        modality, build its illumination object the same way
+        get_illumination_for_modality does, and call .off() on each. This
+        guarantees that whatever was emitting before the switch -- whether
+        it was the tracked self._illumination or a light enabled via a
+        prior profile's mm_setup_presets ConfigGroup write -- is dark
+        before the new profile applies its own setup.
+
+        Failures per-source are logged but do not abort the sweep: a
+        misconfigured optional source must not block teardown of the
+        source that's actually saturating the next acquisition.
+        """
+        modalities = self.settings.get("modalities", {})
+        if not isinstance(modalities, dict) or not modalities:
+            return
+
+        # Always include self._illumination explicitly even if it doesn't
+        # round-trip through a modality (older configs / programmatic
+        # overrides). De-dup by device name to avoid double-toggles.
+        seen_devices: set = set()
+
+        def _try_off(source, label: str) -> None:
+            if source is None:
+                return
+            try:
+                source.off()
+                logger.info("Pre-switch teardown: turned off %s", label)
+            except Exception as e:
+                logger.warning(
+                    "Pre-switch teardown: could not turn off %s: %s", label, e
+                )
+
+        if self._illumination is not None:
+            dev = getattr(self._illumination, "_device", None) \
+                or getattr(self._illumination, "_label", "current")
+            seen_devices.add(str(dev))
+            _try_off(self._illumination, f"current illumination ({dev})")
+
+        for mod_name, mod_config in modalities.items():
+            if not isinstance(mod_config, dict):
+                continue
+            illum_cfg = mod_config.get("illumination") \
+                or mod_config.get("pockels_cell")
+            device_name = (
+                illum_cfg.get("device") if isinstance(illum_cfg, dict) else None
+            )
+            if device_name and device_name in seen_devices:
+                continue
+            try:
+                source = self._build_illumination_from_config(mod_config)
+            except Exception as e:
+                logger.debug(
+                    "Pre-switch teardown: could not build illumination for "
+                    "modality '%s': %s", mod_name, e,
+                )
+                continue
+            if source is None:
+                continue
+            if device_name:
+                seen_devices.add(device_name)
+            _try_off(source, f"modality '{mod_name}' illumination ({device_name})")
 
     def _safe_disable_pmt_and_shutters(self) -> None:
         """SAFETY: Disable all PMT outputs and close detector shutters.
