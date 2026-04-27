@@ -1231,6 +1231,8 @@ class PycromanagerHardware(MicroscopeHardware):
         raise_on_invalid_peak=True,
         diagnostic_output_path=None,
         position_index=None,
+        edge_retries=0,
+        edge_widen_factor=2.0,
     ):
         """
         Perform autofocus using specified score metric.
@@ -1248,6 +1250,16 @@ class PycromanagerHardware(MicroscopeHardware):
                                   (use for diagnostic tests where plots must always be generated).
             diagnostic_output_path: Optional path to save autofocus diagnostic CSV (for standard autofocus during acquisition)
             position_index: Optional position index to include in CSV filename
+            edge_retries: When > 0 and the validated peak lands at an edge of
+                          the swept range with a directional trend
+                          (asc XOR desc), shift the sweep center toward the
+                          inferred peak direction and re-sweep with
+                          ``search_range *= edge_widen_factor``. Same algorithm
+                          as ``autofocus_sweep_drift_check``'s edge-retry,
+                          applied to the dense full-AF path. Sweeps are clamped
+                          to the configured stage Z limits; if clamping leaves
+                          no new ground to search, the retry is skipped.
+            edge_widen_factor: Multiplier applied to search_range on each edge retry.
 
         Returns:
             float: Best focus Z position (in micrometers) on success
@@ -1263,118 +1275,228 @@ class PycromanagerHardware(MicroscopeHardware):
         # Stop streaming -- snap_image() cannot run during sequence acquisition
         self.camera.stop_if_streaming()
 
-        steps = np.linspace(0, search_range, n_steps) - (search_range / 2)
+        from microscope_control.autofocus.core import AutofocusUtils
 
-        current_pos = self.get_current_position()
-        z_steps = current_pos.z + steps
+        # Read stage Z limits once for edge-retry clamping. Same accessor as
+        # sweep_focus / autofocus_sweep_drift_check.
+        stage_limits = self.settings.get("stage", {}).get("limits", {}).get("z_um", {})
+        z_min_cfg = stage_limits.get("low")
+        z_max_cfg = stage_limits.get("high")
+
+        # Capture the original starting position once. Used for the failure dict
+        # 'original_z' field and as the unwind target if we throw.
+        starting_pos = self.get_current_position()
+        edge_retries_used = 0
+        # Mutable per-attempt state -- start at the user-requested center/range.
+        attempt_center = starting_pos.z
+        attempt_range = float(search_range)
+
         try:
-            scores = []
-            fallback_scores = []  # p98_p2 computed alongside primary metric
-            for step_number in range(n_steps):
-                new_pos = Position(current_pos.x, current_pos.y, current_pos.z + steps[step_number])
-                self.move_to_position(new_pos)
+            while True:
+                steps = np.linspace(0, attempt_range, n_steps) - (attempt_range / 2)
+                current_pos = Position(starting_pos.x, starting_pos.y, attempt_center)
+                z_steps = attempt_center + steps
 
-                img, tags = self.snap_image()
+                scores = []
+                fallback_scores = []  # p98_p2 computed alongside primary metric
+                for step_number in range(n_steps):
+                    new_pos = Position(current_pos.x, current_pos.y, attempt_center + steps[step_number])
+                    self.move_to_position(new_pos)
 
-                # Extract green/grayscale channel for focus calculation
-                # (camera-specific: JAI uses mean across RGB, Bayer extracts green pixels)
-                img_gray = self.camera.extract_green_channel(img)
+                    img, tags = self.snap_image()
 
-                score = score_metric(img_gray)
-                if hasattr(score, "ndim") and score.ndim == 2:
-                    score = np.mean(score)
-                scores.append(score)
+                    # Extract green/grayscale channel for focus calculation
+                    # (camera-specific: JAI uses mean across RGB, Bayer extracts green pixels)
+                    img_gray = self.camera.extract_green_channel(img)
 
-                # Always compute p98_p2 as fallback (negligible cost, no extra acquisition)
-                p98_p2 = float(np.percentile(img_gray, 98) - np.percentile(img_gray, 2))
-                fallback_scores.append(p98_p2)
+                    score = score_metric(img_gray)
+                    if hasattr(score, "ndim") and score.ndim == 2:
+                        score = np.mean(score)
+                    scores.append(score)
 
-            # VALIDATE FOCUS PEAK QUALITY
-            scores_array = np.array(scores)
-            from microscope_control.autofocus.core import AutofocusUtils
-            validation = AutofocusUtils.validate_focus_peak(z_steps, scores_array)
+                    # Always compute p98_p2 as fallback (negligible cost, no extra acquisition)
+                    p98_p2 = float(np.percentile(img_gray, 98) - np.percentile(img_gray, 2))
+                    fallback_scores.append(p98_p2)
 
-            # Interpolate to find best focus (do this before validation check)
-            interp_x = np.linspace(z_steps[0], z_steps[-1], n_steps * interp_strength)
-            interp_y = scipy.interpolate.interp1d(z_steps, scores, kind=interp_kind)(interp_x)
-            new_z = interp_x[np.argmax(interp_y)]
+                # VALIDATE FOCUS PEAK QUALITY
+                scores_array = np.array(scores)
+                validation = AutofocusUtils.validate_focus_peak(z_steps, scores_array)
 
-            # Save diagnostic CSV BEFORE validation check (so it saves even on failure)
-            if diagnostic_output_path is not None:
-                self._save_autofocus_diagnostic_csv(
-                    z_steps, scores_array, validation, new_z,
-                    diagnostic_output_path, position_index, current_pos
-                )
+                # Interpolate to find best focus (do this before validation check)
+                interp_x = np.linspace(z_steps[0], z_steps[-1], n_steps * interp_strength)
+                interp_y = scipy.interpolate.interp1d(z_steps, scores, kind=interp_kind)(interp_x)
+                new_z = interp_x[np.argmax(interp_y)]
 
-            if not validation['is_valid']:
-                logger.warning("*** AUTOFOCUS PEAK QUALITY WARNING ***")
-                logger.warning(f"  {validation['message']}")
-                for warning in validation['warnings']:
-                    logger.warning(f"    - {warning}")
-                logger.warning(f"  Quality metrics: prominence={validation['peak_prominence']:.2f}, "
-                             f"quality={validation['quality_score']:.2f}")
+                # Save diagnostic CSV BEFORE validation check (so it saves even on failure)
+                if diagnostic_output_path is not None:
+                    self._save_autofocus_diagnostic_csv(
+                        z_steps, scores_array, validation, new_z,
+                        diagnostic_output_path, position_index, current_pos
+                    )
 
-                # Try p98_p2 fallback scores (already computed, no re-acquisition needed).
-                # Attempt whenever primary metric is invalid -- p98_p2 (dynamic range)
-                # often finds peaks that gradient metrics miss on low-tissue FOVs.
-                if fallback_scores:
-                    fallback_array = np.array(fallback_scores)
-                    fallback_validation = AutofocusUtils.validate_focus_peak(z_steps, fallback_array)
-                    if fallback_validation['is_valid']:
-                        fallback_interp_y = scipy.interpolate.interp1d(
-                            z_steps, fallback_scores, kind=interp_kind)(interp_x)
-                        fallback_z = interp_x[np.argmax(fallback_interp_y)]
-                        logger.info(f"  p98_p2 fallback found valid peak at Z={fallback_z:.2f} um "
-                                    f"(quality={fallback_validation['quality_score']:.2f})")
-                        new_z = fallback_z
-                        validation = fallback_validation
-                        # Fall through to the success path below
+                if not validation['is_valid']:
+                    logger.warning("*** AUTOFOCUS PEAK QUALITY WARNING ***")
+                    logger.warning(f"  {validation['message']}")
+                    for warning in validation['warnings']:
+                        logger.warning(f"    - {warning}")
+                    logger.warning(f"  Quality metrics: prominence={validation['peak_prominence']:.2f}, "
+                                 f"quality={validation['quality_score']:.2f}")
+
+                    # Try p98_p2 fallback scores (already computed, no re-acquisition needed).
+                    # Attempt whenever primary metric is invalid -- p98_p2 (dynamic range)
+                    # often finds peaks that gradient metrics miss on low-tissue FOVs.
+                    if fallback_scores:
+                        fallback_array = np.array(fallback_scores)
+                        fallback_validation = AutofocusUtils.validate_focus_peak(z_steps, fallback_array)
+                        if fallback_validation['is_valid']:
+                            fallback_interp_y = scipy.interpolate.interp1d(
+                                z_steps, fallback_scores, kind=interp_kind)(interp_x)
+                            fallback_z = interp_x[np.argmax(fallback_interp_y)]
+                            logger.info(f"  p98_p2 fallback found valid peak at Z={fallback_z:.2f} um "
+                                        f"(quality={fallback_validation['quality_score']:.2f})")
+                            new_z = fallback_z
+                            validation = fallback_validation
+                            # Fall through to the success path below
+                        else:
+                            logger.warning(f"  p98_p2 fallback also invalid: {fallback_validation['message']}")
+
+                    # Edge-retry: if the failure mode is a directional peak-at-edge
+                    # AND we have retries left AND there's somewhere new to search
+                    # within the stage Z limits, widen + shift the sweep and try
+                    # again. Falls through to the existing failure-dict path
+                    # otherwise.
+                    if not validation['is_valid'] and edge_retries_used < edge_retries:
+                        retry_center, retry_range = self._compute_edge_retry_window(
+                            validation=validation,
+                            cur_center=attempt_center,
+                            cur_range=attempt_range,
+                            widen_factor=float(edge_widen_factor),
+                            z_min=z_min_cfg,
+                            z_max=z_max_cfg,
+                        )
+                        if retry_center is not None:
+                            edge_retries_used += 1
+                            logger.warning(
+                                "  Edge retry %d/%d: center %.2f -> %.2f um, "
+                                "range %.1f -> %.1f um (clamped to stage Z limits)",
+                                edge_retries_used, edge_retries,
+                                attempt_center, retry_center,
+                                attempt_range, retry_range,
+                            )
+                            attempt_center = retry_center
+                            attempt_range = retry_range
+                            # Re-sweep with the new window
+                            continue
+
+                    if not validation['is_valid'] and raise_on_invalid_peak:
+                        # Return failure dict for manual focus fallback loop
+                        # Move stage to computed best position before returning, so user
+                        # can manually adjust from a reasonable starting point
+                        logger.warning("  Autofocus failed - moving to computed best Z and returning failure dict")
+                        best_pos = Position(current_pos.x, current_pos.y, new_z)
+                        self.move_to_position(best_pos)
+                        return {
+                            'success': False,
+                            'message': validation['message'],
+                            'quality_score': validation['quality_score'],
+                            'peak_prominence': validation['peak_prominence'],
+                            'attempted_z': new_z,
+                            'original_z': starting_pos.z,
+                            'validation': validation
+                        }
                     else:
-                        logger.warning(f"  p98_p2 fallback also invalid: {fallback_validation['message']}")
-
-                if not validation['is_valid'] and raise_on_invalid_peak:
-                    # Return failure dict for manual focus fallback loop
-                    # Move stage to computed best position before returning, so user
-                    # can manually adjust from a reasonable starting point
-                    logger.warning("  Autofocus failed - moving to computed best Z and returning failure dict")
-                    best_pos = Position(current_pos.x, current_pos.y, new_z)
-                    self.move_to_position(best_pos)
-                    return {
-                        'success': False,
-                        'message': validation['message'],
-                        'quality_score': validation['quality_score'],
-                        'peak_prominence': validation['peak_prominence'],
-                        'attempted_z': new_z,
-                        'original_z': current_pos.z,
-                        'validation': validation
-                    }
+                        # Just log warning, continue for diagnostic purposes (test mode)
+                        logger.warning("  Proceeding with autofocus result for diagnostic analysis")
                 else:
-                    # Just log warning, continue for diagnostic purposes (test mode)
-                    logger.warning("  Proceeding with autofocus result for diagnostic analysis")
-            else:
-                logger.info(f"Autofocus peak validation: {validation['message']}")
-                logger.debug(f"  Quality score: {validation['quality_score']:.2f}, "
-                           f"prominence: {validation['peak_prominence']:.2f}")
+                    logger.info(f"Autofocus peak validation: {validation['message']}")
+                    logger.debug(f"  Quality score: {validation['quality_score']:.2f}, "
+                               f"prominence: {validation['peak_prominence']:.2f}")
 
-            if pop_a_plot:
-                plt.figure()
-                plt.bar(z_steps, scores)
-                plt.plot(interp_x, interp_y, "k")
-                plt.plot(interp_x[np.argmax(interp_y)], interp_y.max(), "or")
-                plt.xlabel("Z-axis (um)")
-                plt.title(f"Autofocus at X={current_pos.x:.1f}, Y={current_pos.y:.1f}")
-                plt.show()
+                if pop_a_plot:
+                    plt.figure()
+                    plt.bar(z_steps, scores)
+                    plt.plot(interp_x, interp_y, "k")
+                    plt.plot(interp_x[np.argmax(interp_y)], interp_y.max(), "or")
+                    plt.xlabel("Z-axis (um)")
+                    plt.title(f"Autofocus at X={current_pos.x:.1f}, Y={current_pos.y:.1f}")
+                    plt.show()
 
-            if move_stage_to_estimate:
-                new_pos = Position(current_pos.x, current_pos.y, new_z)
-                self.move_to_position(new_pos)
+                if move_stage_to_estimate:
+                    new_pos = Position(current_pos.x, current_pos.y, new_z)
+                    self.move_to_position(new_pos)
 
-            return new_z
+                return new_z
 
         except Exception as e:
             logger.error(f"Autofocus failed: {e}")
-            self.move_to_position(current_pos)
+            self.move_to_position(starting_pos)
             raise e
+
+    def _compute_edge_retry_window(
+        self,
+        validation,
+        cur_center,
+        cur_range,
+        widen_factor,
+        z_min,
+        z_max,
+        margin=5.0,
+    ):
+        """Compute (new_center, new_range) for a peak-at-edge AF retry.
+
+        Returns ``(None, None)`` when no retry should be attempted: either the
+        failure isn't a directional edge, stage Z limits aren't configured, or
+        the clamped new sweep wouldn't cover any ground outside the band the
+        previous sweep already covered.
+        """
+        has_asc = bool(validation.get('has_ascending', False))
+        has_desc = bool(validation.get('has_descending', False))
+        # Directional edge: asc XOR desc. asc-only -> peak at end (search higher);
+        # desc-only -> peak at start (search lower). Both-or-neither isn't a
+        # directional edge -- there's no informative direction to shift.
+        if has_asc == has_desc:
+            return None, None
+        if z_min is None or z_max is None:
+            logger.warning(
+                "  Edge retry: stage Z limits not configured; skipping"
+            )
+            return None, None
+
+        new_range = float(cur_range) * float(widen_factor)
+        shift_sign = 1 if (has_asc and not has_desc) else -1
+        target_center = float(cur_center) + shift_sign * (float(cur_range) / 2.0)
+
+        available = (z_max - margin) - (z_min + margin)
+        if available <= 0:
+            logger.warning(
+                "  Edge retry: stage Z limits leave no usable sweep band "
+                "(z_min=%.1f, z_max=%.1f, margin=%.1f); skipping",
+                z_min, z_max, margin,
+            )
+            return None, None
+        if available < new_range:
+            new_range = available
+        half = new_range / 2.0
+        clamped_center = max(
+            z_min + margin + half,
+            min(z_max - margin - half, target_center),
+        )
+
+        # Sanity: if clamping pinned us to the same band the previous sweep
+        # already covered, there's nothing new to search -- skip the retry.
+        new_low = clamped_center - half
+        new_high = clamped_center + half
+        old_low = float(cur_center) - float(cur_range) / 2.0
+        old_high = float(cur_center) + float(cur_range) / 2.0
+        if new_low >= old_low - 1e-3 and new_high <= old_high + 1e-3:
+            logger.warning(
+                "  Edge retry: stage Z limits prevent expansion beyond the "
+                "already-swept band [%.2f, %.2f] um; skipping",
+                old_low, old_high,
+            )
+            return None, None
+
+        return clamped_center, new_range
 
     def _save_autofocus_diagnostic_csv(self, z_positions, scores, validation, result_z,
                                        output_path, position_index, current_pos):
