@@ -1882,6 +1882,49 @@ class JAIWhiteBalanceCalibrator:
             with open(imageprocessing_path, "w") as f:
                 yaml.dump(ip_data, f, default_flow_style=False, sort_keys=False)
 
+            # Read-back verification. The 2026-04-27 silent-first-detector
+            # incident wrote a fresh WB calibration to the wrong detector
+            # profile in YAML; nothing here verified that the values just
+            # written into imaging_profiles[modality][objective][detector]
+            # actually round-tripped to disk under the intended path. This
+            # block reloads the file and asserts the in-memory dict we just
+            # composed matches what is now on disk for the targeted profile.
+            # Any mismatch is logged loudly so the operator can recalibrate
+            # before walking away from the scope.
+            if modality and objective and detector and angle_name:
+                try:
+                    with open(imageprocessing_path, "r") as f:
+                        verify_data = yaml.safe_load(f) or {}
+                    verify_profile = (
+                        verify_data.get("imaging_profiles", {})
+                        .get(modality, {})
+                        .get(objective, {})
+                        .get(detector, {})
+                    )
+                    written_exp = verify_profile.get("exposures_ms", {}).get(angle_name)
+                    written_gain = verify_profile.get("gains", {}).get(angle_name)
+                    expected_exp = profile["exposures_ms"][angle_name]
+                    expected_gain = profile["gains"][angle_name]
+                    if written_exp != expected_exp or written_gain != expected_gain:
+                        logger.error(
+                            "WB calibration read-back mismatch for "
+                            "%s/%s/%s/%s. Expected exposures=%s gains=%s; "
+                            "found exposures=%s gains=%s. Recalibrate -- the "
+                            "values dialog reported are NOT what is on disk.",
+                            modality, objective, detector, angle_name,
+                            expected_exp, expected_gain, written_exp, written_gain,
+                        )
+                    else:
+                        logger.info(
+                            "WB calibration read-back OK for %s/%s/%s/%s",
+                            modality, objective, detector, angle_name,
+                        )
+                except Exception as verify_ex:
+                    logger.warning(
+                        "WB calibration read-back check failed (non-fatal): %s",
+                        verify_ex,
+                    )
+
             logger.info(f"Updated imageprocessing config: {imageprocessing_path}")
             return True
 
