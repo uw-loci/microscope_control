@@ -13,11 +13,14 @@ import time
 from pycromanager import Core, Studio
 from microscope_control.hardware.base import MicroscopeHardware, is_mm_running, is_coordinate_in_range, Position
 from microscope_control.autofocus.core import AutofocusUtils
+from microscope_imageprocessing.focus import (
+    UnknownMetricError,
+    resolve_metric,
+)
 
 import numpy as np
 import skimage.filters
 import scipy.interpolate
-from scipy.ndimage import laplace as scipy_laplace
 import matplotlib.pyplot as plt
 
 logger = logging.getLogger(__name__)
@@ -1576,8 +1579,11 @@ class PycromanagerHardware(MicroscopeHardware):
             nch: Number of color channels
             cy: Center Y coordinate for crop
             cx: Center X coordinate for crop
-            metric_name: One of "normalized_variance" (default),
-                "laplacian_variance", "sobel", "brenner_gradient", "p98_p2"
+            metric_name: Canonical metric name from
+                focus_metrics_manifest.yml (e.g. "tenengrad",
+                "laplacian_variance", "normalized_variance",
+                "brenner_gradient", "sobel", "p98_p2"). Looked up via
+                ``microscope_imageprocessing.focus.resolve_metric``.
 
         Returns:
             (score, ch_mean) tuple -- the focus score and channel mean intensity.
@@ -1610,20 +1616,12 @@ class PycromanagerHardware(MicroscopeHardware):
 
         ch_mean = float(np.mean(roi))
 
-        if metric_name == "normalized_variance":
-            score = float(np.var(roi) / max(ch_mean * ch_mean, 1.0)) * 1e6
-        elif metric_name == "laplacian_variance":
-            score = float(np.var(scipy_laplace(roi)))
-        elif metric_name == "sobel":
-            from skimage.filters import sobel
-            score = float(sobel(roi).var()) * 1000
-        elif metric_name == "brenner_gradient":
-            gy, gx = np.gradient(roi)
-            score = float(np.mean(gx**2 + gy**2))
-        elif metric_name == "p98_p2":
-            score = float(np.percentile(roi, 98) - np.percentile(roi, 2))
-        else:
-            raise ValueError(f"Unknown focus metric: {metric_name}")
+        # Dispatch via the consolidated registry. The dispatcher raises
+        # UnknownMetricError on misses; let it propagate so a typo in
+        # caller config surfaces immediately rather than silently
+        # substituting a different metric.
+        fn = resolve_metric(metric_name)
+        score = float(fn(roi))
 
         return score, ch_mean
 
