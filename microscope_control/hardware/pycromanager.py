@@ -1325,10 +1325,17 @@ class PycromanagerHardware(MicroscopeHardware):
                 scores_array = np.array(scores)
                 validation = AutofocusUtils.validate_focus_peak(z_steps, scores_array)
 
-                # Interpolate to find best focus (do this before validation check)
+                # Interpolate to find best focus (do this before validation check).
+                # np.clip prevents the interpolated argmax from landing
+                # outside the actually-sampled Z range -- without it, a
+                # cubic/quadratic curve fit can extrapolate the maximum
+                # beyond [z_steps[0], z_steps[-1]] (e.g. a Z=1944.41
+                # result on a sweep that only sampled 1943..2017), and
+                # the stage then moves to a Z position whose focus
+                # quality was never actually measured.
                 interp_x = np.linspace(z_steps[0], z_steps[-1], n_steps * interp_strength)
                 interp_y = scipy.interpolate.interp1d(z_steps, scores, kind=interp_kind)(interp_x)
-                new_z = interp_x[np.argmax(interp_y)]
+                new_z = float(np.clip(interp_x[np.argmax(interp_y)], z_steps[0], z_steps[-1]))
 
                 # Save diagnostic CSV BEFORE validation check (so it saves even on failure)
                 if diagnostic_output_path is not None:
@@ -1348,13 +1355,19 @@ class PycromanagerHardware(MicroscopeHardware):
                     # Try p98_p2 fallback scores (already computed, no re-acquisition needed).
                     # Attempt whenever primary metric is invalid -- p98_p2 (dynamic range)
                     # often finds peaks that gradient metrics miss on low-tissue FOVs.
+                    # validate_focus_peak now rejects edge peaks, so a
+                    # boundary p98_p2 result (which is almost always a
+                    # histogram-spread / saturation artifact rather than
+                    # real focus) cannot rescue an already-invalid sweep.
                     if fallback_scores:
                         fallback_array = np.array(fallback_scores)
                         fallback_validation = AutofocusUtils.validate_focus_peak(z_steps, fallback_array)
                         if fallback_validation['is_valid']:
                             fallback_interp_y = scipy.interpolate.interp1d(
                                 z_steps, fallback_scores, kind=interp_kind)(interp_x)
-                            fallback_z = interp_x[np.argmax(fallback_interp_y)]
+                            fallback_z = float(np.clip(
+                                interp_x[np.argmax(fallback_interp_y)],
+                                z_steps[0], z_steps[-1]))
                             logger.info(f"  p98_p2 fallback found valid peak at Z={fallback_z:.2f} um "
                                         f"(quality={fallback_validation['quality_score']:.2f})")
                             new_z = fallback_z
@@ -1802,18 +1815,24 @@ class PycromanagerHardware(MicroscopeHardware):
 
         # --- Evaluate final result ---
         if best_idx == 0 or best_idx == len(z_arr) - 1:
-            # Peak is at boundary (monotonic slope) even after retries.
-            # Move to the best Z found -- it's better than initial_z
-            # even if we didn't find a true peak.
-            best_z = float(z_arr[best_idx])
-            drift = best_z - initial_z
-            logger.info(
-                f"Sweep drift check: peak at boundary after all attempts, "
-                f"moving to best Z={best_z:.2f} (drift {drift:+.2f}um) "
+            # Peak is at boundary even after retries -- the metric is not
+            # bracketing focus inside any window we tried. Previously
+            # the code moved to the boundary value on the assumption
+            # "it's better than initial_z even if we didn't find a true
+            # peak", which silently walked the stage off-focus when the
+            # operator had pre-focused (e.g. OWS3 BF 10x ground-truth
+            # Z=2003 -> sweep accepted Z=1944, 75 um below). Stay at
+            # initial_z instead: an already-good manual focus must not
+            # be overwritten by an edge-peak guess.
+            boundary_z = float(z_arr[best_idx])
+            logger.warning(
+                f"Sweep drift check: peak at boundary after all attempts "
+                f"(boundary Z={boundary_z:.2f} vs initial Z={initial_z:.2f}). "
+                f"Metric did not bracket focus -- holding at initial Z "
                 f"({elapsed:.0f}ms)")
-            self.core.set_position(best_z)
+            self.core.set_position(initial_z)
             self.core.wait_for_device(z_dev)
-            return best_z
+            return initial_z
 
         start_idx = int(np.argmin(np.abs(z_arr - initial_z)))
         start_score = scores[start_idx]

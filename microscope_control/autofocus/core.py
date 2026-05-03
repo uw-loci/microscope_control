@@ -819,14 +819,31 @@ class AutofocusUtils:
             weights["symmetry"] * result["symmetry_score"]
         )
 
-        # 7. Determine if peak is valid (passes minimum quality threshold)
+        # 7. Determine if peak is valid (passes minimum quality threshold).
+        # Edge rejection: a peak at the very first or last sampled Z is
+        # almost certainly not the true focus peak -- it means the
+        # search window did not bracket the focus position. Without
+        # this gate, the system will move to an unverified boundary
+        # value (often 50-100 um off) that the AF algorithm cannot
+        # actually distinguish from "genuinely best". Marking these
+        # invalid forces the caller's edge-retry path
+        # (_compute_edge_retry_window) to widen and re-sweep instead.
         MIN_QUALITY_THRESHOLD = 0.5
         MIN_PROMINENCE = 0.15
+
+        peak_at_edge = (peak_idx == 0) or (peak_idx == len(scores) - 1)
+        result["peak_at_edge"] = peak_at_edge
+        if peak_at_edge:
+            edge_label = "low" if peak_idx == 0 else "high"
+            result["warnings"].append(
+                f"Peak at {edge_label} edge of search window (idx={peak_idx} of {len(scores)})"
+            )
 
         result["is_valid"] = (
             result["quality_score"] >= MIN_QUALITY_THRESHOLD and
             result["peak_prominence"] >= MIN_PROMINENCE and
-            (result["has_ascending"] or result["has_descending"])  # At least one side must show trend
+            (result["has_ascending"] or result["has_descending"]) and  # at least one side must show trend
+            not peak_at_edge  # the search window must bracket the focus
         )
 
         # 8. Generate human-readable message
@@ -840,6 +857,9 @@ class AutofocusUtils:
                 issues.append(f"weak peak ({result['peak_prominence']:.2f})")
             if not result["has_ascending"] and not result["has_descending"]:
                 issues.append("no clear focus trend")
+            if peak_at_edge:
+                edge_label = "low" if peak_idx == 0 else "high"
+                issues.append(f"peak at {edge_label} edge of search window")
             result["message"] = "Invalid focus peak: " + ", ".join(issues)
 
         return result
