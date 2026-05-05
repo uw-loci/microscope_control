@@ -686,28 +686,44 @@ class AutofocusUtils:
     @staticmethod
     def validate_focus_peak(z_positions: np.ndarray, scores: np.ndarray) -> Dict[str, Any]:
         """
-        Validate that the focus curve has a proper peak suitable for autofocus.
+        Validate that the focus curve has a real peak.
 
-        A good focus peak should have:
-        1. A clear maximum that stands out from neighboring values
-        2. Gradual increase leading up to the peak
-        3. Gradual decrease after the peak
-        4. Reasonable symmetry around the peak
+        Validity requires:
+          1. A clear maximum that stands out from background noise (prominence).
+          2. A monotonic trend approaching the peak from at least one side.
 
-        Args:
-            z_positions: Array of Z positions sampled
-            scores: Array of focus scores at each position
+        We do NOT require:
+          - Symmetry around the peak. That would require the operator to
+            already be at focus before running AF; defeats the purpose.
+            ``symmetry_score`` is still reported for diagnostics.
+          - The peak to be strictly bracketed (interior to the search
+            window). A peak at or near the edge of the window with a
+            clear one-side trend is still a valid focus answer; the
+            caller may CHOOSE to extend the search via
+            ``should_extend_direction`` to confirm, but the current
+            answer is not auto-rejected.
+
+        Trend confirmation requires at least ``MIN_TREND_SAMPLES`` points
+        on the trending side. Fewer points -> trend unconfirmed (the
+        descending tail might be hidden past the search edge), which
+        sets ``should_extend_direction`` so the caller can re-sweep with
+        an extended window in that direction.
 
         Returns:
             Dict containing:
-                - is_valid: bool - Whether peak passes quality checks
-                - peak_prominence: float - How much peak stands out (0-1 normalized)
-                - has_ascending: bool - Has increasing trend before peak
-                - has_descending: bool - Has decreasing trend after peak
-                - symmetry_score: float - Measure of left/right symmetry (0-1, 1=perfect)
-                - quality_score: float - Overall quality score (0-1)
-                - warnings: List[str] - List of quality issues found
-                - message: str - Human-readable summary
+                - is_valid: bool -- prominence + at-least-one-side trend
+                - peak_prominence: float -- how much peak stands out (0-1)
+                - has_ascending: bool -- confirmed ascending trend before peak
+                - has_descending: bool -- confirmed descending trend after peak
+                - symmetry_score: float -- 0-1, informational only
+                - quality_score: float -- weighted summary, informational
+                - peak_at_edge: bool -- peak at idx 0 or len-1
+                - should_extend_direction: 'low' | 'high' | None -- direction
+                  to retry the sweep when the trend on one side is
+                  unconfirmed (peak at/near edge with the OTHER side
+                  showing trend); None when the peak is well bracketed
+                - warnings: List[str]
+                - message: str
         """
         result = {
             "is_valid": False,
@@ -716,6 +732,8 @@ class AutofocusUtils:
             "has_descending": False,
             "symmetry_score": 0.0,
             "quality_score": 0.0,
+            "peak_at_edge": False,
+            "should_extend_direction": None,
             "warnings": [],
             "message": ""
         }
@@ -726,23 +744,19 @@ class AutofocusUtils:
             return result
 
         # Find peak position
-        peak_idx = np.argmax(scores)
+        peak_idx = int(np.argmax(scores))
         peak_score = scores[peak_idx]
         mean_score = np.mean(scores)
         min_score = np.min(scores)
         max_score = np.max(scores)
         score_range = max_score - min_score
-        score_std = np.std(scores)
 
-        # 1. Check absolute score variation (detect flat/noisy curves)
-        # A proper focus curve should have significant variation
+        # 1. Check absolute score variation (detect flat/noisy curves).
+        # A proper focus curve should have significant variation.
         relative_range = score_range / mean_score if mean_score > 0 else 0
 
-        # CRITICAL: Check for minimum absolute variation
-        # If score range is too small, it's just noise with no real focus gradient
-        # Note: These are conservative thresholds - adjust based on your microscope/metric
-        MIN_ABSOLUTE_RANGE = 0.5   # Minimum score range (was 2.0, too strict)
-        MIN_RELATIVE_RANGE = 0.005 # Minimum 0.5% variation (was 5%, too strict)
+        MIN_ABSOLUTE_RANGE = 0.5
+        MIN_RELATIVE_RANGE = 0.005
 
         if score_range < MIN_ABSOLUTE_RANGE:
             result["warnings"].append(
@@ -756,110 +770,114 @@ class AutofocusUtils:
             result["message"] = f"No focus gradient detected - scores too flat ({relative_range:.2%} variation)"
             return result
 
-        # 2. Check peak prominence (how much it stands out within the range)
+        # 2. Peak prominence within the swept range.
         result["peak_prominence"] = (peak_score - mean_score) / score_range
 
-        if result["peak_prominence"] < 0.2:
-            result["warnings"].append(f"Peak prominence too low ({result['peak_prominence']:.2f})")
+        # 3. Confirmed-trend tests. Need at least MIN_TREND_SAMPLES points
+        # on a side to call the trend confirmed. A descending tail with
+        # only 1-2 samples is not enough -- it might be noise around the
+        # peak. Unconfirmed trends fall through to should_extend_direction
+        # so the caller can re-sweep with the search window shifted in
+        # the direction of the unconfirmed side.
+        MIN_TREND_SAMPLES = 3
+        TREND_RATIO = 0.5
 
-        # 3. Check for ascending trend before peak
-        if peak_idx >= 2:
-            # Count how many points before peak show increasing trend
+        # Ascending side: points BEFORE peak
+        if peak_idx >= MIN_TREND_SAMPLES:
             ascending_count = 0
             for i in range(peak_idx):
-                if i == 0 or scores[i] >= scores[i-1]:
+                if i == 0 or scores[i] >= scores[i - 1]:
                     ascending_count += 1
-            result["has_ascending"] = (ascending_count / peak_idx) >= 0.5
+            result["has_ascending"] = (ascending_count / peak_idx) >= TREND_RATIO
         else:
-            result["warnings"].append("Peak too close to start - cannot verify ascending trend")
+            if peak_idx > 0:
+                result["warnings"].append(
+                    f"Only {peak_idx} sample(s) before peak -- ascending trend unconfirmed")
+            else:
+                result["warnings"].append("Peak at low edge -- no samples before to verify ascending trend")
             result["has_ascending"] = False
 
-        # 4. Check for descending trend after peak
-        if peak_idx < len(scores) - 2:
-            # Count how many points after peak show decreasing trend
+        # Descending side: points AFTER peak
+        points_after = len(scores) - peak_idx - 1
+        if points_after >= MIN_TREND_SAMPLES:
             descending_count = 0
             for i in range(peak_idx + 1, len(scores)):
-                if scores[i] <= scores[i-1]:
+                if scores[i] <= scores[i - 1]:
                     descending_count += 1
-            points_after = len(scores) - peak_idx - 1
-            result["has_descending"] = (descending_count / points_after) >= 0.5
+            result["has_descending"] = (descending_count / points_after) >= TREND_RATIO
         else:
-            result["warnings"].append("Peak too close to end - cannot verify descending trend")
+            if points_after > 0:
+                result["warnings"].append(
+                    f"Only {points_after} sample(s) after peak -- descending trend unconfirmed")
+            else:
+                result["warnings"].append("Peak at high edge -- no samples after to verify descending trend")
             result["has_descending"] = False
 
-        # 5. Check symmetry around peak
-        # Compare left and right side score ranges
+        # 4. Symmetry score is informational only (kept in output for
+        # diagnostics, not used in is_valid). Asymmetry is expected
+        # when the user starts AF off-focus.
         left_scores = scores[:peak_idx] if peak_idx > 0 else np.array([])
-        right_scores = scores[peak_idx+1:] if peak_idx < len(scores)-1 else np.array([])
-
+        right_scores = scores[peak_idx + 1:] if peak_idx < len(scores) - 1 else np.array([])
         if len(left_scores) > 0 and len(right_scores) > 0:
             left_range = np.max(left_scores) - np.min(left_scores) if len(left_scores) > 1 else 0
             right_range = np.max(right_scores) - np.min(right_scores) if len(right_scores) > 1 else 0
-
             if left_range + right_range > 0:
                 result["symmetry_score"] = 1.0 - abs(left_range - right_range) / (left_range + right_range)
             else:
-                result["symmetry_score"] = 1.0  # Both sides flat = perfect symmetry
+                result["symmetry_score"] = 1.0
         else:
-            result["warnings"].append("Peak at edge - cannot assess symmetry")
             result["symmetry_score"] = 0.0
 
-        # 6. Calculate overall quality score
-        weights = {
-            "prominence": 0.4,
-            "ascending": 0.2,
-            "descending": 0.2,
-            "symmetry": 0.2
-        }
-
+        # 5. Composite quality score (informational).
+        weights = {"prominence": 0.5, "ascending": 0.25, "descending": 0.25}
         result["quality_score"] = (
-            weights["prominence"] * result["peak_prominence"] +
-            weights["ascending"] * (1.0 if result["has_ascending"] else 0.0) +
-            weights["descending"] * (1.0 if result["has_descending"] else 0.0) +
-            weights["symmetry"] * result["symmetry_score"]
+            weights["prominence"] * result["peak_prominence"]
+            + weights["ascending"] * (1.0 if result["has_ascending"] else 0.0)
+            + weights["descending"] * (1.0 if result["has_descending"] else 0.0)
         )
 
-        # 7. Determine if peak is valid (passes minimum quality threshold).
-        # Edge rejection: a peak at the very first or last sampled Z is
-        # almost certainly not the true focus peak -- it means the
-        # search window did not bracket the focus position. Without
-        # this gate, the system will move to an unverified boundary
-        # value (often 50-100 um off) that the AF algorithm cannot
-        # actually distinguish from "genuinely best". Marking these
-        # invalid forces the caller's edge-retry path
-        # (_compute_edge_retry_window) to widen and re-sweep instead.
-        MIN_QUALITY_THRESHOLD = 0.5
-        MIN_PROMINENCE = 0.15
-
+        # 6. Edge / extension hint. The caller uses should_extend_direction
+        # to trigger an edge-retry sweep that shifts the window toward
+        # the side whose trend is unconfirmed. The primary metric stays
+        # in charge -- no silent fallback to a different metric just
+        # because the peak landed near the edge.
         peak_at_edge = (peak_idx == 0) or (peak_idx == len(scores) - 1)
         result["peak_at_edge"] = peak_at_edge
-        if peak_at_edge:
-            edge_label = "low" if peak_idx == 0 else "high"
-            result["warnings"].append(
-                f"Peak at {edge_label} edge of search window (idx={peak_idx} of {len(scores)})"
-            )
 
+        if result["has_ascending"] and not result["has_descending"]:
+            # Trend rises into the peak but the descending side is short
+            # or absent. True focus may be past the high edge.
+            result["should_extend_direction"] = "high"
+        elif result["has_descending"] and not result["has_ascending"]:
+            # Symmetric mirror case: extend toward low Z.
+            result["should_extend_direction"] = "low"
+        else:
+            result["should_extend_direction"] = None
+
+        # 7. is_valid: prominence + at-least-one-side trend. No edge
+        # gate, no symmetry gate, no quality_score floor.
+        MIN_PROMINENCE = 0.15
         result["is_valid"] = (
-            result["quality_score"] >= MIN_QUALITY_THRESHOLD and
-            result["peak_prominence"] >= MIN_PROMINENCE and
-            (result["has_ascending"] or result["has_descending"]) and  # at least one side must show trend
-            not peak_at_edge  # the search window must bracket the focus
+            result["peak_prominence"] >= MIN_PROMINENCE
+            and (result["has_ascending"] or result["has_descending"])
         )
 
-        # 8. Generate human-readable message
+        # 8. Human-readable summary.
         if result["is_valid"]:
-            result["message"] = f"Valid focus peak detected (quality: {result['quality_score']:.2f})"
+            extend_note = ""
+            if result["should_extend_direction"] is not None:
+                extend_note = (f" (one-sided trend; consider extending "
+                               f"toward {result['should_extend_direction']} Z to verify)")
+            result["message"] = (
+                f"Valid focus peak detected (quality: {result['quality_score']:.2f}, "
+                f"prominence: {result['peak_prominence']:.2f}){extend_note}"
+            )
         else:
             issues = []
-            if result["quality_score"] < MIN_QUALITY_THRESHOLD:
-                issues.append(f"low quality score ({result['quality_score']:.2f})")
             if result["peak_prominence"] < MIN_PROMINENCE:
                 issues.append(f"weak peak ({result['peak_prominence']:.2f})")
             if not result["has_ascending"] and not result["has_descending"]:
-                issues.append("no clear focus trend")
-            if peak_at_edge:
-                edge_label = "low" if peak_idx == 0 else "high"
-                issues.append(f"peak at {edge_label} edge of search window")
+                issues.append("no confirmed focus trend on either side")
             result["message"] = "Invalid focus peak: " + ", ".join(issues)
 
         return result

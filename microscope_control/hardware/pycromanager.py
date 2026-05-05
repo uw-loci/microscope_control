@@ -1344,6 +1344,44 @@ class PycromanagerHardware(MicroscopeHardware):
                         diagnostic_output_path, position_index, current_pos
                     )
 
+                # Edge-retry has priority over p98_p2 fallback. When the
+                # primary metric shows a clear peak with rising trend that
+                # is cut off at the search-window edge, the right answer is
+                # to extend the search in that direction rather than swap
+                # in a different metric (which previously produced
+                # silently-different focus answers; see commit history).
+                # Trigger an edge-retry whenever:
+                #   - we have retries left, AND
+                #   - the validator set should_extend_direction (one-sided
+                #     confirmed trend; the other side is unconfirmed
+                #     because too few samples or peak landed at the edge),
+                #     AND
+                #   - the stage Z limits leave room to extend.
+                if (edge_retries_used < edge_retries
+                        and validation.get('should_extend_direction') is not None):
+                    retry_center, retry_range = self._compute_edge_retry_window(
+                        validation=validation,
+                        cur_center=attempt_center,
+                        cur_range=attempt_range,
+                        widen_factor=float(edge_widen_factor),
+                        z_min=z_min_cfg,
+                        z_max=z_max_cfg,
+                    )
+                    if retry_center is not None:
+                        edge_retries_used += 1
+                        logger.info(
+                            "  Edge retry %d/%d: one-sided trend (extend %s); "
+                            "center %.2f -> %.2f um, range %.1f -> %.1f um "
+                            "(clamped to stage Z limits)",
+                            edge_retries_used, edge_retries,
+                            validation['should_extend_direction'],
+                            attempt_center, retry_center,
+                            attempt_range, retry_range,
+                        )
+                        attempt_center = retry_center
+                        attempt_range = retry_range
+                        continue
+
                 if not validation['is_valid']:
                     logger.warning("*** AUTOFOCUS PEAK QUALITY WARNING ***")
                     logger.warning(f"  {validation['message']}")
@@ -1352,13 +1390,10 @@ class PycromanagerHardware(MicroscopeHardware):
                     logger.warning(f"  Quality metrics: prominence={validation['peak_prominence']:.2f}, "
                                  f"quality={validation['quality_score']:.2f}")
 
-                    # Try p98_p2 fallback scores (already computed, no re-acquisition needed).
-                    # Attempt whenever primary metric is invalid -- p98_p2 (dynamic range)
-                    # often finds peaks that gradient metrics miss on low-tissue FOVs.
-                    # validate_focus_peak now rejects edge peaks, so a
-                    # boundary p98_p2 result (which is almost always a
-                    # histogram-spread / saturation artifact rather than
-                    # real focus) cannot rescue an already-invalid sweep.
+                    # Try p98_p2 fallback (already computed, no re-acquisition).
+                    # Only reached when the primary metric has no usable peak
+                    # at all -- not when the peak is good but at the edge,
+                    # which is handled above via edge-retry on the primary.
                     if fallback_scores:
                         fallback_array = np.array(fallback_scores)
                         fallback_validation = AutofocusUtils.validate_focus_peak(z_steps, fallback_array)
@@ -1372,42 +1407,11 @@ class PycromanagerHardware(MicroscopeHardware):
                                         f"(quality={fallback_validation['quality_score']:.2f})")
                             new_z = fallback_z
                             validation = fallback_validation
-                            # Fall through to the success path below
                         else:
                             logger.warning(f"  p98_p2 fallback also invalid: {fallback_validation['message']}")
 
-                    # Edge-retry: if the failure mode is a directional peak-at-edge
-                    # AND we have retries left AND there's somewhere new to search
-                    # within the stage Z limits, widen + shift the sweep and try
-                    # again. Falls through to the existing failure-dict path
-                    # otherwise.
-                    if not validation['is_valid'] and edge_retries_used < edge_retries:
-                        retry_center, retry_range = self._compute_edge_retry_window(
-                            validation=validation,
-                            cur_center=attempt_center,
-                            cur_range=attempt_range,
-                            widen_factor=float(edge_widen_factor),
-                            z_min=z_min_cfg,
-                            z_max=z_max_cfg,
-                        )
-                        if retry_center is not None:
-                            edge_retries_used += 1
-                            logger.warning(
-                                "  Edge retry %d/%d: center %.2f -> %.2f um, "
-                                "range %.1f -> %.1f um (clamped to stage Z limits)",
-                                edge_retries_used, edge_retries,
-                                attempt_center, retry_center,
-                                attempt_range, retry_range,
-                            )
-                            attempt_center = retry_center
-                            attempt_range = retry_range
-                            # Re-sweep with the new window
-                            continue
-
                     if not validation['is_valid'] and raise_on_invalid_peak:
                         # Return failure dict for manual focus fallback loop
-                        # Move stage to computed best position before returning, so user
-                        # can manually adjust from a reasonable starting point
                         logger.warning("  Autofocus failed - moving to computed best Z and returning failure dict")
                         best_pos = Position(current_pos.x, current_pos.y, new_z)
                         self.move_to_position(best_pos)
@@ -1420,8 +1424,8 @@ class PycromanagerHardware(MicroscopeHardware):
                             'original_z': starting_pos.z,
                             'validation': validation
                         }
-                    else:
-                        # Just log warning, continue for diagnostic purposes (test mode)
+                    elif not validation['is_valid']:
+                        # Test mode: log and proceed for diagnostic purposes
                         logger.warning("  Proceeding with autofocus result for diagnostic analysis")
                 else:
                     logger.info(f"Autofocus peak validation: {validation['message']}")
