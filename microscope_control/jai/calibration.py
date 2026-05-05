@@ -257,6 +257,14 @@ class CalibrationConfig:
     # 20 halvings covers 200ms -> 0.0002ms, far below any useful minimum.
     max_desaturation_iterations: int = 20
 
+    # R/B analog gain ceiling. The JAI hardware spec lists 4.0 as the safe
+    # max, but the firmware accepts higher values when needed for color
+    # balance under unusual illumination (e.g. PPM positive-angle scenes
+    # where blue can need > 4.0x). When set, this is applied to the
+    # JAICameraProperties instance for the duration of the calibration.
+    # Set to None to keep the hardware-spec default (4.0).
+    gain_analog_rb_max: Optional[float] = None
+
 
 @dataclass
 class ConvergenceLog:
@@ -404,11 +412,19 @@ class JAIWhiteBalanceCalibrator:
         self._validate_camera()
         self._convergence_log = ConvergenceLog()
 
+        # Apply runtime override for the R/B analog gain ceiling (used by both
+        # Phase 1c gain compensation and Phase 2 fine tuning, plus the clamp
+        # inside JAICameraProperties.set_rb_analog_gains).
+        if config.gain_analog_rb_max is not None:
+            self.jai_props.set_rb_analog_max(config.gain_analog_rb_max)
+
         logger.info("Starting JAI white balance calibration (2-phase)")
         logger.info(f"Target value: {config.target_value}, tolerance: {config.tolerance}")
         if config.quality_mode:
             logger.info(f"Quality mode: {config.quality_mode}")
         logger.info(f"Gain mode: {config.unified_gain_mode}, base_gain: {config.base_gain}")
+        rb_min, rb_max = self.jai_props.get_rb_analog_range()
+        logger.info(f"R/B analog gain range: {rb_min:.2f} to {rb_max:.2f}x")
 
         # Scale target value for bit depth
         if config.bit_depth == 16:
@@ -741,7 +757,7 @@ class JAIWhiteBalanceCalibrator:
 
                 # Reference exposure = green (no independent analog gain control)
                 ref_exp = exposures["green"]
-                rb_min, rb_max = JAICameraProperties.GAIN_ANALOG_RED_RANGE
+                rb_min, rb_max = self.jai_props.get_rb_analog_range()
 
                 for ch_name in ["red", "blue"]:
                     ch_exp = exposures[ch_name]
@@ -870,8 +886,9 @@ class JAIWhiteBalanceCalibrator:
                         current_gain = analog_red if ch_name == "red" else analog_blue
                         new_gain = current_gain * damped_correction
 
-                        # Clamp to hardware range
-                        rb_min, rb_max = JAICameraProperties.GAIN_ANALOG_RED_RANGE
+                        # Clamp to the configured R/B range (may be raised
+                        # above the hardware-spec default via CalibrationConfig.gain_analog_rb_max).
+                        rb_min, rb_max = self.jai_props.get_rb_analog_range()
                         new_gain = max(rb_min, min(rb_max, new_gain))
 
                         if ch_name == "red":
@@ -2028,6 +2045,7 @@ class JAIWhiteBalanceCalibrator:
         max_iterations: Optional[int] = None,
         calibrate_black_level: Optional[bool] = None,
         base_gain: Optional[float] = None,
+        gain_analog_rb_max: Optional[float] = None,
     ) -> WhiteBalanceResult:
         """
         Run Simple white balance calibration using per-channel exposures.
@@ -2080,6 +2098,8 @@ class JAIWhiteBalanceCalibrator:
             config_kwargs["calibrate_black_level"] = calibrate_black_level
         if base_gain is not None:
             config_kwargs["base_gain"] = base_gain
+        if gain_analog_rb_max is not None:
+            config_kwargs["gain_analog_rb_max"] = gain_analog_rb_max
 
         config = CalibrationConfig(**config_kwargs)
 
@@ -2130,6 +2150,7 @@ class JAIWhiteBalanceCalibrator:
         max_iterations: Optional[int] = None,
         calibrate_black_level: Optional[bool] = None,
         base_gain: Optional[float] = None,
+        gain_analog_rb_max: Optional[float] = None,
     ) -> Dict[str, WhiteBalanceResult]:
         """
         Run white balance calibration for each PPM angle.
@@ -2226,6 +2247,8 @@ class JAIWhiteBalanceCalibrator:
                 config_kwargs["calibrate_black_level"] = calibrate_black_level
             if base_gain is not None:
                 config_kwargs["base_gain"] = base_gain
+            if gain_analog_rb_max is not None:
+                config_kwargs["gain_analog_rb_max"] = gain_analog_rb_max
 
             config = CalibrationConfig(**config_kwargs)
 

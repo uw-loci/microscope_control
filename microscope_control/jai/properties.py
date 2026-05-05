@@ -116,17 +116,52 @@ class JAICameraProperties:
         "Preset3200K", "Preset5000K", "Preset6500K", "Preset7500K"
     ]
 
-    def __init__(self, core: Any, device_name: Optional[str] = None):
+    def __init__(
+        self,
+        core: Any,
+        device_name: Optional[str] = None,
+        gain_analog_rb_max: Optional[float] = None,
+    ):
         """
         Initialize JAI camera property manager.
 
         Args:
             core: Pycromanager Core instance
             device_name: Override default device name (for testing)
+            gain_analog_rb_max: Override the R/B analog gain ceiling. The
+                hardware spec lists 4.0 as the safe maximum (see
+                GAIN_ANALOG_RED_RANGE / GAIN_ANALOG_BLUE_RANGE), but the
+                JAI firmware accepts higher values when needed for color
+                balance under unusual illumination. Pass None to use the
+                spec value.
         """
         self.core = core
         self.device_name = device_name or self.DEVICE_NAME
         self._property_cache: Dict[str, PropertyLimits] = {}
+        self._gain_analog_rb_max = (
+            float(gain_analog_rb_max)
+            if gain_analog_rb_max is not None
+            else self.GAIN_ANALOG_RED_RANGE[1]
+        )
+
+    def get_rb_analog_range(self) -> Tuple[float, float]:
+        """Effective (min, max) clamp range for R/B analog gain.
+
+        The min is always the hardware-spec minimum. The max defaults to the
+        hardware-spec value but may be raised via the constructor or
+        set_rb_analog_max() when the spec ceiling is too restrictive for a
+        particular calibration scene (e.g. PPM positive-angle imagery where
+        blue needs > 4.0x to balance).
+        """
+        return (self.GAIN_ANALOG_RED_RANGE[0], self._gain_analog_rb_max)
+
+    def set_rb_analog_max(self, value: float) -> None:
+        """Override the R/B analog gain ceiling at runtime.
+
+        Useful when a calibration's CalibrationConfig requests a higher cap
+        than the hardware-spec default. Min is unchanged.
+        """
+        self._gain_analog_rb_max = float(value)
 
     def validate_camera(self) -> bool:
         """
@@ -492,11 +527,12 @@ class JAICameraProperties:
         Green is the reference channel and is not adjusted by this method.
 
         Args:
-            red: Red channel analog gain (clamped to 0.47-4.0)
-            blue: Blue channel analog gain (clamped to 0.47-4.0)
+            red: Red channel analog gain (clamped to the configured R/B range,
+                default 0.47-4.0 from hardware spec).
+            blue: Blue channel analog gain (clamped to the configured R/B range).
         """
-        red_min, red_max = self.GAIN_ANALOG_RED_RANGE
-        blue_min, blue_max = self.GAIN_ANALOG_BLUE_RANGE
+        red_min, red_max = self.get_rb_analog_range()
+        blue_min, blue_max = self.get_rb_analog_range()
 
         red_clamped = max(red_min, min(red_max, red))
         blue_clamped = max(blue_min, min(blue_max, blue))
@@ -560,10 +596,12 @@ class JAICameraProperties:
         if auto_enable and not self.is_individual_gain_enabled():
             self.enable_individual_gain()
 
-        # Validate and clamp gain values to hardware limits
-        red_min, red_max = self.GAIN_ANALOG_RED_RANGE
+        # Validate and clamp gain values to hardware limits.
+        # R/B share an effective ceiling that may be overridden via the
+        # constructor; green keeps its (wide) hardware-spec range.
+        red_min, red_max = self.get_rb_analog_range()
         green_min, green_max = self.GAIN_ANALOG_GREEN_RANGE
-        blue_min, blue_max = self.GAIN_ANALOG_BLUE_RANGE
+        blue_min, blue_max = self.get_rb_analog_range()
 
         red_clamped = max(red_min, min(red_max, red))
         green_clamped = max(green_min, min(green_max, green))
