@@ -1720,26 +1720,69 @@ class PycromanagerHardware(MicroscopeHardware):
         nch = self.core.get_number_of_components()
         cy, cx = img_h // 2, img_w // 2
 
+        # Tolerance for "did the stage actually arrive at the commanded
+        # Z?" diagnostic. Tight enough to catch real misses, loose
+        # enough to absorb encoder noise.
+        arrival_tol_um = 0.5
+
         def _sweep_one_window(z_positions_list):
-            """Run pipelined snap+move sweep, return [(actual_z, score)]."""
+            """Run pipelined snap+move sweep, return [(actual_z, score)].
+
+            Holds the stage lock for the whole sweep. Without this, the
+            StagePositionCache poll thread (500 ms get_xyz polls) competes
+            with set_position on the same serial bus and can stall moves --
+            the 2026-05-05 user report ("sweep and streaming used to
+            work, now broken; both at the same time") fits this exact
+            failure mode since both bypass the lock added in commit
+            e7f1467 (Apr 15) at the same time the cache thread was added
+            in fe6f5ee.
+            """
             result = []
+            stage_lock = getattr(self._stage, "lock", None)
+            if stage_lock is not None:
+                stage_lock.acquire()
             try:
-                self.core.set_position(z_positions_list[0])
-                self.core.wait_for_device(z_dev)
-                for i in range(len(z_positions_list)):
-                    actual_z = self.core.get_position()
-                    self.core.snap_image()
-                    if i < len(z_positions_list) - 1:
-                        self.core.set_position(z_positions_list[i + 1])
-                    tagged = self.core.get_tagged_image()
-                    pixels = tagged.pix
-                    sc, _ = self._score_single_metric(
-                        pixels, img_w, img_h, nch, cy, cx, score_metric)
-                    if i < len(z_positions_list) - 1:
-                        self.core.wait_for_device(z_dev)
-                    result.append((actual_z, sc))
-            except Exception as e:
-                logger.warning(f"Sweep window failed at step: {e}")
+                try:
+                    self.core.set_position(z_positions_list[0])
+                    self.core.wait_for_device(z_dev)
+                    arrival_misses = 0
+                    for i in range(len(z_positions_list)):
+                        target_now = float(z_positions_list[i])
+                        actual_z = self.core.get_position()
+                        # Arrival check on every step. Logged at WARNING
+                        # only when off-target so a healthy sweep stays
+                        # quiet.
+                        err = abs(actual_z - target_now)
+                        if err > arrival_tol_um:
+                            arrival_misses += 1
+                            logger.warning(
+                                f"Sweep step {i}: stage arrival miss -- "
+                                f"target={target_now:.3f}, "
+                                f"actual={actual_z:.3f}, err={err:.3f} um "
+                                f"(tol={arrival_tol_um:.2f})"
+                            )
+                        self.core.snap_image()
+                        if i < len(z_positions_list) - 1:
+                            self.core.set_position(z_positions_list[i + 1])
+                        tagged = self.core.get_tagged_image()
+                        pixels = tagged.pix
+                        sc, _ = self._score_single_metric(
+                            pixels, img_w, img_h, nch, cy, cx, score_metric)
+                        if i < len(z_positions_list) - 1:
+                            self.core.wait_for_device(z_dev)
+                        result.append((actual_z, sc))
+                    if arrival_misses > 0:
+                        logger.warning(
+                            f"Sweep drift: {arrival_misses}/"
+                            f"{len(z_positions_list)} steps had stage "
+                            f"arrival errors > {arrival_tol_um:.2f} um. "
+                            f"Sweep results may be unreliable."
+                        )
+                except Exception as e:
+                    logger.warning(f"Sweep window failed at step: {e}")
+            finally:
+                if stage_lock is not None:
+                    stage_lock.release()
             return result
 
         def _make_z_positions(center):

@@ -216,34 +216,46 @@ class PycromanagerStage(Stage):
             self._core.set_focus_device(z_stage_device)
 
     def _wait_z_via_busy(self, timeout_ms: float = 10000.0,
-                         poll_interval_ms: float = 3.0) -> None:
+                         poll_interval_ms: float = 3.0,
+                         target_z: Optional[float] = None,
+                         tolerance_um: float = 0.5) -> None:
         """Wait for Z stage to finish moving via tight device_busy polling.
 
         Much faster than core.wait_for_device() on hardware where the MM
         core polls at 50-100 ms granularity internally (e.g. Prior
         ProScan via serial). device_busy hits the same serial line but
-        *we* control the poll rate, dropping the 'stage is done but MM
-        hasn't noticed yet' latency from ~150 ms to ~6 ms per move.
-
-        Measured on PPM with PROBEZ: 20 um blocking move went from
-        ~240 ms (wait_for_device) to ~80 ms (busy polling) -- ~3-4x
-        speedup with no behavioral change.
+        *we* control the poll rate.
 
         Correctness safeguards:
-        - Requires 2 consecutive not-busy reads to confirm arrival
-          (cheap defense against a race where MM reports not-busy for
-          one cycle while the serial adapter is mid-command).
-        - Falls back to core.wait_for_device() on any exception (keeps
-          legacy behavior for hardware where device_busy is flaky).
-        - Hard timeout of 10 s; also falls back to wait_for_device on
-          timeout so we never return with the stage still moving.
+        - Requires 5 consecutive not-busy reads to confirm arrival
+          (was 2 -- bumped 2026-05-05 after the user observed AF feeling
+          "incredibly fast" through the eyepiece, suggesting the
+          firmware was reporting not-busy before the stage settled).
+        - When ``target_z`` is provided, after the busy clears we
+          query the actual position and confirm it's within
+          ``tolerance_um`` of the target. If not, fall back to
+          ``core.wait_for_device`` and log a WARNING -- this catches
+          the case where ``device_busy`` reports clear before the
+          stage has actually arrived at the commanded Z. The warning
+          also gives operators a visible signal that something is
+          wrong with stage control rather than silent bad data.
+        - Falls back to core.wait_for_device() on any exception.
+        - Optional ``stage.z_settle_ms`` config knob adds a fixed
+          post-arrival sleep for piezos that need mechanical settling
+          beyond the electrical "not busy" report.
 
         Args:
             timeout_ms: Hard cap on busy-poll duration before fallback.
-                Should be larger than any reasonable Z move time.
             poll_interval_ms: Time between device_busy calls.
+            target_z: Optional commanded Z target. When provided,
+                arrival is verified by reading actual position.
+            tolerance_um: Max allowed distance from ``target_z`` to
+                consider arrival successful (default 0.5 um -- tight
+                enough to catch real misses, loose enough to absorb
+                encoder noise on stages without sub-100-nm precision).
         """
         focus_dev = self._core.get_focus_device()
+        clear_required = 5
         try:
             deadline = time.perf_counter() + (timeout_ms / 1000.0)
             consecutive_clear = 0
@@ -252,15 +264,13 @@ class PycromanagerStage(Stage):
                 try:
                     busy = self._core.device_busy(focus_dev)
                 except Exception as e:
-                    # device_busy not supported or errored -- fall
-                    # through to the safe path below.
                     logger.debug("device_busy(%s) failed, falling back: %s",
                                  focus_dev, e)
                     break
                 if not busy:
                     consecutive_clear += 1
-                    if consecutive_clear >= 2:
-                        return
+                    if consecutive_clear >= clear_required:
+                        break
                 else:
                     consecutive_clear = 0
                 time.sleep(sleep_s)
@@ -270,14 +280,67 @@ class PycromanagerStage(Stage):
                     "falling back to wait_for_device",
                     timeout_ms, focus_dev,
                 )
+                try:
+                    self._core.wait_for_device(focus_dev)
+                except Exception as e:
+                    logger.warning("wait_for_device fallback failed: %s", e)
         except Exception as e:
             logger.debug("wait_z busy-poll errored, falling back: %s", e)
+            try:
+                self._core.wait_for_device(focus_dev)
+            except Exception as e2:
+                logger.warning("wait_for_device fallback failed: %s", e2)
 
-        # Safe fallback: whatever MM core's native blocking wait does.
-        try:
-            self._core.wait_for_device(focus_dev)
-        except Exception as e:
-            logger.warning("wait_for_device fallback failed: %s", e)
+        # Optional mechanical settle delay -- piezos in particular can
+        # report electrical "not busy" before the trajectory has
+        # mechanically settled. Configurable per-microscope so this is
+        # zero-overhead on stages that don't need it.
+        stage_cfg = self._settings.get("stage", {}) if self._settings else {}
+        settle_ms = float(stage_cfg.get("z_settle_ms", 0.0))
+        if settle_ms > 0:
+            time.sleep(settle_ms / 1000.0)
+
+        # Arrival verification when a target was supplied. The user's
+        # 2026-05-05 hypothesis: "this really feels like a break in the
+        # stage control that we aren't catching." If the busy-poll
+        # cleared but actual Z is far from target, that's exactly the
+        # break the warning should surface.
+        if target_z is not None:
+            try:
+                actual_z = self._core.get_position()
+                err = abs(actual_z - target_z)
+                if err > tolerance_um:
+                    logger.warning(
+                        "wait_z arrival check FAILED: target=%.3f um, "
+                        "actual=%.3f um, error=%.3f um (tolerance=%.3f um) "
+                        "on '%s'. Stage reported not-busy but did not "
+                        "arrive. Falling back to wait_for_device.",
+                        target_z, actual_z, err, tolerance_um, focus_dev,
+                    )
+                    try:
+                        self._core.wait_for_device(focus_dev)
+                    except Exception as e:
+                        logger.warning("wait_for_device fallback failed: %s", e)
+                    # Re-check after the safer wait
+                    try:
+                        actual_z2 = self._core.get_position()
+                        err2 = abs(actual_z2 - target_z)
+                        if err2 > tolerance_um:
+                            logger.error(
+                                "wait_z STILL off-target after fallback: "
+                                "target=%.3f, actual=%.3f, err=%.3f um. "
+                                "Stage controller may be in a bad state.",
+                                target_z, actual_z2, err2,
+                            )
+                    except Exception as e:
+                        logger.debug("post-fallback position read failed: %s", e)
+                else:
+                    logger.debug(
+                        "wait_z arrival OK: target=%.3f, actual=%.3f, "
+                        "err=%.3f um", target_z, actual_z, err,
+                    )
+            except Exception as e:
+                logger.debug("wait_z arrival check skipped (read failed): %s", e)
 
     # --- XY operations ---
 
@@ -306,13 +369,20 @@ class PycromanagerStage(Stage):
         with self._lock:
             self._ensure_z_device()
             self._core.set_position(z)
-            self._wait_z_via_busy()
+            self._wait_z_via_busy(target_z=z)
             logger.debug("move_z: Z=%.2f", z)
 
     def move_z_no_wait(self, z: float) -> None:
         with self._lock:
             self._ensure_z_device()
             self._core.set_position(z)
+            # Cache the most recent target so wait_z() can verify
+            # arrival even when the caller used the no-wait + wait split
+            # rather than the all-in-one move_z. The cache is best-effort
+            # -- if multiple targets are queued, only the last one is
+            # checked, which matches MM's own behavior of overriding
+            # in-flight commands.
+            self._last_z_target = float(z)
             logger.debug("move_z_no_wait: target Z=%.2f", z)
 
     def get_z(self) -> float:
@@ -321,7 +391,8 @@ class PycromanagerStage(Stage):
 
     def wait_z(self) -> None:
         with self._lock:
-            self._wait_z_via_busy()
+            target = getattr(self, "_last_z_target", None)
+            self._wait_z_via_busy(target_z=target)
 
     # --- Combined (optimized) ---
 
