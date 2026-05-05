@@ -1372,11 +1372,13 @@ class PycromanagerHardware(MicroscopeHardware):
                         logger.info(
                             "  Edge retry %d/%d: one-sided trend (extend %s); "
                             "center %.2f -> %.2f um, range %.1f -> %.1f um "
-                            "(clamped to stage Z limits)",
+                            "(window [%.2f, %.2f])",
                             edge_retries_used, edge_retries,
                             validation['should_extend_direction'],
                             attempt_center, retry_center,
                             attempt_range, retry_range,
+                            retry_center - retry_range / 2.0,
+                            retry_center + retry_range / 2.0,
                         )
                         attempt_center = retry_center
                         attempt_range = retry_range
@@ -1502,17 +1504,30 @@ class PycromanagerHardware(MicroscopeHardware):
             min(z_max - margin - half, target_center),
         )
 
-        # Sanity: if clamping pinned us to the same band the previous sweep
-        # already covered, there's nothing new to search -- skip the retry.
+        # Sanity: did clamping leave us with a window that actually extends
+        # in the requested direction? If stage Z limits prevent shifting the
+        # center toward the trend, the clamp can pull the center the
+        # OPPOSITE way (e.g. "extend low" requested but z_min forces center
+        # UP), producing a wider window that scans new ground in the WRONG
+        # direction. That's worse than refusing -- on 2026-05-05 a clamp
+        # inversion walked the stage from -68 to -15 because the widened
+        # window hit a junk peak at the high edge.
         new_low = clamped_center - half
         new_high = clamped_center + half
         old_low = float(cur_center) - float(cur_range) / 2.0
         old_high = float(cur_center) + float(cur_range) / 2.0
-        if new_low >= old_low - 1e-3 and new_high <= old_high + 1e-3:
+        if shift_sign < 0:
+            extended_in_direction = new_low < old_low - 1e-3
+            direction_label = "low"
+        else:
+            extended_in_direction = new_high > old_high + 1e-3
+            direction_label = "high"
+        if not extended_in_direction:
             logger.warning(
-                "  Edge retry: stage Z limits prevent expansion beyond the "
-                "already-swept band [%.2f, %.2f] um; skipping",
-                old_low, old_high,
+                "  Edge retry: stage Z limits prevent extending toward %s "
+                "(would clamp window to [%.2f, %.2f] um vs prior [%.2f, %.2f]); "
+                "skipping",
+                direction_label, new_low, new_high, old_low, old_high,
             )
             return None, None
 
@@ -1837,6 +1852,32 @@ class PycromanagerHardware(MicroscopeHardware):
             self.core.set_position(initial_z)
             self.core.wait_for_device(z_dev)
             return initial_z
+
+        # U-shape rejection: when the score curve has a clear interior
+        # minimum with edges elevated near the global max, the metric is
+        # contrast-inverted at this XY (saturation, debris, polarizer
+        # artifact). The "best" interior idx is then just a noise bump
+        # on the side of the U; moving there walks the stage AWAY from
+        # focus. Hold at initial_z instead. See validate_focus_peak() in
+        # autofocus/core.py for the same logic on the standard AF path.
+        if len(scores) >= 5:
+            min_idx_local = int(np.argmin(scores))
+            if 0 < min_idx_local < len(scores) - 1:
+                edge_score = float(min(scores[0], scores[-1]))
+                full_range = float(scores.max() - scores.min())
+                if full_range > 0:
+                    valley_depth = (edge_score - float(scores[min_idx_local])) / full_range
+                    if valley_depth >= 0.5:
+                        logger.warning(
+                            f"Sweep drift check: U-shape detected (interior "
+                            f"min at Z={float(z_arr[min_idx_local]):.2f}, edges "
+                            f"{float(scores[0]):.2f}/{float(scores[-1]):.2f}, "
+                            f"valley_depth={valley_depth:.2f}) -- metric is "
+                            f"contrast-inverted, holding at initial Z "
+                            f"({elapsed:.0f}ms)")
+                        self.core.set_position(initial_z)
+                        self.core.wait_for_device(z_dev)
+                        return initial_z
 
         start_idx = int(np.argmin(np.abs(z_arr - initial_z)))
         start_score = scores[start_idx]

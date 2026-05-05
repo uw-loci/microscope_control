@@ -770,7 +770,42 @@ class AutofocusUtils:
             result["message"] = f"No focus gradient detected - scores too flat ({relative_range:.2%} variation)"
             return result
 
-        # 2. Peak prominence within the swept range.
+        # 2. U-shape detection. When the score curve has a clear interior
+        # minimum with both edges elevated near the global maximum, the
+        # metric is contrast-inverted at this XY (commonly: saturation,
+        # debris, or polarizer artifact whose gradient dominates over the
+        # true tissue gradient at out-of-focus Z values). Picking the
+        # global argmax of a U yields the wrong answer -- true focus is at
+        # or near the MINIMUM. We can't recover the right Z from this
+        # curve, so reject as invalid; let the caller fall back (p98_p2
+        # metric, manual focus, or a different XY) rather than walk the
+        # stage to a spurious edge peak. Verified on 2026-05-05 against
+        # MH_PPM ppm_40x sweep where tenengrad valleyed at the true focus
+        # Z=-65.6 with both ends elevated, then edge-retried twice and
+        # walked to Z=-15.
+        min_idx = int(np.argmin(scores))
+        peak_at_edge = (peak_idx == 0) or (peak_idx == len(scores) - 1)
+        if 0 < min_idx < len(scores) - 1 and peak_at_edge:
+            edge_score = min(scores[0], scores[-1])
+            valley_depth = (edge_score - scores[min_idx]) / score_range
+            if valley_depth >= 0.5:
+                result["peak_prominence"] = (peak_score - mean_score) / score_range
+                result["peak_at_edge"] = True
+                result["should_extend_direction"] = None
+                result["warnings"].append(
+                    f"U-shape detected: interior minimum at Z={z_positions[min_idx]:.2f} "
+                    f"(score={scores[min_idx]:.2f}), edges elevated "
+                    f"({scores[0]:.2f}, {scores[-1]:.2f}); valley_depth={valley_depth:.2f} "
+                    f"-- metric is contrast-inverted at this XY"
+                )
+                result["message"] = (
+                    f"Invalid: U-shaped score curve (interior min at "
+                    f"Z={z_positions[min_idx]:.2f}); refusing edge-peak guess "
+                    f"to avoid walking the stage to a spurious peak"
+                )
+                return result
+
+        # 3. Peak prominence within the swept range.
         result["peak_prominence"] = (peak_score - mean_score) / score_range
 
         # 3. Confirmed-trend tests. Need at least MIN_TREND_SAMPLES points
