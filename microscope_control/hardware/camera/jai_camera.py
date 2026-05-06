@@ -283,6 +283,79 @@ class JAICamera(PycromanagerCamera):
                 exposures = dict(exposures)
                 exposures["all"] = g_exp
 
+        # 2026-05-06: avoid the JAI continuous-mode trigger window for
+        # blue exposure. When individual mode is active with unequal
+        # channels and the BLUE channel exposure lands in approximately
+        # 4.0 < B < 5.6 ms, the camera produces frames with a
+        # fixed-row stale-content band at the bottom in continuous
+        # acquisition. The trigger boundary was characterised
+        # empirically (2026-05-06) on the JAI AP-3200T-USB at LOCI:
+        # B = 4.0 ms is clean, B = 4.32 ms shows the bar,
+        # B = 5.5 ms shows the bar, B = 5.6 ms is clean,
+        # B >= ~100 ms is also clean (auto-coupled to a low frame
+        # rate that escapes the trigger). The bug reproduces in
+        # eBUS Player and so is below the host software (camera
+        # firmware / silicon level). See:
+        #   claude-reports/2026-05-06_jai-contamination-bar-internal.md
+        #   claude-reports/2026-05-06_jai-contamination-bar-vendor.md
+        #
+        # Mitigation strategy: when the requested blue exposure lands
+        # inside the trigger window, snap it to the nearer safe edge
+        # (4.0 ms or 5.6 ms) and rescale R and G by the same factor to
+        # PRESERVE the white-balance ratio (R/B and G/B unchanged).
+        # The white-balance behaviour the calibration was designed for
+        # is preserved exactly; only the absolute light level changes
+        # by a few percent, which is recovered downstream by image
+        # normalisation. Snap-mode acquisitions are unaffected by the
+        # bug at any value, so this only matters for live preview and
+        # any continuous-mode sampling (streaming AF, rapid scan).
+        TRIGGER_BLUE_LOW_MS = 4.0
+        TRIGGER_BLUE_HIGH_MS = 5.6
+        if individual_exposure:
+            r_exp = exposures.get("r", exposures.get("all", 1.0))
+            g_exp = exposures.get("g", exposures.get("all", 1.0))
+            b_exp = exposures.get("b", exposures.get("all", 1.0))
+            if TRIGGER_BLUE_LOW_MS < b_exp < TRIGGER_BLUE_HIGH_MS:
+                # Pick the nearer safe boundary
+                if (b_exp - TRIGGER_BLUE_LOW_MS) <= (TRIGGER_BLUE_HIGH_MS - b_exp):
+                    b_safe = TRIGGER_BLUE_LOW_MS
+                else:
+                    b_safe = TRIGGER_BLUE_HIGH_MS
+                # Preserve WB ratio: scale R and G by the same factor.
+                # Because R_new/B_new = (R_old * s)/(B_old * s) = R_old/B_old.
+                scale = b_safe / b_exp
+                r_safe = r_exp * scale
+                g_safe = g_exp * scale
+                # Hard clamp to camera minimum so we never under-shoot
+                # the hardware's exposure floor while rescaling. EXPOSURE_MIN
+                # in JAICameraProperties is around 0.04 ms; pick a safer
+                # 0.05 ms here as a buffer.
+                MIN_AFTER_RESCALE_MS = 0.05
+                r_safe = max(r_safe, MIN_AFTER_RESCALE_MS)
+                g_safe = max(g_safe, MIN_AFTER_RESCALE_MS)
+                logger.warning(
+                    "JAI apply_settings: blue exposure %.4f ms in continuous-"
+                    "mode contamination trigger window (%.1f, %.1f) ms; "
+                    "snapping B to %.4f ms (nearer safe edge) and "
+                    "rescaling R %.4f -> %.4f and G %.4f -> %.4f by factor "
+                    "%.4f to preserve the WB ratio. See JAI ticket / "
+                    "claude-reports/2026-05-06_jai-contamination-bar-*.md.",
+                    b_exp, TRIGGER_BLUE_LOW_MS, TRIGGER_BLUE_HIGH_MS,
+                    b_safe, r_exp, r_safe, g_exp, g_safe, scale,
+                )
+                exposures = dict(exposures)
+                exposures["r"] = r_safe
+                exposures["g"] = g_safe
+                exposures["b"] = b_safe
+                # If after rescaling all three are equal (within 1 us)
+                # we can drop to unified mode below; recheck.
+                r_exp, g_exp, b_exp = r_safe, g_safe, b_safe
+                if (abs(r_exp - g_exp) < 0.001
+                        and abs(g_exp - b_exp) < 0.001
+                        and abs(r_exp - b_exp) < 0.001):
+                    individual_exposure = False
+                    exposures["all"] = g_exp
+
         if individual_exposure:
             self.enable_individual_exposure()
             self.set_channel_exposures(
