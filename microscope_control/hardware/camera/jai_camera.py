@@ -32,9 +32,29 @@ class JAICamera(PycromanagerCamera):
     - Hardware white balance
     """
 
-    # Frame rate limits (Hz) for the JAI AP-3200T-USB
+    # Frame rate limits (Hz) for the JAI AP-3200T-USB.
+    #
+    # FRAME_RATE_MAX 2026-05-06: lowered from 38.0 to 25.0 Hz. User
+    # confirmed that the live-mode contamination bar (TODO_LIST.md
+    # "Stale frame data populating a small region of the live frame")
+    # is frame-rate triggered: short-exposure calibrations (uncrossed
+    # Simple WB ~3 ms) auto-couple to FRAME_RATE_MAX (38 Hz) via
+    # set_exposure, which is when the bar appears. Long-exposure
+    # calibrations (negative -7 deg ~107 ms) auto-couple to ~9.3 Hz
+    # and stay clean. The camera firmware appears to truncate trailing
+    # rows in the buffer at high continuous-mode rates -- snap mode
+    # is unaffected because it doesn't sustain the timing pressure.
+    #
+    # 25 Hz is below the empirical danger zone but still smooth for
+    # live preview. If users find 25 too slow for short-exposure
+    # workflows, the right answer is to bisect down (33, 30, 25, ...)
+    # and pin the highest known-clean rate, or push for a JAI firmware
+    # fix and bump back to 38.
+    #
+    # Override per-microscope via stage / camera config if a particular
+    # JAI body has a different known-safe ceiling.
     FRAME_RATE_MIN = 0.125
-    FRAME_RATE_MAX = 38.0
+    FRAME_RATE_MAX = 25.0
 
     def __init__(self, core: Core, studio: Optional[Studio],
                  detector_config: Optional[Dict[str, Any]] = None):
