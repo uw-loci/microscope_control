@@ -305,6 +305,11 @@ class PycromanagerCamera(Camera):
                 logger.debug("Sequence already running, not starting another")
                 return
             self._core.clear_circular_buffer()
+            # Reset the per-acquisition diagnostic flags so each live
+            # session gets fresh dimension/buffer probes (instead of
+            # only firing once per server lifetime).
+            self._live_dim_warn_logged = False
+            self._live_first_frame_logged = False
             self._core.start_continuous_sequence_acquisition(0)
             # Diagnostic 2026-05-05: log the frame geometry MM commits to at
             # acquisition start. If a later popped frame has different
@@ -370,13 +375,79 @@ class PycromanagerCamera(Camera):
             if remaining == 0:
                 return None, None
 
-            pixels = self._core.get_last_image()
+            # Diagnostic 2026-05-05: try to get per-frame tags via the
+            # tagged variant so we can compare camera-reported dimensions
+            # to MM Core's reported dimensions. The live-frame
+            # contamination bar (TODO_LIST.md) might be a partial write
+            # where the tags say one height and core.get_image_height()
+            # says another. Falls back to plain get_last_image when the
+            # tagged variant isn't supported in the live-mode path.
+            tagged = None
+            tag_dims = None
+            try:
+                tagged = self._core.get_last_tagged_image()
+            except Exception:
+                tagged = None
+
+            if tagged is not None and hasattr(tagged, "pix"):
+                pixels = tagged.pix
+                try:
+                    tags = dict(tagged.tags) if hasattr(tagged, "tags") else {}
+                    tag_h = tags.get("Height")
+                    tag_w = tags.get("Width")
+                    if tag_h is not None and tag_w is not None:
+                        tag_dims = (int(tag_w), int(tag_h))
+                except Exception:
+                    pass
+            else:
+                pixels = self._core.get_last_image()
+
             if pixels is None:
                 return None, None
 
             width = self._core.get_image_width()
             height = self._core.get_image_height()
             nchannels = self._core.get_number_of_components()
+
+            # Per-frame dimension consistency check. The ContaminationBar
+            # bug shows up here: if the camera writes a frame of size
+            # tag_dims while MM Core has a buffer slot sized for
+            # (width, height), and tag_dims < (width, height), the
+            # trailing rows are stale content from prior slot writes.
+            # Logged once per session (per-frame would spam the log).
+            if tag_dims is not None:
+                tw, th = tag_dims
+                if tw != int(width) or th != int(height):
+                    if not getattr(self, "_live_dim_warn_logged", False):
+                        logger.warning(
+                            "LIVE: PER-FRAME DIMENSION MISMATCH -- core says "
+                            "%dx%d, frame tags say %dx%d (delta_rows=%d, "
+                            "delta_cols=%d). This explains the live-mode "
+                            "contamination bar: trailing rows of every popped "
+                            "frame contain stale content from prior frames. "
+                            "Logged once per session.",
+                            width, height, tw, th,
+                            int(height) - th, int(width) - tw,
+                        )
+                        self._live_dim_warn_logged = True
+
+            # First-frame buffer-size probe -- runs once after start.
+            # Records the actual size of the first delivered frame vs
+            # what get_image_buffer_size() reports. If they differ,
+            # that's a different signature (rare but possible).
+            if not getattr(self, "_live_first_frame_logged", False):
+                try:
+                    arr = np.asarray(pixels)
+                    expected_buf = int(self._core.get_image_buffer_size())
+                    actual_buf = arr.nbytes
+                    logger.info(
+                        "LIVE: first frame after start -- pixel array "
+                        "nbytes=%d, dtype=%s, shape=%s, MM expected buffer=%d",
+                        actual_buf, arr.dtype, arr.shape, expected_buf,
+                    )
+                except Exception as e:
+                    logger.debug("LIVE first-frame probe failed: %s", e)
+                self._live_first_frame_logged = True
 
             # Validate pixel count matches current dimensions before reshape.
             # After an ROI change the circular buffer may still hold a frame
