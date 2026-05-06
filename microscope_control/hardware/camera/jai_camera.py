@@ -235,6 +235,34 @@ class JAICamera(PycromanagerCamera):
 
         self.stop_if_streaming()
 
+        # 2026-05-06: when caller asks for individual mode but the three
+        # channel exposures actually match, drop to unified mode. The
+        # multi-CCD assembly path inside the camera firmware appears to
+        # have a buffer-reuse bug that produces a fixed-row stale-content
+        # band on continuous-mode frames (TODO_LIST.md "Stale frame data
+        # populating a small region of the live frame"). Falling through
+        # to unified mode when individual isn't needed is semantically
+        # identical -- same exposure on each CCD either way -- but
+        # avoids triggering the suspect firmware path. Tolerance is
+        # tight (1 us) since the JAI exposure precision is in
+        # microseconds; anything closer is just float noise.
+        if individual_exposure:
+            r_exp = exposures.get("r", exposures.get("all", 1.0))
+            g_exp = exposures.get("g", exposures.get("all", 1.0))
+            b_exp = exposures.get("b", exposures.get("all", 1.0))
+            if (abs(r_exp - g_exp) < 0.001
+                    and abs(g_exp - b_exp) < 0.001
+                    and abs(r_exp - b_exp) < 0.001):
+                logger.debug(
+                    "JAI apply_settings: caller asked for individual mode but "
+                    "R/G/B exposures match (%.4f/%.4f/%.4f); falling through "
+                    "to unified to avoid the multi-CCD assembly bug",
+                    r_exp, g_exp, b_exp,
+                )
+                individual_exposure = False
+                exposures = dict(exposures)
+                exposures["all"] = g_exp
+
         if individual_exposure:
             self.enable_individual_exposure()
             self.set_channel_exposures(
