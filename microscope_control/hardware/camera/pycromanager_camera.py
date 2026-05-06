@@ -306,7 +306,30 @@ class PycromanagerCamera(Camera):
                 return
             self._core.clear_circular_buffer()
             self._core.start_continuous_sequence_acquisition(0)
-            logger.info("Continuous sequence acquisition started (core-level)")
+            # Diagnostic 2026-05-05: log the frame geometry MM commits to at
+            # acquisition start. If a later popped frame has different
+            # dimensions in its tags, the stale-trailing-row bug
+            # (TODO_LIST.md) is in play and the diff is the source of the
+            # contamination band.
+            try:
+                w = self._core.get_image_width()
+                h = self._core.get_image_height()
+                bpp = self._core.get_bytes_per_pixel()
+                nch = self._core.get_number_of_components()
+                buf_bytes = self._core.get_image_buffer_size()
+                expected_bytes = int(w) * int(h) * int(bpp)
+                logger.info(
+                    "Continuous acquisition started: core dims=%dx%d, "
+                    "bpp=%d, nch=%d, buf_size=%d B, expected=%d B%s",
+                    w, h, bpp, nch, buf_bytes, expected_bytes,
+                    "" if buf_bytes == expected_bytes else
+                    f" [MISMATCH +{buf_bytes - expected_bytes} B]",
+                )
+            except Exception as e:
+                logger.info(
+                    "Continuous sequence acquisition started "
+                    "(geometry probe failed: %s)", e,
+                )
         except Exception as e:
             logger.error("Failed to start continuous acquisition: %s", e)
             raise
