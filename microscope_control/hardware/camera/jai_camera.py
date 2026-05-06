@@ -64,6 +64,89 @@ class JAICamera(PycromanagerCamera):
         self._properties = None
         logger.info("Initialized JAICamera (3-CCD prism, no debayering)")
 
+        # 2026-05-06: JAI camera properties (individual-exposure mode, per-
+        # channel exposures, gains) are HARDWARE state and persist across
+        # server restarts. If a prior session left the camera in the
+        # continuous-mode contamination trigger window (individual mode +
+        # unequal channels + blue in approx 4.0..5.6 ms), the bar appears
+        # in MM/QPSC live view immediately on startup -- BEFORE the user
+        # has had a chance to apply any WB preset via SETCAM. This call
+        # reads current hardware state and, if it matches the trigger
+        # condition, runs apply_settings with the current values to
+        # invoke the blue-window snap-out mitigation. Defensive: any
+        # failure is logged and ignored so init never blocks.
+        try:
+            self._sanitize_continuous_mode_trigger_state()
+        except Exception as e:
+            logger.warning(
+                "JAICamera startup sanitize failed (non-fatal): %s", e,
+            )
+
+    def _sanitize_continuous_mode_trigger_state(self) -> None:
+        """Snap the camera out of the continuous-mode contamination trigger
+        window if it is sitting there from a prior session.
+
+        Invoked once at __init__. Reads current per-channel exposures and
+        individual-mode state. If individual mode is on, channels are unequal,
+        and blue is in (TRIGGER_BLUE_LOW_MS, TRIGGER_BLUE_HIGH_MS), routes
+        through apply_settings (with force=True) so the blue-window snap-out
+        mitigation runs and updates the hardware. Logs whether sanitization
+        was needed.
+        """
+        if not self.properties.is_individual_exposure_enabled():
+            logger.info(
+                "JAICamera startup: individual-exposure mode is OFF; "
+                "no contamination-trigger sanitize needed.",
+            )
+            return
+
+        ch = self.properties.get_channel_exposures()
+        r_exp = ch.get("red", 1.0)
+        g_exp = ch.get("green", 1.0)
+        b_exp = ch.get("blue", 1.0)
+
+        TRIGGER_BLUE_LOW_MS = 4.0
+        TRIGGER_BLUE_HIGH_MS = 5.6
+        in_trigger = TRIGGER_BLUE_LOW_MS < b_exp < TRIGGER_BLUE_HIGH_MS
+        unequal = not (
+            abs(r_exp - g_exp) < 0.001
+            and abs(g_exp - b_exp) < 0.001
+            and abs(r_exp - b_exp) < 0.001
+        )
+
+        if not (in_trigger and unequal):
+            logger.info(
+                "JAICamera startup: hardware state safe "
+                "(R=%.3f G=%.3f B=%.3f ms, in_trigger=%s, unequal=%s); "
+                "no sanitize needed.",
+                r_exp, g_exp, b_exp, in_trigger, unequal,
+            )
+            return
+
+        unified_gain = self.properties.get_unified_gain()
+        rb = self.properties.get_rb_analog_gains()
+        analog_red = rb.get("red", 1.0)
+        analog_blue = rb.get("blue", 1.0)
+
+        logger.warning(
+            "JAICamera startup: hardware left in contamination trigger window "
+            "(R=%.3f G=%.3f B=%.3f ms, individual mode, channels unequal). "
+            "Running apply_settings to invoke the blue-window snap-out so "
+            "live view does not show the bar before the user applies a WB "
+            "preset. Original values from prior session: aR=%.3f, aB=%.3f, "
+            "unified_gain=%.2f.",
+            r_exp, g_exp, b_exp, analog_red, analog_blue, unified_gain,
+        )
+
+        self.apply_settings(
+            exposures={"r": r_exp, "g": g_exp, "b": b_exp},
+            unified_gain=unified_gain,
+            analog_red=analog_red,
+            analog_blue=analog_blue,
+            individual_exposure=True,
+            force=True,
+        )
+
     @property
     def properties(self):
         """Lazily-initialized JAICameraProperties instance.
