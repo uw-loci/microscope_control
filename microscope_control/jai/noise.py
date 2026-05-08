@@ -26,7 +26,7 @@ Usage:
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -94,11 +94,12 @@ class JAINoiseMeasurement:
         # Lazily create jai_props if not provided
         if self.jai_props is None:
             try:
-                if hasattr(hardware, 'camera') and hasattr(hardware.camera, 'properties'):
+                if hasattr(hardware, "camera") and hasattr(hardware.camera, "properties"):
                     # Use the JAICamera's owned properties instance
                     self.jai_props = hardware.camera.properties
                 else:
                     from microscope_control.jai.properties import JAICameraProperties
+
                     self.jai_props = JAICameraProperties(hardware.core)
             except Exception as e:
                 logger.warning(f"Could not create JAICameraProperties: {e}")
@@ -193,13 +194,11 @@ class JAINoiseMeasurement:
         stack = np.stack(analysis_frames, axis=0).astype(np.float32)
 
         if stack.ndim != 4 or stack.shape[3] < 3:
-            raise RuntimeError(
-                f"Expected RGB image stack, got shape: {stack.shape}"
-            )
+            raise RuntimeError(f"Expected RGB image stack, got shape: {stack.shape}")
 
         # Compute temporal mean and stddev per pixel, then average spatially
         temporal_mean = stack.mean(axis=0)  # (H, W, C)
-        temporal_std = stack.std(axis=0)    # (H, W, C)
+        temporal_std = stack.std(axis=0)  # (H, W, C)
 
         channel_means = {
             "red": float(temporal_mean[:, :, 0].mean()),
@@ -218,7 +217,7 @@ class JAINoiseMeasurement:
             if channel_stddevs[ch] > 0:
                 channel_snr[ch] = channel_means[ch] / channel_stddevs[ch]
             else:
-                channel_snr[ch] = float('inf')
+                channel_snr[ch] = float("inf")
 
         exposure_ms, unified_gain, analog_gains = self._get_current_settings()
 
@@ -262,8 +261,7 @@ class JAINoiseMeasurement:
 
         if image.ndim != 3 or image.shape[2] < 3:
             logger.warning(
-                f"Expected RGB image, got shape: {image.shape}. "
-                f"Returning zero noise."
+                f"Expected RGB image, got shape: {image.shape}. " f"Returning zero noise."
             )
             return {"red": 0.0, "green": 0.0, "blue": 0.0}
 

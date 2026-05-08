@@ -29,8 +29,9 @@ class PycromanagerCamera(Camera):
     scanning, etc.), subclass this and override the relevant methods.
     """
 
-    def __init__(self, core: Core, studio: Optional[Studio],
-                 detector_config: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self, core: Core, studio: Optional[Studio], detector_config: Optional[Dict[str, Any]] = None
+    ):
         """Initialize with MM Core connection and optional detector config.
 
         Args:
@@ -53,8 +54,12 @@ class PycromanagerCamera(Camera):
         self._flip_x = bool(self._detector_config.get("flip_x", False))
         self._flip_y = bool(self._detector_config.get("flip_y", False))
 
-        logger.info("Initialized PycromanagerCamera: %s (flip_x=%s, flip_y=%s)",
-                    self._name, self._flip_x, self._flip_y)
+        logger.info(
+            "Initialized PycromanagerCamera: %s (flip_x=%s, flip_y=%s)",
+            self._name,
+            self._flip_x,
+            self._flip_y,
+        )
 
     # --- Core access (for subclasses and internal use) ---
 
@@ -107,17 +112,16 @@ class PycromanagerCamera(Camera):
         # Stop any running sequence before snapping
         self._stop_streaming_before_snap()
         t_live_check = time.perf_counter()
-        logger.debug("    [TIMING] Check/stop live mode: %.1fms",
-                     (t_live_check - t_snap_start) * 1000)
+        logger.debug(
+            "    [TIMING] Check/stop live mode: %.1fms", (t_live_check - t_snap_start) * 1000
+        )
 
         # Pre-snap camera setup (subclasses override for camera-specific prep)
         self._pre_snap_setup()
 
         # Handle debayering: "auto" uses camera type detection, True forces it,
         # False suppresses it (needed for raw Bayer data in PPM workflows)
-        if debayering == "auto":
-            needs_debayer = self._should_debayer()
-        elif debayering:
+        if debayering == "auto" or debayering:
             needs_debayer = self._should_debayer()
         else:
             needs_debayer = False
@@ -128,13 +132,11 @@ class PycromanagerCamera(Camera):
         t_cam_start = time.perf_counter()
         self._core.snap_image()
         t_cam_snap = time.perf_counter()
-        logger.debug("    [TIMING] Camera snap: %.1fms",
-                     (t_cam_snap - t_cam_start) * 1000)
+        logger.debug("    [TIMING] Camera snap: %.1fms", (t_cam_snap - t_cam_start) * 1000)
 
         tagged_image = self._core.get_tagged_image()
         t_cam_transfer = time.perf_counter()
-        logger.debug("    [TIMING] Buffer transfer: %.1fms",
-                     (t_cam_transfer - t_cam_snap) * 1000)
+        logger.debug("    [TIMING] Buffer transfer: %.1fms", (t_cam_transfer - t_cam_snap) * 1000)
 
         # Parse metadata
         tags = OrderedDict(sorted(tagged_image.tags.items()))
@@ -173,8 +175,7 @@ class PycromanagerCamera(Camera):
         """Get FOV in pixels from detector config or device properties."""
         # Prefer detector config if available
         if "width_px" in self._detector_config and "height_px" in self._detector_config:
-            return (self._detector_config["width_px"],
-                    self._detector_config["height_px"])
+            return (self._detector_config["width_px"], self._detector_config["height_px"])
 
         # Fall back to device properties
         try:
@@ -199,8 +200,7 @@ class PycromanagerCamera(Camera):
         try:
             values = self._core.get_allowed_property_values(self._name, "Binning")
         except Exception as e:
-            logger.debug("Camera %s exposes no Binning allowed-values: %s",
-                         self._name, e)
+            logger.debug("Camera %s exposes no Binning allowed-values: %s", self._name, e)
             return [1]
         out: set = set()
         for v in values:
@@ -326,14 +326,22 @@ class PycromanagerCamera(Camera):
                 logger.info(
                     "Continuous acquisition started: core dims=%dx%d, "
                     "bpp=%d, nch=%d, buf_size=%d B, expected=%d B%s",
-                    w, h, bpp, nch, buf_bytes, expected_bytes,
-                    "" if buf_bytes == expected_bytes else
-                    f" [MISMATCH +{buf_bytes - expected_bytes} B]",
+                    w,
+                    h,
+                    bpp,
+                    nch,
+                    buf_bytes,
+                    expected_bytes,
+                    (
+                        ""
+                        if buf_bytes == expected_bytes
+                        else f" [MISMATCH +{buf_bytes - expected_bytes} B]"
+                    ),
                 )
             except Exception as e:
                 logger.info(
-                    "Continuous sequence acquisition started "
-                    "(geometry probe failed: %s)", e,
+                    "Continuous sequence acquisition started " "(geometry probe failed: %s)",
+                    e,
                 )
         except Exception as e:
             logger.error("Failed to start continuous acquisition: %s", e)
@@ -353,17 +361,14 @@ class PycromanagerCamera(Camera):
                 time.sleep(0.1)
                 if self._core.is_sequence_running():
                     logger.warning(
-                        "Sequence STILL running after retry -- "
-                        "attempting studio live mode off"
+                        "Sequence STILL running after retry -- " "attempting studio live mode off"
                     )
                     if self._studio is not None:
                         try:
                             self._studio.live().set_live_mode(False)
                             time.sleep(0.1)
                         except Exception as e2:
-                            logger.error(
-                                "Failed to stop via studio fallback: %s", e2
-                            )
+                            logger.error("Failed to stop via studio fallback: %s", e2)
             logger.info("Continuous sequence acquisition stopped")
         except Exception as e:
             logger.error("Failed to stop continuous acquisition: %s", e)
@@ -426,8 +431,12 @@ class PycromanagerCamera(Camera):
                             "contamination bar: trailing rows of every popped "
                             "frame contain stale content from prior frames. "
                             "Logged once per session.",
-                            width, height, tw, th,
-                            int(height) - th, int(width) - tw,
+                            width,
+                            height,
+                            tw,
+                            th,
+                            int(height) - th,
+                            int(width) - tw,
                         )
                         self._live_dim_warn_logged = True
 
@@ -443,7 +452,10 @@ class PycromanagerCamera(Camera):
                     logger.info(
                         "LIVE: first frame after start -- pixel array "
                         "nbytes=%d, dtype=%s, shape=%s, MM expected buffer=%d",
-                        actual_buf, arr.dtype, arr.shape, expected_buf,
+                        actual_buf,
+                        arr.dtype,
+                        arr.shape,
+                        expected_buf,
                     )
                 except Exception as e:
                     logger.debug("LIVE first-frame probe failed: %s", e)
@@ -461,7 +473,11 @@ class PycromanagerCamera(Camera):
                     "Skipping stale live frame: pixel count %d does not match "
                     "current dimensions %dx%dx%d (expected %d) -- likely ROI "
                     "transition race",
-                    actual, width, height, nchannels, expected,
+                    actual,
+                    width,
+                    height,
+                    nchannels,
+                    expected,
                 )
                 return None, None
 
@@ -525,7 +541,7 @@ class PycromanagerCamera(Camera):
 
         debayerx = CPUDebayer(
             pattern=pattern,
-            image_bit_clipmax=(2 ** bit_depth) - 1,
+            image_bit_clipmax=(2**bit_depth) - 1,
             image_dtype=np.uint16,
             convolution_mode="wrap",
         )
@@ -533,7 +549,7 @@ class PycromanagerCamera(Camera):
         pixels = debayerx.debayer(pixels)
         logger.debug("Before bit scaling: mean %s", pixels.mean((0, 1)))
         # Scale to 16-bit range
-        pixels = ((pixels.astype(np.float32) / ((2 ** bit_depth) - 1)) * 65535).astype(np.uint16)
+        pixels = ((pixels.astype(np.float32) / ((2**bit_depth) - 1)) * 65535).astype(np.uint16)
         pixels = np.clip(pixels, 0, 65535).astype(np.uint16)
         logger.debug("After bit scaling: mean %s", pixels.mean((0, 1)))
         return pixels
@@ -545,11 +561,11 @@ class PycromanagerCamera(Camera):
         Bayer data, then Color=ON after debayering.
         """
         if self._name == "MicroPublisher6":
-            self._core.set_property("MicroPublisher6", "Color",
-                                    "OFF" if color_off else "ON")
+            self._core.set_property("MicroPublisher6", "Color", "OFF" if color_off else "ON")
 
-    def _reorder_channels(self, pixels: np.ndarray, nchannels: int,
-                          remove_alpha: bool = True) -> np.ndarray:
+    def _reorder_channels(
+        self, pixels: np.ndarray, nchannels: int, remove_alpha: bool = True
+    ) -> np.ndarray:
         """Reorder channels from BGRA to RGB and optionally remove alpha.
 
         Args:
@@ -582,8 +598,7 @@ class PycromanagerCamera(Camera):
                     except Exception as e2:
                         logger.warning("Failed to stop live mode via studio: %s", e2)
 
-    def _process_raw_image(self, pixels, width, height, nchannels,
-                           debayering="auto"):
+    def _process_raw_image(self, pixels, width, height, nchannels, debayering="auto"):
         """Shared post-processing for raw pixel data from snap or live buffer.
 
         Handles debayering, channel reordering (BGRA->RGB), and alpha removal.
@@ -607,9 +622,7 @@ class PycromanagerCamera(Camera):
 
         # Determine debayering
         needs_debayer = False
-        if debayering == "auto":
-            needs_debayer = self._should_debayer()
-        elif debayering:
+        if debayering == "auto" or debayering:
             needs_debayer = self._should_debayer()
 
         if needs_debayer:

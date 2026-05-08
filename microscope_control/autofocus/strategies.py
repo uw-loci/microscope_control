@@ -19,6 +19,7 @@ The shim will be removed in v2.0. See
 ``microscope_imageprocessing/microscope_imageprocessing/focus/`` for
 the canonical implementations and the manifest-driven dispatcher.
 """
+
 from __future__ import annotations
 
 import warnings

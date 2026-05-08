@@ -6,7 +6,7 @@ Specialized cameras (e.g. JAI 3-CCD prism) override methods as needed.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict
 
 import numpy as np
 import logging
@@ -145,7 +145,8 @@ class Camera(ABC):
         if value != 1:
             logger.warning(
                 "set_binning(%d) ignored: %s reports no binning support",
-                value, self.get_name(),
+                value,
+                self.get_name(),
             )
 
     # --- Exposure / gain ranges (Camera Control v2 phase 2) ---
@@ -200,8 +201,9 @@ class Camera(ABC):
         if self.is_streaming():
             self.stop_continuous_acquisition()
 
-    def white_balance(self, img, background_image=None, gain=1.0,
-                      white_balance_profile=None, settings=None):
+    def white_balance(
+        self, img, background_image=None, gain=1.0, white_balance_profile=None, settings=None
+    ):
         """Apply software white balance correction to an image.
 
         Default implementation applies RGB multiplier scaling.
@@ -260,8 +262,9 @@ class Camera(ABC):
         exp = self.get_exposure()
         return {"red": exp, "green": exp, "blue": exp}
 
-    def set_channel_exposures(self, red: float, green: float, blue: float,
-                              auto_enable: bool = True) -> None:
+    def set_channel_exposures(
+        self, red: float, green: float, blue: float, auto_enable: bool = True
+    ) -> None:
         """Set independent per-channel exposure times.
 
         Default: sets unified exposure to the green channel value.

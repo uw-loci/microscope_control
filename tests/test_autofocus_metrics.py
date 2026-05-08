@@ -18,9 +18,9 @@ class TestAutofocusMetricsBasic:
         focused_score = AutofocusMetrics.variance(synthetic_focused_image)
         blurred_score = AutofocusMetrics.variance(synthetic_blurred_image)
 
-        assert focused_score > blurred_score, (
-            f"Focused variance ({focused_score:.2f}) should be > blurred ({blurred_score:.2f})"
-        )
+        assert (
+            focused_score > blurred_score
+        ), f"Focused variance ({focused_score:.2f}) should be > blurred ({blurred_score:.2f})"
 
     def test_normalized_variance_focused_vs_blurred(
         self, synthetic_focused_image, synthetic_blurred_image
@@ -76,9 +76,7 @@ class TestAutofocusMetricsBasic:
 
         assert focused_score > blurred_score
 
-    def test_vollath_f4_focused_vs_blurred(
-        self, synthetic_focused_image, synthetic_blurred_image
-    ):
+    def test_vollath_f4_focused_vs_blurred(self, synthetic_focused_image, synthetic_blurred_image):
         """Vollath F4 autocorrelation should distinguish focused from blurred images.
 
         Note: Vollath F4 can produce negative values. With synthetic test images,
@@ -94,18 +92,14 @@ class TestAutofocusMetricsBasic:
         # Verify they are different (metric is sensitive to image content)
         assert focused_score != blurred_score
 
-    def test_vollath_f5_focused_vs_blurred(
-        self, synthetic_focused_image, synthetic_blurred_image
-    ):
+    def test_vollath_f5_focused_vs_blurred(self, synthetic_focused_image, synthetic_blurred_image):
         """Vollath F5 autocorrelation should be higher for focused images."""
         focused_score = AutofocusMetrics.vollath_f5(synthetic_focused_image)
         blurred_score = AutofocusMetrics.vollath_f5(synthetic_blurred_image)
 
         assert focused_score > blurred_score
 
-    def test_entropy_focused_vs_blurred(
-        self, synthetic_focused_image, synthetic_blurred_image
-    ):
+    def test_entropy_focused_vs_blurred(self, synthetic_focused_image, synthetic_blurred_image):
         """Entropy should distinguish focused from blurred images.
 
         Note: Entropy measures pixel value distribution uniformity, not focus quality directly.
@@ -122,9 +116,7 @@ class TestAutofocusMetricsBasic:
         # Verify they are different (metric is sensitive to image content)
         assert focused_score != blurred_score
 
-    def test_dct_energy_focused_vs_blurred(
-        self, synthetic_focused_image, synthetic_blurred_image
-    ):
+    def test_dct_energy_focused_vs_blurred(self, synthetic_focused_image, synthetic_blurred_image):
         """DCT high-frequency energy should be higher for focused images."""
         focused_score = AutofocusMetrics.dct_energy(synthetic_focused_image)
         blurred_score = AutofocusMetrics.dct_energy(synthetic_blurred_image)
@@ -313,7 +305,7 @@ class TestMultiMetricAnalysis:
         try:
             result = AutofocusMetrics.multi_metric_analysis(synthetic_focused_image)
             assert isinstance(result, dict)
-            assert 'consensus_score' in result or 'metrics' in result
+            assert "consensus_score" in result or "metrics" in result
         except AttributeError:
             # multi_metric_analysis may not exist in all versions
             pytest.skip("multi_metric_analysis not available")

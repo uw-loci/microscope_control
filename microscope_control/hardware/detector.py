@@ -11,7 +11,6 @@ Reference hardware:
 """
 
 import logging
-import time
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
@@ -91,13 +90,17 @@ class PMTDetector(Detector):
         overload_value: Value to write to clear overload
     """
 
-    def __init__(self, core, device_name: str = None,
-                 connector: int = 1,
-                 max_gain_percent: float = 100.0,
-                 status_property: str = "DCC100 status",
-                 gain_property_fmt: str = "Connector{connector}GainHV_Percent",
-                 overload_property: Optional[str] = "ClearOverload",
-                 overload_value: str = "Clear"):
+    def __init__(
+        self,
+        core,
+        device_name: str = None,
+        connector: int = 1,
+        max_gain_percent: float = 100.0,
+        status_property: str = "DCC100 status",
+        gain_property_fmt: str = "Connector{connector}GainHV_Percent",
+        overload_property: Optional[str] = "ClearOverload",
+        overload_value: str = "Clear",
+    ):
         if not device_name:
             raise ValueError("device_name is required for PMTDetector")
         self._core = core
@@ -110,7 +113,9 @@ class PMTDetector(Detector):
         self._overload_value = overload_value
         logger.info(
             "Initialized PMTDetector: %s connector %d (max gain %.0f%%)",
-            device_name, connector, max_gain_percent,
+            device_name,
+            connector,
+            max_gain_percent,
         )
 
     def enable(self) -> None:
@@ -148,14 +153,12 @@ class PMTDetector(Detector):
         """
         percent = max(0.0, min(gain * 100, self._max_gain))
         self._core.set_property(self._device, self._gain_property, percent)
-        logger.debug("PMT gain set to %.1f%% (connector %d)",
-                     percent, self._connector)
+        logger.debug("PMT gain set to %.1f%% (connector %d)", percent, self._connector)
 
     def get_gain(self) -> float:
         """Get current gain as a fraction (0.0 - 1.0)."""
         try:
-            percent = float(self._core.get_property(
-                self._device, self._gain_property))
+            percent = float(self._core.get_property(self._device, self._gain_property))
             return percent / 100.0
         except Exception:
             return 0.0
@@ -172,8 +175,7 @@ class PMTDetector(Detector):
         No-op if overload_property was set to None.
         """
         if self._overload_property:
-            self._core.set_property(
-                self._device, self._overload_property, self._overload_value)
+            self._core.set_property(self._device, self._overload_property, self._overload_value)
             logger.debug("PMT overload cleared")
 
     def reset(self) -> None:
@@ -220,17 +222,21 @@ class DCUDetector(Detector):
         num_channels: Total number of channels (for disable_all_channels)
     """
 
-    def __init__(self, core, device_name: str = None,
-                 channel: int = 1,
-                 max_gain_percent: float = 100.0,
-                 channel_prefix_fmt: str = "C{channel}",
-                 enable_suffix: str = "_EnableOutputs",
-                 gain_suffix: str = "_GainHV",
-                 power_suffix: str = "_Plus12V",
-                 cooling_suffix: str = "_Cooling",
-                 cooler_voltage_suffix: str = "_CoolerVoltage",
-                 cooler_current_suffix: str = "_CoolerCurrentLimit",
-                 num_channels: int = 4):
+    def __init__(
+        self,
+        core,
+        device_name: str = None,
+        channel: int = 1,
+        max_gain_percent: float = 100.0,
+        channel_prefix_fmt: str = "C{channel}",
+        enable_suffix: str = "_EnableOutputs",
+        gain_suffix: str = "_GainHV",
+        power_suffix: str = "_Plus12V",
+        cooling_suffix: str = "_Cooling",
+        cooler_voltage_suffix: str = "_CoolerVoltage",
+        cooler_current_suffix: str = "_CoolerCurrentLimit",
+        num_channels: int = 4,
+    ):
         if not device_name:
             raise ValueError("device_name is required for DCUDetector")
         self._core = core
@@ -252,7 +258,9 @@ class DCUDetector(Detector):
         self._power_suffix = power_suffix
         logger.info(
             "Initialized DCUDetector: %s channel %d (max gain %.0f%%)",
-            device_name, channel, max_gain_percent,
+            device_name,
+            channel,
+            max_gain_percent,
         )
 
     def enable(self) -> None:
@@ -269,13 +277,11 @@ class DCUDetector(Detector):
         self._core.set_property(self._device, self._enable_prop, "Off")
         self._core.set_property(self._device, self._power_prop, "Off")
         self._core.wait_for_system()
-        logger.info("DCU channel %d disabled (%s)",
-                     self._channel, self._device)
+        logger.info("DCU channel %d disabled (%s)", self._channel, self._device)
 
     def is_enabled(self) -> bool:
         try:
-            return self._core.get_property(
-                self._device, self._enable_prop) == "On"
+            return self._core.get_property(self._device, self._enable_prop) == "On"
         except Exception:
             return False
 
@@ -283,30 +289,31 @@ class DCUDetector(Detector):
         """Set PMT high-voltage gain as a fraction (0.0-1.0)."""
         percent = max(0.0, min(gain * 100, self._max_gain))
         self._core.set_property(self._device, self._gain_prop, percent)
-        logger.debug("DCU channel %d gain set to %.1f%%",
-                     self._channel, percent)
+        logger.debug("DCU channel %d gain set to %.1f%%", self._channel, percent)
 
     def get_gain(self) -> float:
         """Get current gain as a fraction (0.0 - 1.0)."""
         try:
-            return float(self._core.get_property(
-                self._device, self._gain_prop)) / 100.0
+            return float(self._core.get_property(self._device, self._gain_prop)) / 100.0
         except Exception:
             return 0.0
 
     def get_gain_range(self) -> Tuple[float, float]:
         return (0.0, self._max_gain / 100.0)
 
-    def set_cooling(self, enabled: bool,
-                    voltage: float = 5.0,
-                    current_limit: float = 2.0) -> None:
+    def set_cooling(self, enabled: bool, voltage: float = 5.0, current_limit: float = 2.0) -> None:
         """Configure Peltier cooling for this channel."""
         self._core.set_property(self._device, self._cooler_v_prop, voltage)
         self._core.set_property(self._device, self._cooler_i_prop, current_limit)
         state = "On" if enabled else "Off"
         self._core.set_property(self._device, self._cooling_prop, state)
-        logger.debug("DCU channel %d cooling %s (%.1fV, %.1fA limit)",
-                     self._channel, state, voltage, current_limit)
+        logger.debug(
+            "DCU channel %d cooling %s (%.1fV, %.1fA limit)",
+            self._channel,
+            state,
+            voltage,
+            current_limit,
+        )
 
     def disable_all_channels(self) -> None:
         """Safety: disable outputs on ALL channels.
@@ -316,12 +323,9 @@ class DCUDetector(Detector):
         for ch in range(1, self._num_channels + 1):
             prefix = self._prefix_fmt.format(channel=ch)
             try:
-                self._core.set_property(
-                    self._device, f"{prefix}{self._enable_suffix}", "Off")
-                self._core.set_property(
-                    self._device, f"{prefix}{self._power_suffix}", "Off")
+                self._core.set_property(self._device, f"{prefix}{self._enable_suffix}", "Off")
+                self._core.set_property(self._device, f"{prefix}{self._power_suffix}", "Off")
             except Exception as e:
                 logger.warning("Could not disable channel %d: %s", ch, e)
         self._core.wait_for_system()
-        logger.info("All %d channels disabled (%s)",
-                     self._num_channels, self._device)
+        logger.info("All %d channels disabled (%s)", self._num_channels, self._device)

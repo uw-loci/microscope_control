@@ -40,7 +40,6 @@ import logging
 from microscope_control.autofocus.core import AutofocusUtils
 from microscope_control.hardware.base import Position
 
-
 # =============================================================================
 # SAFETY CONFIGURATION - CRITICAL FOR OBJECTIVE PROTECTION
 # =============================================================================
@@ -64,9 +63,9 @@ Z_ABSOLUTE_SAFETY_LIMIT_UM: float = -5550.0  # 50um buffer from config limit of 
 # Per-objective safety limits (um) - more specific limits based on working distance
 # Key: objective identifier substring, Value: most negative Z allowed
 OBJECTIVE_SAFETY_LIMITS_UM: Dict[str, float] = {
-    "10X": -5550.0,   # 10x has longest working distance
-    "20X": -5500.0,   # 20x has moderate working distance
-    "40X": -5400.0,   # 40x has shortest working distance - most conservative
+    "10X": -5550.0,  # 10x has longest working distance
+    "20X": -5500.0,  # 20x has moderate working distance
+    "40X": -5400.0,  # 40x has shortest working distance - most conservative
 }
 
 # Additional safety margin (um) to add beyond the calculated test positions
@@ -80,12 +79,14 @@ MAX_ACCEPTABLE_Z_ERROR_UM: float = 5.0
 
 class ZSafetyError(Exception):
     """Raised when a Z movement would violate safety limits."""
+
     pass
 
 
 @dataclass
 class BenchmarkResult:
     """Results from a single autofocus benchmark trial."""
+
     # Test configuration
     start_z: float
     reference_z: float
@@ -120,13 +121,14 @@ class BenchmarkResult:
 @dataclass
 class BenchmarkConfig:
     """Configuration for benchmark grid search."""
+
     # Standard autofocus parameters to test
     n_steps_values: List[int] = field(default_factory=lambda: [11, 15, 21, 25, 35])
     search_range_values: List[float] = field(default_factory=lambda: [15.0, 25.0, 35.0, 50.0])
-    interp_kind_values: List[str] = field(default_factory=lambda: ['linear', 'quadratic', 'cubic'])
-    score_metric_names: List[str] = field(default_factory=lambda: [
-        'laplacian_variance', 'sobel', 'brenner_gradient'
-    ])
+    interp_kind_values: List[str] = field(default_factory=lambda: ["linear", "quadratic", "cubic"])
+    score_metric_names: List[str] = field(
+        default_factory=lambda: ["laplacian_variance", "sobel", "brenner_gradient"]
+    )
 
     # Adaptive autofocus parameters
     adaptive_initial_step_values: List[float] = field(default_factory=lambda: [5.0, 10.0, 15.0])
@@ -162,11 +164,11 @@ class AutofocusBenchmark:
 
     # Score metric mapping
     SCORE_METRICS = {
-        'laplacian_variance': AutofocusUtils.autofocus_profile_laplacian_variance,
-        'sobel': AutofocusUtils.autofocus_profile_sobel,
-        'brenner_gradient': AutofocusUtils.autofocus_profile_brenner_gradient,
-        'robust_sharpness': AutofocusUtils.autofocus_profile_robust_sharpness_metric,
-        'hybrid_sharpness': AutofocusUtils.autofocus_profile_hybrid_sharpness_metric,
+        "laplacian_variance": AutofocusUtils.autofocus_profile_laplacian_variance,
+        "sobel": AutofocusUtils.autofocus_profile_sobel,
+        "brenner_gradient": AutofocusUtils.autofocus_profile_brenner_gradient,
+        "robust_sharpness": AutofocusUtils.autofocus_profile_robust_sharpness_metric,
+        "hybrid_sharpness": AutofocusUtils.autofocus_profile_hybrid_sharpness_metric,
     }
 
     def _get_safety_limit_for_objective(self, objective: Optional[str] = None) -> float:
@@ -190,10 +192,7 @@ class AutofocusBenchmark:
         return Z_ABSOLUTE_SAFETY_LIMIT_UM
 
     def _validate_z_safe(
-        self,
-        z_position: float,
-        objective: Optional[str] = None,
-        context: str = ""
+        self, z_position: float, objective: Optional[str] = None, context: str = ""
     ) -> bool:
         """
         Check if a Z position is safe (won't crash objective into sample).
@@ -259,9 +258,11 @@ class AutofocusBenchmark:
 
         # On upright: more negative = closer to objective
         # When testing "above" focus, we move MORE negative
-        most_extreme_z = reference_z - max_distance - (max_search_range / 2) - AUTOFOCUS_OVERSHOOT_MARGIN_UM
+        most_extreme_z = (
+            reference_z - max_distance - (max_search_range / 2) - AUTOFOCUS_OVERSHOOT_MARGIN_UM
+        )
 
-        self.logger.info(f"Safety pre-flight check:")
+        self.logger.info("Safety pre-flight check:")
         self.logger.info(f"  Reference Z: {reference_z:.2f} um")
         self.logger.info(f"  Max test distance: {max_distance:.2f} um")
         self.logger.info(f"  Max search range: {max_search_range:.2f} um")
@@ -288,7 +289,7 @@ class AutofocusBenchmark:
         xy_pos: Tuple[float, float],
         z_position: float,
         objective: Optional[str] = None,
-        context: str = ""
+        context: str = "",
     ):
         """
         Move to a Z position with safety validation.
@@ -305,12 +306,7 @@ class AutofocusBenchmark:
         self._validate_z_safe(z_position, objective, context)
         self.hardware.move_to_position(Position(xy_pos[0], xy_pos[1], z_position))
 
-    def __init__(
-        self,
-        hardware,
-        config_manager,
-        logger: Optional[logging.Logger] = None
-    ):
+    def __init__(self, hardware, config_manager, logger: Optional[logging.Logger] = None):
         """
         Initialize benchmark runner.
 
@@ -385,7 +381,9 @@ class AutofocusBenchmark:
         self.logger.info(f"XY Position: ({xy_pos[0]:.2f}, {xy_pos[1]:.2f})")
         if objective:
             self.logger.info(f"Objective: {objective}")
-            self.logger.info(f"Safety limit: {self._get_safety_limit_for_objective(objective):.2f} um")
+            self.logger.info(
+                f"Safety limit: {self._get_safety_limit_for_objective(objective):.2f} um"
+            )
         self.logger.info(f"Test distances: {config.test_distances} um")
         self.logger.info(f"Directions: {'both' if config.test_both_directions else 'below only'}")
 
@@ -396,10 +394,7 @@ class AutofocusBenchmark:
         # starting any stage movements
         max_search_range = max(config.search_range_values) if config.test_standard else 20.0
         is_safe, safety_msg = self._validate_benchmark_range_safe(
-            reference_z,
-            config.test_distances,
-            max_search_range,
-            objective
+            reference_z, config.test_distances, max_search_range, objective
         )
 
         if not is_safe:
@@ -422,22 +417,36 @@ class AutofocusBenchmark:
         test_positions = self._build_test_positions(reference_z, config)
 
         for start_z, distance, direction in test_positions:
-            self.logger.info(f"\n--- Testing from Z={start_z:.2f} um ({distance:.1f} um {direction} focus) ---")
+            self.logger.info(
+                f"\n--- Testing from Z={start_z:.2f} um ({distance:.1f} um {direction} focus) ---"
+            )
 
             # Test standard autofocus if enabled
             if config.test_standard:
                 trial_count = self._run_standard_af_grid(
-                    reference_z, start_z, distance, direction,
-                    xy_pos, config, trial_count, total_trials,
-                    progress_callback
+                    reference_z,
+                    start_z,
+                    distance,
+                    direction,
+                    xy_pos,
+                    config,
+                    trial_count,
+                    total_trials,
+                    progress_callback,
                 )
 
             # Test adaptive autofocus if enabled
             if config.test_adaptive:
                 trial_count = self._run_adaptive_af_grid(
-                    reference_z, start_z, distance, direction,
-                    xy_pos, config, trial_count, total_trials,
-                    progress_callback
+                    reference_z,
+                    start_z,
+                    distance,
+                    direction,
+                    xy_pos,
+                    config,
+                    trial_count,
+                    total_trials,
+                    progress_callback,
                 )
 
         # Return to reference Z (with safety check)
@@ -450,7 +459,7 @@ class AutofocusBenchmark:
         # Save results
         if results_dir:
             self._save_results(results_dir, config, objective, summary)
-            summary['results_directory'] = str(results_dir)
+            summary["results_directory"] = str(results_dir)
 
         self.logger.info("\n" + "=" * 60)
         self.logger.info("AUTOFOCUS BENCHMARK COMPLETED")
@@ -473,8 +482,8 @@ class AutofocusBenchmark:
         quick_config = BenchmarkConfig(
             n_steps_values=[15, 25],
             search_range_values=[25.0, 50.0],
-            interp_kind_values=['quadratic'],
-            score_metric_names=['laplacian_variance', 'brenner_gradient'],
+            interp_kind_values=["quadratic"],
+            score_metric_names=["laplacian_variance", "brenner_gradient"],
             adaptive_initial_step_values=[10.0],
             adaptive_min_step_values=[2.0],
             test_distances=[10.0, 30.0],
@@ -508,8 +517,8 @@ class AutofocusBenchmark:
         distance_config = BenchmarkConfig(
             n_steps_values=[n_steps],
             search_range_values=[search_range],
-            interp_kind_values=['quadratic'],
-            score_metric_names=['laplacian_variance'],
+            interp_kind_values=["quadratic"],
+            score_metric_names=["laplacian_variance"],
             adaptive_initial_step_values=[10.0],
             adaptive_min_step_values=[2.0],
             test_distances=distances,
@@ -532,12 +541,12 @@ class AutofocusBenchmark:
             for distance in config.test_distances:
                 valid_ranges = [r for r in config.search_range_values if r >= distance]
                 trials_for_distance = (
-                    len(config.n_steps_values) *
-                    len(valid_ranges) *
-                    len(config.interp_kind_values) *
-                    len(config.score_metric_names) *
-                    directions *
-                    config.repetitions
+                    len(config.n_steps_values)
+                    * len(valid_ranges)
+                    * len(config.interp_kind_values)
+                    * len(config.score_metric_names)
+                    * directions
+                    * config.repetitions
                 )
                 standard_trials += trials_for_distance
 
@@ -546,30 +555,28 @@ class AutofocusBenchmark:
             # Adaptive doesn't have the same range/distance constraint
             n_positions = len(config.test_distances) * directions
             adaptive_trials = (
-                len(config.adaptive_initial_step_values) *
-                len(config.adaptive_min_step_values) *
-                len(config.score_metric_names) *
-                n_positions *
-                config.repetitions
+                len(config.adaptive_initial_step_values)
+                * len(config.adaptive_min_step_values)
+                * len(config.score_metric_names)
+                * n_positions
+                * config.repetitions
             )
 
         return standard_trials + adaptive_trials
 
     def _build_test_positions(
-        self,
-        reference_z: float,
-        config: BenchmarkConfig
+        self, reference_z: float, config: BenchmarkConfig
     ) -> List[Tuple[float, float, str]]:
         """Build list of (start_z, distance, direction) tuples to test."""
         positions = []
 
         for distance in config.test_distances:
             # Test below focus (positive Z offset typically)
-            positions.append((reference_z + distance, distance, 'below'))
+            positions.append((reference_z + distance, distance, "below"))
 
             if config.test_both_directions:
                 # Test above focus
-                positions.append((reference_z - distance, distance, 'above'))
+                positions.append((reference_z - distance, distance, "above"))
 
         return positions
 
@@ -613,9 +620,16 @@ class AutofocusBenchmark:
                             )
 
                             result = self._run_single_standard_trial(
-                                reference_z, start_z, distance, direction,
-                                xy_pos, n_steps, search_range, interp_kind,
-                                metric_name, config.interp_strength
+                                reference_z,
+                                start_z,
+                                distance,
+                                direction,
+                                xy_pos,
+                                n_steps,
+                                search_range,
+                                interp_kind,
+                                metric_name,
+                                config.interp_strength,
                             )
 
                             self.results.append(result)
@@ -659,8 +673,14 @@ class AutofocusBenchmark:
                         )
 
                         result = self._run_single_adaptive_trial(
-                            reference_z, start_z, distance, direction,
-                            xy_pos, initial_step, min_step, metric_name
+                            reference_z,
+                            start_z,
+                            distance,
+                            direction,
+                            xy_pos,
+                            initial_step,
+                            min_step,
+                            metric_name,
                         )
 
                         self.results.append(result)
@@ -695,8 +715,10 @@ class AutofocusBenchmark:
         # Move to start position WITH SAFETY CHECK
         try:
             self._safe_move_to_z(
-                xy_pos, start_z, self._current_objective,
-                f"Standard AF trial: move to start Z={start_z:.2f}um"
+                xy_pos,
+                start_z,
+                self._current_objective,
+                f"Standard AF trial: move to start Z={start_z:.2f}um",
             )
         except ZSafetyError as e:
             return BenchmarkResult(
@@ -708,7 +730,7 @@ class AutofocusBenchmark:
                 search_range_um=search_range,
                 interp_kind=interp_kind,
                 score_metric_name=metric_name,
-                autofocus_method='standard',
+                autofocus_method="standard",
                 success=False,
                 final_z=start_z,
                 z_error=distance,
@@ -723,8 +745,7 @@ class AutofocusBenchmark:
 
         # Get score metric function
         score_metric = self.SCORE_METRICS.get(
-            metric_name,
-            AutofocusUtils.autofocus_profile_laplacian_variance
+            metric_name, AutofocusUtils.autofocus_profile_laplacian_variance
         )
 
         # Run autofocus with timing
@@ -746,7 +767,7 @@ class AutofocusBenchmark:
             duration_ms = (end_time - start_time) * 1000
 
             # Check if autofocus returned failure dict
-            if isinstance(result_z, dict) and not result_z.get('success', True):
+            if isinstance(result_z, dict) and not result_z.get("success", True):
                 return BenchmarkResult(
                     start_z=start_z,
                     reference_z=reference_z,
@@ -756,16 +777,16 @@ class AutofocusBenchmark:
                     search_range_um=search_range,
                     interp_kind=interp_kind,
                     score_metric_name=metric_name,
-                    autofocus_method='standard',
+                    autofocus_method="standard",
                     success=False,
-                    final_z=result_z.get('attempted_z', start_z),
-                    z_error=abs(result_z.get('attempted_z', start_z) - reference_z),
+                    final_z=result_z.get("attempted_z", start_z),
+                    z_error=abs(result_z.get("attempted_z", start_z) - reference_z),
                     duration_ms=duration_ms,
                     peak_valid=False,
-                    quality_score=result_z.get('quality_score', 0.0),
-                    peak_prominence=result_z.get('peak_prominence', 0.0),
-                    symmetry_score=result_z.get('validation', {}).get('symmetry_score', 0.0),
-                    message=result_z.get('message', 'Autofocus failed'),
+                    quality_score=result_z.get("quality_score", 0.0),
+                    peak_prominence=result_z.get("peak_prominence", 0.0),
+                    symmetry_score=result_z.get("validation", {}).get("symmetry_score", 0.0),
+                    message=result_z.get("message", "Autofocus failed"),
                 )
 
             # Success case - but validate that we actually found the true focus
@@ -784,14 +805,18 @@ class AutofocusBenchmark:
             target_reachable = abs(start_z - reference_z) <= search_half
 
             if not target_reachable:
-                message = (f"WARNING: Reference Z not reachable! Start={start_z:.2f}, "
-                          f"Reference={reference_z:.2f}, Search range=+/-{search_half:.1f}um. "
-                          f"Found local peak at Z={final_z:.2f}um, error={z_error:.2f}um")
+                message = (
+                    f"WARNING: Reference Z not reachable! Start={start_z:.2f}, "
+                    f"Reference={reference_z:.2f}, Search range=+/-{search_half:.1f}um. "
+                    f"Found local peak at Z={final_z:.2f}um, error={z_error:.2f}um"
+                )
             elif is_accurate:
                 message = f"Focus found at Z={final_z:.2f}um, error={z_error:.2f}um"
             else:
-                message = (f"Peak found but inaccurate: Z={final_z:.2f}um, "
-                          f"error={z_error:.2f}um > {MAX_ACCEPTABLE_Z_ERROR_UM}um threshold")
+                message = (
+                    f"Peak found but inaccurate: Z={final_z:.2f}um, "
+                    f"error={z_error:.2f}um > {MAX_ACCEPTABLE_Z_ERROR_UM}um threshold"
+                )
 
             return BenchmarkResult(
                 start_z=start_z,
@@ -802,7 +827,7 @@ class AutofocusBenchmark:
                 search_range_um=search_range,
                 interp_kind=interp_kind,
                 score_metric_name=metric_name,
-                autofocus_method='standard',
+                autofocus_method="standard",
                 success=is_accurate,  # Only true if within error threshold
                 final_z=final_z,
                 z_error=z_error,
@@ -827,7 +852,7 @@ class AutofocusBenchmark:
                 search_range_um=search_range,
                 interp_kind=interp_kind,
                 score_metric_name=metric_name,
-                autofocus_method='standard',
+                autofocus_method="standard",
                 success=False,
                 final_z=start_z,
                 z_error=distance,
@@ -855,8 +880,10 @@ class AutofocusBenchmark:
         # Move to start position WITH SAFETY CHECK
         try:
             self._safe_move_to_z(
-                xy_pos, start_z, self._current_objective,
-                f"Adaptive AF trial: move to start Z={start_z:.2f}um"
+                xy_pos,
+                start_z,
+                self._current_objective,
+                f"Adaptive AF trial: move to start Z={start_z:.2f}um",
             )
         except ZSafetyError as e:
             return BenchmarkResult(
@@ -866,9 +893,9 @@ class AutofocusBenchmark:
                 direction=direction,
                 n_steps=0,
                 search_range_um=initial_step * 2,
-                interp_kind='quadratic',
+                interp_kind="quadratic",
                 score_metric_name=metric_name,
-                autofocus_method='adaptive',
+                autofocus_method="adaptive",
                 success=False,
                 final_z=start_z,
                 z_error=distance,
@@ -883,8 +910,7 @@ class AutofocusBenchmark:
 
         # Get score metric function
         score_metric = self.SCORE_METRICS.get(
-            metric_name,
-            AutofocusUtils.autofocus_profile_laplacian_variance
+            metric_name, AutofocusUtils.autofocus_profile_laplacian_variance
         )
 
         # Run sweep drift check with timing
@@ -909,8 +935,10 @@ class AutofocusBenchmark:
             if is_accurate:
                 message = f"Adaptive focus at Z={final_z:.2f}um, error={z_error:.2f}um"
             else:
-                message = (f"Adaptive found peak but inaccurate: Z={final_z:.2f}um, "
-                          f"error={z_error:.2f}um > {MAX_ACCEPTABLE_Z_ERROR_UM}um threshold")
+                message = (
+                    f"Adaptive found peak but inaccurate: Z={final_z:.2f}um, "
+                    f"error={z_error:.2f}um > {MAX_ACCEPTABLE_Z_ERROR_UM}um threshold"
+                )
 
             return BenchmarkResult(
                 start_z=start_z,
@@ -919,9 +947,9 @@ class AutofocusBenchmark:
                 direction=direction,
                 n_steps=0,  # Adaptive doesn't use fixed n_steps
                 search_range_um=initial_step * 2,  # Approximate
-                interp_kind='quadratic',  # Adaptive uses quadratic
+                interp_kind="quadratic",  # Adaptive uses quadratic
                 score_metric_name=metric_name,
-                autofocus_method='adaptive',
+                autofocus_method="adaptive",
                 success=is_accurate,  # Only true if within error threshold
                 final_z=final_z,
                 z_error=z_error,
@@ -944,9 +972,9 @@ class AutofocusBenchmark:
                 direction=direction,
                 n_steps=0,
                 search_range_um=initial_step * 2,
-                interp_kind='quadratic',
+                interp_kind="quadratic",
                 score_metric_name=metric_name,
-                autofocus_method='adaptive',
+                autofocus_method="adaptive",
                 success=False,
                 final_z=start_z,
                 z_error=distance,
@@ -968,9 +996,7 @@ class AutofocusBenchmark:
         )
 
     def _generate_summary(
-        self,
-        config: BenchmarkConfig,
-        objective: Optional[str]
+        self, config: BenchmarkConfig, objective: Optional[str]
     ) -> Dict[str, Any]:
         """Generate summary statistics from benchmark results."""
 
@@ -982,7 +1008,9 @@ class AutofocusBenchmark:
         failed = [r for r in self.results if not r.success]
 
         summary = {
-            "benchmark_time": self.benchmark_start_time.isoformat() if self.benchmark_start_time else None,
+            "benchmark_time": (
+                self.benchmark_start_time.isoformat() if self.benchmark_start_time else None
+            ),
             "objective": objective,
             "total_trials": len(self.results),
             "successful_trials": len(successful),
@@ -1013,7 +1041,7 @@ class AutofocusBenchmark:
         # Best configurations by speed (for successful trials)
         if successful:
             # Best for standard AF
-            standard_results = [r for r in successful if r.autofocus_method == 'standard']
+            standard_results = [r for r in successful if r.autofocus_method == "standard"]
             if standard_results:
                 fastest_standard = min(standard_results, key=lambda r: r.duration_ms)
                 summary["fastest_standard"] = {
@@ -1039,7 +1067,7 @@ class AutofocusBenchmark:
                 }
 
             # Best for adaptive AF
-            adaptive_results = [r for r in successful if r.autofocus_method == 'adaptive']
+            adaptive_results = [r for r in successful if r.autofocus_method == "adaptive"]
             if adaptive_results:
                 fastest_adaptive = min(adaptive_results, key=lambda r: r.duration_ms)
                 summary["fastest_adaptive"] = {
@@ -1056,7 +1084,8 @@ class AutofocusBenchmark:
             dist_results = [r for r in successful if r.distance_from_focus == distance]
             if dist_results:
                 summary["by_distance"][f"{distance:.1f}um"] = {
-                    "success_rate": len(dist_results) / len([r for r in self.results if r.distance_from_focus == distance]),
+                    "success_rate": len(dist_results)
+                    / len([r for r in self.results if r.distance_from_focus == distance]),
                     "mean_duration_ms": np.mean([r.duration_ms for r in dist_results]),
                     "mean_z_error_um": np.mean([r.z_error for r in dist_results]),
                 }
@@ -1067,7 +1096,8 @@ class AutofocusBenchmark:
             metric_results = [r for r in successful if r.score_metric_name == metric]
             if metric_results:
                 summary["by_metric"][metric] = {
-                    "success_rate": len(metric_results) / len([r for r in self.results if r.score_metric_name == metric]),
+                    "success_rate": len(metric_results)
+                    / len([r for r in self.results if r.score_metric_name == metric]),
                     "mean_duration_ms": np.mean([r.duration_ms for r in metric_results]),
                     "mean_z_error_um": np.mean([r.z_error for r in metric_results]),
                 }
@@ -1081,13 +1111,17 @@ class AutofocusBenchmark:
         summary["comparative_analysis"] = {}
 
         # Standard autofocus comparisons
-        standard_results = [r for r in successful if r.autofocus_method == 'standard']
+        standard_results = [r for r in successful if r.autofocus_method == "standard"]
         if standard_results:
             # Compare n_steps values
             summary["comparative_analysis"]["by_n_steps"] = {}
             for n_steps in set(r.n_steps for r in standard_results):
                 n_step_results = [r for r in standard_results if r.n_steps == n_steps]
-                all_n_step = [r for r in self.results if r.autofocus_method == 'standard' and r.n_steps == n_steps]
+                all_n_step = [
+                    r
+                    for r in self.results
+                    if r.autofocus_method == "standard" and r.n_steps == n_steps
+                ]
                 if n_step_results:
                     summary["comparative_analysis"]["by_n_steps"][str(n_steps)] = {
                         "trials": len(all_n_step),
@@ -1102,7 +1136,11 @@ class AutofocusBenchmark:
             summary["comparative_analysis"]["by_search_range"] = {}
             for search_range in set(r.search_range_um for r in standard_results):
                 range_results = [r for r in standard_results if r.search_range_um == search_range]
-                all_range = [r for r in self.results if r.autofocus_method == 'standard' and r.search_range_um == search_range]
+                all_range = [
+                    r
+                    for r in self.results
+                    if r.autofocus_method == "standard" and r.search_range_um == search_range
+                ]
                 if range_results:
                     summary["comparative_analysis"]["by_search_range"][f"{search_range:.1f}um"] = {
                         "trials": len(all_range),
@@ -1117,7 +1155,11 @@ class AutofocusBenchmark:
             summary["comparative_analysis"]["by_interp_kind"] = {}
             for interp_kind in set(r.interp_kind for r in standard_results):
                 interp_results = [r for r in standard_results if r.interp_kind == interp_kind]
-                all_interp = [r for r in self.results if r.autofocus_method == 'standard' and r.interp_kind == interp_kind]
+                all_interp = [
+                    r
+                    for r in self.results
+                    if r.autofocus_method == "standard" and r.interp_kind == interp_kind
+                ]
                 if interp_results:
                     summary["comparative_analysis"]["by_interp_kind"][interp_kind] = {
                         "trials": len(all_interp),
@@ -1129,14 +1171,21 @@ class AutofocusBenchmark:
                     }
 
         # Adaptive autofocus comparisons
-        adaptive_results = [r for r in successful if r.autofocus_method == 'adaptive']
+        adaptive_results = [r for r in successful if r.autofocus_method == "adaptive"]
         if adaptive_results:
             # Compare initial_step values (stored as search_range_um / 2)
             summary["comparative_analysis"]["by_initial_step"] = {}
             initial_steps = set(r.search_range_um / 2 for r in adaptive_results)
             for initial_step in initial_steps:
-                step_results = [r for r in adaptive_results if abs(r.search_range_um / 2 - initial_step) < 0.1]
-                all_step = [r for r in self.results if r.autofocus_method == 'adaptive' and abs(r.search_range_um / 2 - initial_step) < 0.1]
+                step_results = [
+                    r for r in adaptive_results if abs(r.search_range_um / 2 - initial_step) < 0.1
+                ]
+                all_step = [
+                    r
+                    for r in self.results
+                    if r.autofocus_method == "adaptive"
+                    and abs(r.search_range_um / 2 - initial_step) < 0.1
+                ]
                 if step_results:
                     summary["comparative_analysis"]["by_initial_step"][f"{initial_step:.1f}um"] = {
                         "trials": len(all_step),
@@ -1150,35 +1199,44 @@ class AutofocusBenchmark:
         # Generate rankings for quick reference
         if standard_results:
             summary["rankings"] = {
-                "fastest_metric": self._rank_by_field(summary["by_metric"], "mean_duration_ms", ascending=True),
-                "most_accurate_metric": self._rank_by_field(summary["by_metric"], "mean_z_error_um", ascending=True),
+                "fastest_metric": self._rank_by_field(
+                    summary["by_metric"], "mean_duration_ms", ascending=True
+                ),
+                "most_accurate_metric": self._rank_by_field(
+                    summary["by_metric"], "mean_z_error_um", ascending=True
+                ),
                 "fastest_n_steps": self._rank_by_field(
-                    summary["comparative_analysis"].get("by_n_steps", {}), "mean_duration_ms", ascending=True
+                    summary["comparative_analysis"].get("by_n_steps", {}),
+                    "mean_duration_ms",
+                    ascending=True,
                 ),
                 "most_accurate_n_steps": self._rank_by_field(
-                    summary["comparative_analysis"].get("by_n_steps", {}), "mean_z_error_um", ascending=True
+                    summary["comparative_analysis"].get("by_n_steps", {}),
+                    "mean_z_error_um",
+                    ascending=True,
                 ),
                 "fastest_interp": self._rank_by_field(
-                    summary["comparative_analysis"].get("by_interp_kind", {}), "mean_duration_ms", ascending=True
+                    summary["comparative_analysis"].get("by_interp_kind", {}),
+                    "mean_duration_ms",
+                    ascending=True,
                 ),
                 "most_accurate_interp": self._rank_by_field(
-                    summary["comparative_analysis"].get("by_interp_kind", {}), "mean_z_error_um", ascending=True
+                    summary["comparative_analysis"].get("by_interp_kind", {}),
+                    "mean_z_error_um",
+                    ascending=True,
                 ),
             }
 
         return summary
 
     def _rank_by_field(
-        self,
-        data: Dict[str, Dict[str, Any]],
-        field: str,
-        ascending: bool = True
+        self, data: Dict[str, Dict[str, Any]], field: str, ascending: bool = True
     ) -> List[str]:
         """Rank keys in data dict by a specific field value."""
         if not data:
             return []
 
-        items = [(key, vals.get(field, float('inf'))) for key, vals in data.items()]
+        items = [(key, vals.get(field, float("inf"))) for key, vals in data.items()]
         items.sort(key=lambda x: x[1], reverse=not ascending)
         return [item[0] for item in items]
 
@@ -1187,38 +1245,38 @@ class AutofocusBenchmark:
         results_dir: Path,
         config: BenchmarkConfig,
         objective: Optional[str],
-        summary: Dict[str, Any]
+        summary: Dict[str, Any],
     ):
         """Save benchmark results to files."""
 
         # Save detailed CSV with all trials
         csv_path = results_dir / "benchmark_results.csv"
-        with open(csv_path, 'w', newline='') as f:
+        with open(csv_path, "w", newline="") as f:
             if self.results:
                 fieldnames = list(asdict(self.results[0]).keys())
                 # Remove large fields from CSV
-                fieldnames = [f for f in fieldnames if f not in ['raw_scores', 'z_positions']]
+                fieldnames = [f for f in fieldnames if f not in ["raw_scores", "z_positions"]]
 
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 for result in self.results:
                     row = asdict(result)
-                    row.pop('raw_scores', None)
-                    row.pop('z_positions', None)
+                    row.pop("raw_scores", None)
+                    row.pop("z_positions", None)
                     writer.writerow(row)
 
         self.logger.info(f"Detailed results saved: {csv_path}")
 
         # Save summary JSON
         json_path = results_dir / "benchmark_summary.json"
-        with open(json_path, 'w') as f:
+        with open(json_path, "w") as f:
             json.dump(summary, f, indent=2, default=str)
 
         self.logger.info(f"Summary saved: {json_path}")
 
         # Save config
         config_path = results_dir / "benchmark_config.json"
-        with open(config_path, 'w') as f:
+        with open(config_path, "w") as f:
             json.dump(asdict(config), f, indent=2)
 
         self.logger.info(f"Config saved: {config_path}")
@@ -1231,26 +1289,38 @@ class AutofocusBenchmark:
 
         if "timing_stats" in summary:
             ts = summary["timing_stats"]
-            self.logger.info(f"Duration: {ts['mean_duration_ms']:.0f}ms mean, "
-                           f"{ts['min_duration_ms']:.0f}-{ts['max_duration_ms']:.0f}ms range")
+            self.logger.info(
+                f"Duration: {ts['mean_duration_ms']:.0f}ms mean, "
+                f"{ts['min_duration_ms']:.0f}-{ts['max_duration_ms']:.0f}ms range"
+            )
 
         if "accuracy_stats" in summary:
             acc = summary["accuracy_stats"]
-            self.logger.info(f"Z error: {acc['mean_z_error_um']:.2f}um mean, "
-                           f"{acc['min_z_error_um']:.2f}-{acc['max_z_error_um']:.2f}um range")
+            self.logger.info(
+                f"Z error: {acc['mean_z_error_um']:.2f}um mean, "
+                f"{acc['min_z_error_um']:.2f}-{acc['max_z_error_um']:.2f}um range"
+            )
 
         if "fastest_standard" in summary:
             fs = summary["fastest_standard"]
-            self.logger.info(f"\nFastest standard config:")
-            self.logger.info(f"  n_steps={fs['n_steps']}, range={fs['search_range_um']}um, "
-                           f"metric={fs['score_metric']}")
-            self.logger.info(f"  Duration: {fs['duration_ms']:.0f}ms, Error: {fs['z_error_um']:.2f}um")
+            self.logger.info("\nFastest standard config:")
+            self.logger.info(
+                f"  n_steps={fs['n_steps']}, range={fs['search_range_um']}um, "
+                f"metric={fs['score_metric']}"
+            )
+            self.logger.info(
+                f"  Duration: {fs['duration_ms']:.0f}ms, Error: {fs['z_error_um']:.2f}um"
+            )
 
         if "fastest_adaptive" in summary:
             fa = summary["fastest_adaptive"]
-            self.logger.info(f"\nFastest adaptive config:")
-            self.logger.info(f"  initial_step={fa['initial_step_um']}um, metric={fa['score_metric']}")
-            self.logger.info(f"  Duration: {fa['duration_ms']:.0f}ms, Error: {fa['z_error_um']:.2f}um")
+            self.logger.info("\nFastest adaptive config:")
+            self.logger.info(
+                f"  initial_step={fa['initial_step_um']}um, metric={fa['score_metric']}"
+            )
+            self.logger.info(
+                f"  Duration: {fa['duration_ms']:.0f}ms, Error: {fa['z_error_um']:.2f}um"
+            )
 
 
 def run_autofocus_benchmark_from_server(
@@ -1291,8 +1361,8 @@ def run_autofocus_benchmark_from_server(
             quick_config = BenchmarkConfig(
                 n_steps_values=[15, 25],
                 search_range_values=[25.0, 50.0],
-                interp_kind_values=['quadratic'],
-                score_metric_names=['laplacian_variance', 'brenner_gradient'],
+                interp_kind_values=["quadratic"],
+                score_metric_names=["laplacian_variance", "brenner_gradient"],
                 adaptive_initial_step_values=[10.0],
                 adaptive_min_step_values=[2.0],
                 test_distances=[10.0, 30.0],
@@ -1300,20 +1370,20 @@ def run_autofocus_benchmark_from_server(
                 repetitions=1,
             )
             return benchmark.run_benchmark(
-                reference_z, quick_config, output_folder,
-                progress_callback=progress_callback
+                reference_z, quick_config, output_folder, progress_callback=progress_callback
             )
 
         if test_distances:
             config = BenchmarkConfig(test_distances=test_distances)
             return benchmark.run_benchmark(
-                reference_z, config, output_folder, objective,
-                progress_callback=progress_callback
+                reference_z, config, output_folder, objective, progress_callback=progress_callback
             )
 
         return benchmark.run_benchmark(
-            reference_z, output_path=output_folder, objective=objective,
-            progress_callback=progress_callback
+            reference_z,
+            output_path=output_folder,
+            objective=objective,
+            progress_callback=progress_callback,
         )
 
     except ZSafetyError as e:

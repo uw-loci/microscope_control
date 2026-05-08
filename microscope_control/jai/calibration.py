@@ -55,26 +55,26 @@ logger = logging.getLogger(__name__)
 # Quality presets for noise-aware calibration
 # Each preset defines tradeoffs between speed, noise, and signal quality
 QUALITY_PRESETS = {
-    'fast': {
-        'max_exposure_ms': 50.0,
-        'max_noise_stddev': 8.0,
-        'min_snr': 15.0,
-        'unified_gain_mode': 'fixed',
-        'base_gain': 5.0,
+    "fast": {
+        "max_exposure_ms": 50.0,
+        "max_noise_stddev": 8.0,
+        "min_snr": 15.0,
+        "unified_gain_mode": "fixed",
+        "base_gain": 5.0,
     },
-    'balanced': {
-        'max_exposure_ms': 200.0,
-        'max_noise_stddev': 5.0,
-        'min_snr': 25.0,
-        'unified_gain_mode': 'auto',
-        'base_gain': 3.0,
+    "balanced": {
+        "max_exposure_ms": 200.0,
+        "max_noise_stddev": 5.0,
+        "min_snr": 25.0,
+        "unified_gain_mode": "auto",
+        "base_gain": 3.0,
     },
-    'quality': {
-        'max_exposure_ms': 500.0,
-        'max_noise_stddev': 3.0,
-        'min_snr': 40.0,
-        'unified_gain_mode': 'auto',
-        'base_gain': 1.0,
+    "quality": {
+        "max_exposure_ms": 500.0,
+        "max_noise_stddev": 3.0,
+        "min_snr": 40.0,
+        "unified_gain_mode": "auto",
+        "base_gain": 1.0,
     },
 }
 
@@ -103,7 +103,7 @@ def linear_to_db(linear: float) -> float:
         Gain in decibels (e.g., 1.41 -> 3 dB, 2.0 -> 6 dB)
     """
     if linear <= 0:
-        return float('-inf')
+        return float("-inf")
     return 20.0 * np.log10(linear)
 
 
@@ -237,12 +237,12 @@ class CalibrationConfig:
     # - 'fixed': Use base_gain value directly
     # - 'minimize_noise': Prioritize lowest gain even if exposure is longer
     # - 'minimize_exposure': Prioritize higher gain to reduce exposure time
-    unified_gain_mode: str = 'auto'
+    unified_gain_mode: str = "auto"
 
     # Quality mode preset: 'fast', 'balanced', or 'quality'
     # When set to a valid preset name, overrides individual noise parameters
     # Set to None or empty string to use individual parameter values
-    quality_mode: str = ''
+    quality_mode: str = ""
 
     # Whether to run noise verification at end of calibration
     verify_noise: bool = True
@@ -350,7 +350,7 @@ class JAIWhiteBalanceCalibrator:
         self.hardware = hardware
         if jai_props is not None:
             self.jai_props = jai_props
-        elif hasattr(hardware, 'camera') and hasattr(hardware.camera, 'properties'):
+        elif hasattr(hardware, "camera") and hasattr(hardware.camera, "properties"):
             # Use the JAICamera's owned properties instance
             self.jai_props = hardware.camera.properties
         else:
@@ -465,14 +465,14 @@ class JAIWhiteBalanceCalibrator:
             analog_red = 1.0
             analog_blue = 1.0
 
-            if config.unified_gain_mode in ('auto', 'minimize_noise', 'minimize_exposure'):
+            if config.unified_gain_mode in ("auto", "minimize_noise", "minimize_exposure"):
                 # Noise-aware gain selection - test light levels first
                 unified_gain = self._select_optimal_unified_gain(config, target)
             else:
                 # Fixed mode - use base_gain directly
                 unified_gain = max(
                     JAICameraProperties.GAIN_UNIFIED_RANGE[0],
-                    min(config.base_gain, JAICameraProperties.GAIN_UNIFIED_RANGE[1])
+                    min(config.base_gain, JAICameraProperties.GAIN_UNIFIED_RANGE[1]),
                 )
 
             logger.info(
@@ -519,49 +519,47 @@ class JAIWhiteBalanceCalibrator:
                 sat_threshold = config.saturation_threshold * (65535 / 255)
 
             saturated_channels = [
-                ch for ch in ["red", "green", "blue"]
-                if means[ch] >= sat_threshold
+                ch for ch in ["red", "green", "blue"] if means[ch] >= sat_threshold
             ]
 
             if saturated_channels:
                 logger.warning(
                     "Phase 0: Scene too bright -- channels %s saturated "
                     "(mean >= %.0f). Running de-saturation.",
-                    saturated_channels, sat_threshold
+                    saturated_channels,
+                    sat_threshold,
                 )
                 for desat_iter in range(1, config.max_desaturation_iterations + 1):
                     # Halve ALL channel exposures together to preserve ratios
                     for channel in ["red", "green", "blue"]:
-                        exposures[channel] = max(
-                            config.min_exposure_ms,
-                            exposures[channel] / 2.0
-                        )
+                        exposures[channel] = max(config.min_exposure_ms, exposures[channel] / 2.0)
 
                     self.jai_props.set_channel_exposures(**exposures, auto_enable=False)
                     time.sleep(0.1)
                     means, _ = self._capture_and_analyze()
 
                     saturated_channels = [
-                        ch for ch in ["red", "green", "blue"]
-                        if means[ch] >= sat_threshold
+                        ch for ch in ["red", "green", "blue"] if means[ch] >= sat_threshold
                     ]
 
                     logger.info(
-                        "Phase 0 iter %d: R=%.1f (%.3fms), G=%.1f (%.3fms), "
-                        "B=%.1f (%.3fms)%s",
+                        "Phase 0 iter %d: R=%.1f (%.3fms), G=%.1f (%.3fms), " "B=%.1f (%.3fms)%s",
                         desat_iter,
-                        means["red"], exposures["red"],
-                        means["green"], exposures["green"],
-                        means["blue"], exposures["blue"],
-                        "" if not saturated_channels
-                        else " -- still saturated: %s" % saturated_channels
+                        means["red"],
+                        exposures["red"],
+                        means["green"],
+                        exposures["green"],
+                        means["blue"],
+                        exposures["blue"],
+                        (
+                            ""
+                            if not saturated_channels
+                            else " -- still saturated: %s" % saturated_channels
+                        ),
                     )
 
                     if not saturated_channels:
-                        logger.info(
-                            "Phase 0 complete: de-saturated in %d halving(s)",
-                            desat_iter
-                        )
+                        logger.info("Phase 0 complete: de-saturated in %d halving(s)", desat_iter)
                         break
 
                     # Check if we hit the exposure floor
@@ -572,8 +570,7 @@ class JAIWhiteBalanceCalibrator:
                     if all_at_floor:
                         raise RuntimeError(
                             "Scene too bright even at minimum exposure "
-                            "(%.3fms). Reduce lamp/illumination intensity."
-                            % config.min_exposure_ms
+                            "(%.3fms). Reduce lamp/illumination intensity." % config.min_exposure_ms
                         )
                 else:
                     # Exhausted max_desaturation_iterations without de-saturating
@@ -581,7 +578,8 @@ class JAIWhiteBalanceCalibrator:
                         "Phase 0: reached max de-saturation iterations (%d) "
                         "with channels still saturated: %s. "
                         "Proceeding to Phase 1 (may converge slowly).",
-                        config.max_desaturation_iterations, saturated_channels
+                        config.max_desaturation_iterations,
+                        saturated_channels,
                     )
 
             # Initial exposure estimation
@@ -596,9 +594,13 @@ class JAIWhiteBalanceCalibrator:
             # Log initial state
             converged_flags = self._check_convergence(means, target, config.coarse_tolerance)
             self._convergence_log.add_iteration(
-                0, means, exposures, gains_log, converged_flags,
+                0,
+                means,
+                exposures,
+                gains_log,
+                converged_flags,
                 "Initial capture (Phase 1)",
-                unified_gain=unified_gain
+                unified_gain=unified_gain,
             )
 
             # ==================== PHASE 1: Coarse exposure balancing ====================
@@ -619,9 +621,7 @@ class JAIWhiteBalanceCalibrator:
                 means, _ = self._capture_and_analyze()
 
                 # Phase 1 uses coarse_tolerance
-                converged_flags = self._check_convergence(
-                    means, target, config.coarse_tolerance
-                )
+                converged_flags = self._check_convergence(means, target, config.coarse_tolerance)
                 all_converged = all(converged_flags.values())
 
                 deviations = {ch: abs(means[ch] - target) for ch in ["red", "green", "blue"]}
@@ -629,8 +629,13 @@ class JAIWhiteBalanceCalibrator:
 
                 notes = "P1:Converged" if all_converged else f"P1:max_dev={max_deviation:.1f}"
                 self._convergence_log.add_iteration(
-                    iteration, means, exposures, gains_log, converged_flags, notes,
-                    unified_gain=unified_gain
+                    iteration,
+                    means,
+                    exposures,
+                    gains_log,
+                    converged_flags,
+                    notes,
+                    unified_gain=unified_gain,
                 )
 
                 logger.debug(
@@ -669,11 +674,8 @@ class JAIWhiteBalanceCalibrator:
                         means, exposures, unified_gain, config, target
                     )
 
-                    exposures, unified_gain, ceiling_extended = (
-                        self._handle_stuck_at_ceiling(
-                            means, exposures,
-                            config, target, unified_gain
-                        )
+                    exposures, unified_gain, ceiling_extended = self._handle_stuck_at_ceiling(
+                        means, exposures, config, target, unified_gain
                     )
 
                     # Early termination: detect truly stuck at hardware limits
@@ -863,8 +865,13 @@ class JAIWhiteBalanceCalibrator:
                 gains_log = {"red": analog_red, "green": 1.0, "blue": analog_blue}
                 notes = f"P2:{'Converged' if all_converged else f'max_dev={max_deviation:.1f}'}"
                 self._convergence_log.add_iteration(
-                    phase1_iterations + p2_iter, means, exposures, gains_log,
-                    converged_flags, notes, unified_gain=unified_gain
+                    phase1_iterations + p2_iter,
+                    means,
+                    exposures,
+                    gains_log,
+                    converged_flags,
+                    notes,
+                    unified_gain=unified_gain,
                 )
 
                 if all_converged:
@@ -912,7 +919,9 @@ class JAIWhiteBalanceCalibrator:
                     f"| max_dev={max_deviation:.1f} (final +/-{config.tolerance})"
                 )
 
-            total_iterations = phase1_iterations + p2_iter if 'p2_iter' in dir() else phase1_iterations
+            total_iterations = (
+                phase1_iterations + p2_iter if "p2_iter" in dir() else phase1_iterations
+            )
 
             # Final validation
             if converged_means is not None:
@@ -924,7 +933,9 @@ class JAIWhiteBalanceCalibrator:
                 final_converged = self._check_convergence(final_means, target, config.tolerance)
                 all_converged = all(final_converged.values())
 
-            final_deviations = {ch: abs(final_means[ch] - target) for ch in ["red", "green", "blue"]}
+            final_deviations = {
+                ch: abs(final_means[ch] - target) for ch in ["red", "green", "blue"]
+            }
             max_final_deviation = max(final_deviations.values())
 
             if all_converged:
@@ -962,6 +973,7 @@ class JAIWhiteBalanceCalibrator:
             if config.noise_frames > 0:
                 try:
                     from microscope_control.jai.noise import JAINoiseMeasurement
+
                     noise_meter = JAINoiseMeasurement(self.hardware, self.jai_props)
                     noise_stats = noise_meter.measure_noise(
                         num_frames=config.noise_frames, settle_frames=1
@@ -1175,7 +1187,7 @@ class JAIWhiteBalanceCalibrator:
         Returns:
             Selected unified gain value (1.0-8.0)
         """
-        if config.unified_gain_mode == 'fixed':
+        if config.unified_gain_mode == "fixed":
             logger.debug(f"Using fixed unified gain: {config.base_gain}")
             return config.base_gain
 
@@ -1192,14 +1204,15 @@ class JAIWhiteBalanceCalibrator:
         try:
             self.jai_props.set_unified_gain(test_gain)
             self.jai_props.set_channel_exposures(
-                red=test_exposure, green=test_exposure, blue=test_exposure,
-                auto_enable=True
+                red=test_exposure, green=test_exposure, blue=test_exposure, auto_enable=True
             )
             time.sleep(0.2)  # Allow settings to take effect
 
             means, _ = self._capture_and_analyze()
         except Exception as e:
-            logger.warning(f"Failed to test at minimum gain: {e}. Using base_gain={config.base_gain}")
+            logger.warning(
+                f"Failed to test at minimum gain: {e}. Using base_gain={config.base_gain}"
+            )
             # Restore saved exposures before returning
             try:
                 self.jai_props.set_channel_exposures(**saved_exposures)
@@ -1226,7 +1239,7 @@ class JAIWhiteBalanceCalibrator:
 
         # Select gain based on required signal boost
         # These thresholds are derived from noise characterization data
-        if config.unified_gain_mode == 'minimize_noise':
+        if config.unified_gain_mode == "minimize_noise":
             # Prioritize lowest gain - accept longer exposures
             if required_factor <= 2.0:
                 selected_gain = 1.0
@@ -1238,7 +1251,7 @@ class JAIWhiteBalanceCalibrator:
                 # Very dark - use higher gain but still conservative
                 selected_gain = min(required_factor / 3, 6.0)
 
-        elif config.unified_gain_mode == 'minimize_exposure':
+        elif config.unified_gain_mode == "minimize_exposure":
             # Prioritize shorter exposures - accept more noise
             if required_factor <= 1.2:
                 selected_gain = 1.0
@@ -1303,18 +1316,15 @@ class JAIWhiteBalanceCalibrator:
             from microscope_control.jai.noise import JAINoiseMeasurement
 
             noise_meter = JAINoiseMeasurement(self.hardware, self.jai_props)
-            stats = noise_meter.measure_noise(
-                num_frames=config.noise_frames,
-                settle_frames=1
-            )
+            stats = noise_meter.measure_noise(num_frames=config.noise_frames, settle_frames=1)
         except Exception as e:
             logger.warning(f"Noise verification failed to measure noise: {e}")
-            return False, {'error': str(e)}
+            return False, {"error": str(e)}
 
         passes = True
         channel_results = {}
 
-        for channel in ['red', 'green', 'blue']:
+        for channel in ["red", "green", "blue"]:
             stddev = stats.channel_stddevs.get(channel, 0.0)
             snr = stats.channel_snr.get(channel, 0.0)
 
@@ -1322,26 +1332,26 @@ class JAIWhiteBalanceCalibrator:
             snr_ok = snr >= config.min_snr
 
             channel_results[channel] = {
-                'stddev': stddev,
-                'snr': snr,
-                'stddev_ok': stddev_ok,
-                'snr_ok': snr_ok,
-                'passes': stddev_ok and snr_ok,
+                "stddev": stddev,
+                "snr": snr,
+                "stddev_ok": stddev_ok,
+                "snr_ok": snr_ok,
+                "passes": stddev_ok and snr_ok,
             }
 
             if not (stddev_ok and snr_ok):
                 passes = False
 
         result = {
-            'passes': passes,
-            'channel_stddevs': stats.channel_stddevs,
-            'channel_snr': stats.channel_snr,
-            'channel_means': stats.channel_means,
-            'thresholds': {
-                'max_noise_stddev': config.max_noise_stddev,
-                'min_snr': config.min_snr,
+            "passes": passes,
+            "channel_stddevs": stats.channel_stddevs,
+            "channel_snr": stats.channel_snr,
+            "channel_means": stats.channel_means,
+            "thresholds": {
+                "max_noise_stddev": config.max_noise_stddev,
+                "min_snr": config.min_snr,
             },
-            'per_channel': channel_results,
+            "per_channel": channel_results,
         }
 
         if passes:
@@ -1354,16 +1364,14 @@ class JAIWhiteBalanceCalibrator:
         else:
             failures = []
             for ch, info in channel_results.items():
-                if not info['passes']:
+                if not info["passes"]:
                     issues = []
-                    if not info['stddev_ok']:
+                    if not info["stddev_ok"]:
                         issues.append(f"stddev={info['stddev']:.2f}>{config.max_noise_stddev}")
-                    if not info['snr_ok']:
+                    if not info["snr_ok"]:
                         issues.append(f"SNR={info['snr']:.1f}<{config.min_snr}")
                     failures.append(f"{ch}({', '.join(issues)})")
-            logger.warning(
-                f"Noise verification FAILED: {', '.join(failures)}"
-            )
+            logger.warning(f"Noise verification FAILED: {', '.join(failures)}")
 
         return passes, result
 
@@ -1384,11 +1392,11 @@ class JAIWhiteBalanceCalibrator:
         logger.info(f"Applying quality preset: {config.quality_mode}")
 
         # Apply preset values - these override individual settings
-        config.max_exposure_ms = preset.get('max_exposure_ms', config.max_exposure_ms)
-        config.max_noise_stddev = preset.get('max_noise_stddev', config.max_noise_stddev)
-        config.min_snr = preset.get('min_snr', config.min_snr)
-        config.unified_gain_mode = preset.get('unified_gain_mode', config.unified_gain_mode)
-        config.base_gain = preset.get('base_gain', config.base_gain)
+        config.max_exposure_ms = preset.get("max_exposure_ms", config.max_exposure_ms)
+        config.max_noise_stddev = preset.get("max_noise_stddev", config.max_noise_stddev)
+        config.min_snr = preset.get("min_snr", config.min_snr)
+        config.unified_gain_mode = preset.get("unified_gain_mode", config.unified_gain_mode)
+        config.base_gain = preset.get("base_gain", config.base_gain)
 
         logger.debug(
             f"Preset values: max_exp={config.max_exposure_ms}ms, "
@@ -1452,9 +1460,7 @@ class JAIWhiteBalanceCalibrator:
         # Proportionally reduce ALL channel exposures
         new_exposures = {}
         for ch in ["red", "green", "blue"]:
-            new_exposures[ch] = self._clamp_exposure(
-                exposures[ch] / actual_factor, config
-            )
+            new_exposures[ch] = self._clamp_exposure(exposures[ch] / actual_factor, config)
 
         # Apply to hardware
         try:
@@ -1589,6 +1595,7 @@ class JAIWhiteBalanceCalibrator:
                 verification_path = diagnostics_folder / "white_balance_verification.tif"
                 try:
                     import tifffile
+
                     tifffile.imwrite(str(verification_path), img)
                 except ImportError:
                     # Fallback to numpy save if tifffile not available
@@ -1620,7 +1627,9 @@ class JAIWhiteBalanceCalibrator:
 
         # Generate histogram plot if matplotlib is available
         try:
-            self._save_histogram_plot(result, config, diagnostics_folder / "intensity_histograms.png")
+            self._save_histogram_plot(
+                result, config, diagnostics_folder / "intensity_histograms.png"
+            )
         except Exception as e:
             logger.warning(f"Failed to generate histogram plot: {e}")
 
@@ -1650,7 +1659,8 @@ class JAIWhiteBalanceCalibrator:
         """Generate histogram visualization."""
         # Use non-interactive backend to avoid Tkinter threading issues
         import matplotlib
-        matplotlib.use('Agg')
+
+        matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
         fig, axes = plt.subplots(2, 3, figsize=(12, 8))
@@ -1701,9 +1711,13 @@ class JAIWhiteBalanceCalibrator:
             stats_line = "   |   ".join(stats_parts)
 
             fig.text(
-                0.5, 0.01, stats_line, ha='center', fontsize=10,
-                color='red' if any_saturated else 'black',
-                fontweight='bold' if any_saturated else 'normal',
+                0.5,
+                0.01,
+                stats_line,
+                ha="center",
+                fontsize=10,
+                color="red" if any_saturated else "black",
+                fontweight="bold" if any_saturated else "normal",
             )
 
         plt.tight_layout(rect=[0, 0.04, 1, 1])  # Leave space at bottom for text
@@ -1928,13 +1942,22 @@ class JAIWhiteBalanceCalibrator:
                             "%s/%s/%s/%s. Expected exposures=%s gains=%s; "
                             "found exposures=%s gains=%s. Recalibrate -- the "
                             "values dialog reported are NOT what is on disk.",
-                            modality, objective, detector, angle_name,
-                            expected_exp, expected_gain, written_exp, written_gain,
+                            modality,
+                            objective,
+                            detector,
+                            angle_name,
+                            expected_exp,
+                            expected_gain,
+                            written_exp,
+                            written_gain,
                         )
                     else:
                         logger.info(
                             "WB calibration read-back OK for %s/%s/%s/%s",
-                            modality, objective, detector, angle_name,
+                            modality,
+                            objective,
+                            detector,
+                            angle_name,
                         )
                 except Exception as verify_ex:
                     logger.warning(
@@ -2082,7 +2105,9 @@ class JAIWhiteBalanceCalibrator:
         logger.info(
             "Starting Simple WB calibration (per-channel exposure, "
             "target=%.1f, tolerance=%.1f, initial_exp=%.2fms)",
-            target, tolerance, initial_exposure_ms
+            target,
+            tolerance,
+            initial_exposure_ms,
         )
 
         # Build config from parameters
@@ -2104,7 +2129,7 @@ class JAIWhiteBalanceCalibrator:
         config = CalibrationConfig(**config_kwargs)
 
         # Stop live mode if running
-        if hasattr(self.hardware, 'camera'):
+        if hasattr(self.hardware, "camera"):
             self.hardware.camera.stop_if_streaming()
         elif self.hardware.core.is_sequence_running():
             if self.hardware.studio is not None:
@@ -2131,9 +2156,13 @@ class JAIWhiteBalanceCalibrator:
         logger.info(
             "Simple WB calibration complete: R=%.2fms, G=%.2fms, B=%.2fms, "
             "unified_gain=%.2f, analog_R=%.3f, analog_B=%.3f, converged=%s",
-            result.exposures_ms["red"], result.exposures_ms["green"],
-            result.exposures_ms["blue"], result.unified_gain,
-            result.analog_red, result.analog_blue, result.converged,
+            result.exposures_ms["red"],
+            result.exposures_ms["green"],
+            result.exposures_ms["blue"],
+            result.unified_gain,
+            result.analog_red,
+            result.analog_blue,
+            result.converged,
         )
 
         return result
@@ -2192,7 +2221,7 @@ class JAIWhiteBalanceCalibrator:
         )
 
         # Stop live mode if running - camera properties cannot be changed during live streaming
-        if hasattr(self.hardware, 'camera'):
+        if hasattr(self.hardware, "camera"):
             self.hardware.camera.stop_if_streaming()
         elif self.hardware.core.is_sequence_running():
             if self.hardware.studio is not None:
@@ -2261,9 +2290,7 @@ class JAIWhiteBalanceCalibrator:
                     logger.warning(f"Failed to rotate PPM to {angle} deg: {e}")
 
             # Set initial exposure
-            self.jai_props.set_channel_exposures(
-                red=exposure, green=exposure, blue=exposure
-            )
+            self.jai_props.set_channel_exposures(red=exposure, green=exposure, blue=exposure)
 
             # Determine output path for this angle
             angle_output = None

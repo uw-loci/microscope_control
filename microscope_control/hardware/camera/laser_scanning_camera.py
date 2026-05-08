@@ -42,8 +42,9 @@ class LaserScanningCamera(PycromanagerCamera):
     abstraction. This class handles only the scan engine and image readout.
     """
 
-    def __init__(self, core: Core, studio: Optional[Studio],
-                 detector_config: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self, core: Core, studio: Optional[Studio], detector_config: Optional[Dict[str, Any]] = None
+    ):
         super().__init__(core, studio, detector_config)
 
         cfg = self._detector_config or {}
@@ -53,16 +54,15 @@ class LaserScanningCamera(PycromanagerCamera):
         self._pixel_rate_property = cfg.get("pixel_rate_property", "LSM-PixelRateHz")
 
         # Valid values (configurable per hardware)
-        self._valid_resolutions: List[int] = cfg.get(
-            "valid_resolutions", [256, 512, 1024, 2048]
-        )
+        self._valid_resolutions: List[int] = cfg.get("valid_resolutions", [256, 512, 1024, 2048])
 
         # Base pixel size at minimum resolution -- must come from config
         self._base_pixel_size_um = cfg.get("base_pixel_size_um")
         if self._base_pixel_size_um is None:
             logger.warning(
                 "base_pixel_size_um not set in detector config for %s. "
-                "Pixel size calculations will be incorrect.", self._name,
+                "Pixel size calculations will be incorrect.",
+                self._name,
             )
             self._base_pixel_size_um = 1.0  # safe fallback, obviously wrong
 
@@ -72,10 +72,11 @@ class LaserScanningCamera(PycromanagerCamera):
         # Current resolution (read from device)
         self._resolution = self._read_resolution()
         logger.info(
-            "Initialized LaserScanningCamera: %s (resolution=%d, "
-            "res_prop=%s, rate_prop=%s)",
-            self._name, self._resolution,
-            self._resolution_property, self._pixel_rate_property,
+            "Initialized LaserScanningCamera: %s (resolution=%d, " "res_prop=%s, rate_prop=%s)",
+            self._name,
+            self._resolution,
+            self._resolution_property,
+            self._pixel_rate_property,
         )
 
     # --- Resolution control ---
@@ -92,8 +93,7 @@ class LaserScanningCamera(PycromanagerCamera):
         """
         if resolution not in self._valid_resolutions:
             raise ValueError(
-                f"Invalid resolution {resolution}. "
-                f"Valid values: {self._valid_resolutions}"
+                f"Invalid resolution {resolution}. " f"Valid values: {self._valid_resolutions}"
             )
         self._core.set_property(self._name, self._resolution_property, resolution)
         self._core.wait_for_device(self._name)
@@ -149,6 +149,7 @@ class LaserScanningCamera(PycromanagerCamera):
         self._core.snap_image()
         tagged_image = self._core.get_tagged_image()
         from collections import OrderedDict
+
         tags = OrderedDict(sorted(tagged_image.tags.items()))
 
         pixels = tagged_image.pix

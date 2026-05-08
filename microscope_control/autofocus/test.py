@@ -15,11 +15,11 @@ autofocus settings interactively during microscope setup.
 
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend for server use
+
+matplotlib.use("Agg")  # Non-interactive backend for server use
 import matplotlib.pyplot as plt
 from pathlib import Path
 import scipy.interpolate
-import skimage.filters
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 import logging
@@ -85,12 +85,14 @@ def test_standard_autofocus_at_current_position(
         # Get current position
         initial_pos = hardware.get_current_position()
         result["initial_z"] = initial_pos.z
-        logger.info(f"  Initial position: X={initial_pos.x:.2f}, Y={initial_pos.y:.2f}, Z={initial_pos.z:.2f}")
+        logger.info(
+            f"  Initial position: X={initial_pos.x:.2f}, Y={initial_pos.y:.2f}, Z={initial_pos.z:.2f}"
+        )
 
         # Load autofocus settings
         af_settings = _load_autofocus_settings(yaml_file_path, objective, logger)
 
-        logger.info(f"  Autofocus settings:")
+        logger.info("  Autofocus settings:")
         logger.info(f"    n_steps: {af_settings['n_steps']}")
         logger.info(f"    search_range: {af_settings['search_range']} um (centered on current Z)")
         logger.info(f"    interp_strength: {af_settings['interp_strength']}")
@@ -101,11 +103,11 @@ def test_standard_autofocus_at_current_position(
         logger.info("  Calling hardware.autofocus() with config settings...")
 
         final_z = hardware.autofocus(
-            n_steps=af_settings['n_steps'],
-            search_range=af_settings['search_range'],
-            interp_strength=af_settings['interp_strength'],
-            interp_kind=af_settings['interp_kind'],
-            score_metric=af_settings['score_metric'],
+            n_steps=af_settings["n_steps"],
+            search_range=af_settings["search_range"],
+            interp_strength=af_settings["interp_strength"],
+            interp_kind=af_settings["interp_kind"],
+            score_metric=af_settings["score_metric"],
             pop_a_plot=False,
             move_stage_to_estimate=True,
             raise_on_invalid_peak=False,  # Always generate diagnostics for test
@@ -114,7 +116,7 @@ def test_standard_autofocus_at_current_position(
         result["final_z"] = final_z
         result["z_shift"] = final_z - initial_pos.z
 
-        logger.info(f"  Standard autofocus completed:")
+        logger.info("  Standard autofocus completed:")
         logger.info(f"    Final Z: {final_z:.2f} um")
         logger.info(f"    Z shift: {result['z_shift']:.2f} um")
 
@@ -133,18 +135,26 @@ def test_standard_autofocus_at_current_position(
             if not validation["is_valid"]:
                 logger.error("  *** AUTOFOCUS FAILED: Invalid focus peak detected ***")
                 logger.error(f"  {validation['message']}")
-                logger.error("  RECOMMENDATION: Check focus manually or increase autofocus search range")
+                logger.error(
+                    "  RECOMMENDATION: Check focus manually or increase autofocus search range"
+                )
                 result["success"] = False
-                result["message"] = f"Autofocus failed: {validation['message']}. Check focus manually or increase search range."
+                result["message"] = (
+                    f"Autofocus failed: {validation['message']}. Check focus manually or increase search range."
+                )
             else:
-                result["message"] = f"Standard autofocus completed. Z shift: {result['z_shift']:.2f} um."
+                result["message"] = (
+                    f"Standard autofocus completed. Z shift: {result['z_shift']:.2f} um."
+                )
                 result["success"] = True
 
         except Exception as e:
             logger.warning(f"Failed to generate diagnostic plot: {e}")
             result["plot_path"] = "None"
             # Still mark as success if autofocus itself worked, just plotting failed
-            result["message"] = f"Standard autofocus completed. Z shift: {result['z_shift']:.2f} um."
+            result["message"] = (
+                f"Standard autofocus completed. Z shift: {result['z_shift']:.2f} um."
+            )
             result["success"] = True
 
         logger.info("=== STANDARD AUTOFOCUS TEST COMPLETED ===")
@@ -219,21 +229,23 @@ def test_adaptive_autofocus_at_current_position(
         # Get current position
         initial_pos = hardware.get_current_position()
         result["initial_z"] = initial_pos.z
-        logger.info(f"  Initial position: X={initial_pos.x:.2f}, Y={initial_pos.y:.2f}, Z={initial_pos.z:.2f}")
+        logger.info(
+            f"  Initial position: X={initial_pos.x:.2f}, Y={initial_pos.y:.2f}, Z={initial_pos.z:.2f}"
+        )
 
         # Load autofocus settings
         af_settings = _load_autofocus_settings(yaml_file_path, objective, logger)
 
         # Get sweep parameters (with legacy fallback)
-        sweep_range = af_settings.get('sweep_range_um', 10.0)
-        sweep_n_steps = af_settings.get('sweep_n_steps', 6)
-        score_metric = af_settings.get('score_metric_name', 'normalized_variance')
+        sweep_range = af_settings.get("sweep_range_um", 10.0)
+        sweep_n_steps = af_settings.get("sweep_n_steps", 6)
+        score_metric = af_settings.get("score_metric_name", "normalized_variance")
 
         # Legacy support: old adaptive_initial_step_um -> sweep_range_um
-        if 'sweep_range_um' not in af_settings and 'adaptive_initial_step_um' in af_settings:
-            sweep_range = af_settings['adaptive_initial_step_um'] * 2
+        if "sweep_range_um" not in af_settings and "adaptive_initial_step_um" in af_settings:
+            sweep_range = af_settings["adaptive_initial_step_um"] * 2
 
-        logger.info(f"  Sweep drift check settings:")
+        logger.info("  Sweep drift check settings:")
         logger.info(f"    sweep_range_um: {sweep_range} um")
         logger.info(f"    sweep_n_steps: {sweep_n_steps}")
         logger.info(f"    score_metric: {score_metric}")
@@ -250,7 +262,7 @@ def test_adaptive_autofocus_at_current_position(
         result["final_z"] = final_z
         result["z_shift"] = final_z - initial_pos.z
 
-        logger.info(f"  Sweep drift check completed:")
+        logger.info("  Sweep drift check completed:")
         logger.info(f"    Final Z: {final_z:.2f} um")
         logger.info(f"    Z shift: {result['z_shift']:.2f} um")
 
@@ -343,9 +355,9 @@ def test_autofocus_validation(
         # === PHASE 1: Sweep drift check from focus ===
         logger.info("--- Phase 1: Sweep drift check from focus ---")
 
-        sweep_range = af_settings.get('sweep_range_um', 10.0)
-        sweep_n_steps = af_settings.get('sweep_n_steps', 6)
-        score_metric_name = af_settings.get('score_metric_name', 'normalized_variance')
+        sweep_range = af_settings.get("sweep_range_um", 10.0)
+        sweep_n_steps = af_settings.get("sweep_n_steps", 6)
+        score_metric_name = af_settings.get("score_metric_name", "normalized_variance")
 
         logger.info(f"  sweep_range_um: {sweep_range}")
         logger.info(f"  sweep_n_steps: {sweep_n_steps}")
@@ -366,7 +378,7 @@ def test_autofocus_validation(
         # === PHASE 2: Recovery from defocus ===
         logger.info("--- Phase 2: Full autofocus recovery from defocus ---")
 
-        search_range = af_settings.get('search_range', 50.0)
+        search_range = af_settings.get("search_range", 50.0)
         defocus_distance = search_range * 0.8
 
         result["defocus_distance_um"] = f"{defocus_distance:.1f}"
@@ -375,15 +387,17 @@ def test_autofocus_validation(
         defocus_z = ground_truth_z + defocus_distance
         hardware.core.set_position(defocus_z)
         hardware.core.wait_for_device(hardware.core.get_focus_device())
-        logger.info(f"  Moved to defocus position: {defocus_z:.2f} (+{defocus_distance:.1f} um from ground truth)")
+        logger.info(
+            f"  Moved to defocus position: {defocus_z:.2f} (+{defocus_distance:.1f} um from ground truth)"
+        )
 
         # Run standard autofocus from defocused position
         recovery_result = hardware.autofocus(
-            n_steps=af_settings['n_steps'],
+            n_steps=af_settings["n_steps"],
             search_range=search_range,
-            interp_strength=af_settings.get('interp_strength', 100),
-            interp_kind=af_settings.get('interp_kind', 'quadratic'),
-            score_metric=af_settings['score_metric'],
+            interp_strength=af_settings.get("interp_strength", 100),
+            interp_kind=af_settings.get("interp_kind", "quadratic"),
+            score_metric=af_settings["score_metric"],
             pop_a_plot=False,
             move_stage_to_estimate=True,
             raise_on_invalid_peak=False,  # Don't raise -- we want to report the result
@@ -401,7 +415,9 @@ def test_autofocus_validation(
             recovery_delta = abs(recovery_z_value - ground_truth_z)
             result["recovery_z"] = f"{recovery_z_value:.2f}"
             result["recovery_delta_um"] = f"{recovery_delta:.2f}"
-            logger.info(f"  Recovery result: Z={recovery_z_value:.2f}, delta={recovery_delta:.2f} um")
+            logger.info(
+                f"  Recovery result: Z={recovery_z_value:.2f}, delta={recovery_delta:.2f} um"
+            )
 
         # Mark overall success (both phases completed without exception)
         result["success"] = True
@@ -427,7 +443,9 @@ def test_autofocus_validation(
     return result
 
 
-def _generate_diagnostic_scan_plot(hardware, center_z, af_settings, output_path, logger, test_type="standard"):
+def _generate_diagnostic_scan_plot(
+    hardware, center_z, af_settings, output_path, logger, test_type="standard"
+):
     """
     Generate a diagnostic plot by scanning around the center_z position.
 
@@ -447,14 +465,16 @@ def _generate_diagnostic_scan_plot(hardware, center_z, af_settings, output_path,
     from datetime import datetime
 
     # Do a diagnostic scan centered on the final Z
-    scan_range = af_settings['search_range']
-    n_steps = af_settings['n_steps']
-    score_metric = af_settings['score_metric']
+    scan_range = af_settings["search_range"]
+    n_steps = af_settings["n_steps"]
+    score_metric = af_settings["score_metric"]
 
     # Generate Z positions centered on final result
-    z_positions = np.linspace(center_z - scan_range/2, center_z + scan_range/2, n_steps)
+    z_positions = np.linspace(center_z - scan_range / 2, center_z + scan_range / 2, n_steps)
 
-    logger.info(f"  Scanning {n_steps} positions from {z_positions[0]:.2f} to {z_positions[-1]:.2f} um")
+    logger.info(
+        f"  Scanning {n_steps} positions from {z_positions[0]:.2f} to {z_positions[-1]:.2f} um"
+    )
 
     scores = []
     for i, z in enumerate(z_positions):
@@ -474,7 +494,7 @@ def _generate_diagnostic_scan_plot(hardware, center_z, af_settings, output_path,
             img_gray = ((green1 + green2) / 2.0).astype(np.float32)
 
         score = score_metric(img_gray)
-        if hasattr(score, 'ndim') and score.ndim == 2:
+        if hasattr(score, "ndim") and score.ndim == 2:
             score = np.mean(score)
         scores.append(float(score))
 
@@ -489,9 +509,9 @@ def _generate_diagnostic_scan_plot(hardware, center_z, af_settings, output_path,
     logger.info(f"    Has descending trend: {validation['has_descending']}")
     logger.info(f"    Symmetry score: {validation['symmetry_score']:.2f}")
 
-    if not validation['is_valid']:
+    if not validation["is_valid"]:
         logger.warning("  *** AUTOFOCUS PEAK QUALITY CHECK FAILED ***")
-        for warning in validation['warnings']:
+        for warning in validation["warnings"]:
             logger.warning(f"    - {warning}")
 
     # Find peak in the diagnostic scan
@@ -500,8 +520,12 @@ def _generate_diagnostic_scan_plot(hardware, center_z, af_settings, output_path,
 
     # CRITICAL: Move to the peak position found in diagnostic scan
     # The scan leaves us at the last Z position, need to move to actual focus peak
-    logger.info(f"  Diagnostic scan peak found at Z={peak_z:.2f} um (autofocus result was {center_z:.2f} um)")
-    focused_pos = Position(hardware.get_current_position().x, hardware.get_current_position().y, peak_z)
+    logger.info(
+        f"  Diagnostic scan peak found at Z={peak_z:.2f} um (autofocus result was {center_z:.2f} um)"
+    )
+    focused_pos = Position(
+        hardware.get_current_position().x, hardware.get_current_position().y, peak_z
+    )
     hardware.move_to_position(focused_pos)
 
     # Generate plot and CSV with timestamp
@@ -514,36 +538,37 @@ def _generate_diagnostic_scan_plot(hardware, center_z, af_settings, output_path,
     # Save CSV with all diagnostic data
     try:
         import csv
-        with open(csv_path, 'w', newline='') as csvfile:
+
+        with open(csv_path, "w", newline="") as csvfile:
             writer = csv.writer(csvfile)
 
             # Write header with validation results
-            writer.writerow(['# Autofocus Diagnostic Data'])
-            writer.writerow(['# Timestamp', timestamp])
-            writer.writerow(['# Test Type', test_type])
-            writer.writerow(['# Metric', af_settings['score_metric_name']])
-            writer.writerow(['# Autofocus Result Z', f'{center_z:.2f}'])
-            writer.writerow(['# Scan Peak Z', f'{peak_z:.2f}'])
-            writer.writerow(['#'])
-            writer.writerow(['# VALIDATION RESULTS'])
-            writer.writerow(['# Status', 'VALID' if validation['is_valid'] else 'INVALID'])
-            writer.writerow(['# Quality Score', f"{validation['quality_score']:.3f}"])
-            writer.writerow(['# Peak Prominence', f"{validation['peak_prominence']:.3f}"])
-            writer.writerow(['# Has Ascending', validation['has_ascending']])
-            writer.writerow(['# Has Descending', validation['has_descending']])
-            writer.writerow(['# Symmetry Score', f"{validation['symmetry_score']:.3f}"])
-            writer.writerow(['# Message', validation['message']])
-            if validation['warnings']:
-                for warning in validation['warnings']:
-                    writer.writerow(['# Warning', warning])
-            writer.writerow(['#'])
+            writer.writerow(["# Autofocus Diagnostic Data"])
+            writer.writerow(["# Timestamp", timestamp])
+            writer.writerow(["# Test Type", test_type])
+            writer.writerow(["# Metric", af_settings["score_metric_name"]])
+            writer.writerow(["# Autofocus Result Z", f"{center_z:.2f}"])
+            writer.writerow(["# Scan Peak Z", f"{peak_z:.2f}"])
+            writer.writerow(["#"])
+            writer.writerow(["# VALIDATION RESULTS"])
+            writer.writerow(["# Status", "VALID" if validation["is_valid"] else "INVALID"])
+            writer.writerow(["# Quality Score", f"{validation['quality_score']:.3f}"])
+            writer.writerow(["# Peak Prominence", f"{validation['peak_prominence']:.3f}"])
+            writer.writerow(["# Has Ascending", validation["has_ascending"]])
+            writer.writerow(["# Has Descending", validation["has_descending"]])
+            writer.writerow(["# Symmetry Score", f"{validation['symmetry_score']:.3f}"])
+            writer.writerow(["# Message", validation["message"]])
+            if validation["warnings"]:
+                for warning in validation["warnings"]:
+                    writer.writerow(["# Warning", warning])
+            writer.writerow(["#"])
 
             # Write data header
-            writer.writerow(['Z_Position_um', 'Focus_Score'])
+            writer.writerow(["Z_Position_um", "Focus_Score"])
 
             # Write data
             for z, score in zip(z_positions, scores):
-                writer.writerow([f'{z:.2f}', f'{score:.4f}'])
+                writer.writerow([f"{z:.2f}", f"{score:.4f}"])
 
         logger.info(f"  CSV data saved: {csv_path}")
     except Exception as e:
@@ -553,45 +578,76 @@ def _generate_diagnostic_scan_plot(hardware, center_z, af_settings, output_path,
         fig, ax = plt.subplots(1, 1, figsize=(10, 6))
 
         # Plot focus curve
-        ax.plot(z_positions, scores, 'o-', markersize=6, linewidth=2, color='steelblue', label='Focus scores')
-        ax.axvline(center_z, color='red', linestyle='--', linewidth=2, label=f'Autofocus result ({center_z:.2f} um)')
+        ax.plot(
+            z_positions,
+            scores,
+            "o-",
+            markersize=6,
+            linewidth=2,
+            color="steelblue",
+            label="Focus scores",
+        )
+        ax.axvline(
+            center_z,
+            color="red",
+            linestyle="--",
+            linewidth=2,
+            label=f"Autofocus result ({center_z:.2f} um)",
+        )
 
         # Plot the peak we found and moved to (calculated earlier)
-        ax.axvline(peak_z, color='green', linestyle=':', linewidth=1.5, label=f'Scan peak ({peak_z:.2f} um)')
+        ax.axvline(
+            peak_z,
+            color="green",
+            linestyle=":",
+            linewidth=1.5,
+            label=f"Scan peak ({peak_z:.2f} um)",
+        )
 
-        ax.set_xlabel('Z Position (um)', fontsize=11)
-        ax.set_ylabel('Focus Score', fontsize=11)
+        ax.set_xlabel("Z Position (um)", fontsize=11)
+        ax.set_ylabel("Focus Score", fontsize=11)
 
         # Add validation status to title
-        validation_status = "VALID" if validation['is_valid'] else "INVALID"
-        title_color = 'green' if validation['is_valid'] else 'red'
-        ax.set_title(f'{test_type.capitalize()} Autofocus Test - Diagnostic Scan\n' +
-                    f'Metric: {af_settings["score_metric_name"]} | Peak: {validation_status}',
-                    fontsize=12, fontweight='bold', color=title_color)
+        validation_status = "VALID" if validation["is_valid"] else "INVALID"
+        title_color = "green" if validation["is_valid"] else "red"
+        ax.set_title(
+            f"{test_type.capitalize()} Autofocus Test - Diagnostic Scan\n"
+            + f'Metric: {af_settings["score_metric_name"]} | Peak: {validation_status}',
+            fontsize=12,
+            fontweight="bold",
+            color=title_color,
+        )
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
 
         # Add text summary with validation info
-        textstr = f'Autofocus result: {center_z:.2f} um\n'
-        textstr += f'Scan peak: {peak_z:.2f} um\n'
-        textstr += f'Difference: {abs(center_z - peak_z):.2f} um\n'
-        textstr += f'Score at result: {scores[np.argmin(np.abs(z_positions - center_z))]:.2f}\n'
-        textstr += f'Score at peak: {scores[peak_idx]:.2f}\n\n'
-        textstr += f'PEAK VALIDATION:\n'
-        textstr += f'  Status: {validation_status}\n'
+        textstr = f"Autofocus result: {center_z:.2f} um\n"
+        textstr += f"Scan peak: {peak_z:.2f} um\n"
+        textstr += f"Difference: {abs(center_z - peak_z):.2f} um\n"
+        textstr += f"Score at result: {scores[np.argmin(np.abs(z_positions - center_z))]:.2f}\n"
+        textstr += f"Score at peak: {scores[peak_idx]:.2f}\n\n"
+        textstr += "PEAK VALIDATION:\n"
+        textstr += f"  Status: {validation_status}\n"
         textstr += f'  Quality: {validation["quality_score"]:.2f}\n'
         textstr += f'  Prominence: {validation["peak_prominence"]:.2f}\n'
         textstr += f'  Ascending: {validation["has_ascending"]}\n'
         textstr += f'  Descending: {validation["has_descending"]}\n'
         textstr += f'  Symmetry: {validation["symmetry_score"]:.2f}'
 
-        box_color = 'lightgreen' if validation['is_valid'] else 'lightcoral'
-        props = dict(boxstyle='round', facecolor=box_color, alpha=0.5)
-        ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=9,
-                verticalalignment='top', bbox=props)
+        box_color = "lightgreen" if validation["is_valid"] else "lightcoral"
+        props = dict(boxstyle="round", facecolor=box_color, alpha=0.5)
+        ax.text(
+            0.02,
+            0.98,
+            textstr,
+            transform=ax.transAxes,
+            fontsize=9,
+            verticalalignment="top",
+            bbox=props,
+        )
 
         plt.tight_layout()
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
 
         logger.info(f"  Plot saved: {plot_path}")
@@ -661,12 +717,14 @@ def test_autofocus_at_current_position(
         # Get current position
         initial_pos = hardware.get_current_position()
         result["initial_z"] = initial_pos.z
-        logger.info(f"  Initial position: X={initial_pos.x:.2f}, Y={initial_pos.y:.2f}, Z={initial_pos.z:.2f}")
+        logger.info(
+            f"  Initial position: X={initial_pos.x:.2f}, Y={initial_pos.y:.2f}, Z={initial_pos.z:.2f}"
+        )
 
         # Load autofocus settings for this objective
         af_settings = _load_autofocus_settings(yaml_file_path, objective, logger)
 
-        logger.info(f"  Autofocus settings:")
+        logger.info("  Autofocus settings:")
         logger.info(f"    n_steps: {af_settings['n_steps']}")
         logger.info(f"    search_range: {af_settings['search_range']} um")
         logger.info(f"    interp_strength: {af_settings['interp_strength']}")
@@ -675,10 +733,7 @@ def test_autofocus_at_current_position(
 
         # Perform autofocus with detailed logging
         z_positions, scores, metrics_data = _detailed_autofocus_scan(
-            hardware,
-            initial_pos,
-            af_settings,
-            logger
+            hardware, initial_pos, af_settings, logger
         )
 
         # Find best focus from raw scores
@@ -689,19 +744,22 @@ def test_autofocus_at_current_position(
         result["raw_best_z"] = raw_best_z
         result["raw_scores"] = list(zip(z_positions, scores))
 
-        logger.info(f"  Raw scores analysis:")
-        logger.info(f"    Best Z (no interpolation): {raw_best_z:.2f} um (score={raw_best_score:.2f})")
+        logger.info("  Raw scores analysis:")
+        logger.info(
+            f"    Best Z (no interpolation): {raw_best_z:.2f} um (score={raw_best_score:.2f})"
+        )
         logger.info(f"    Mean score: {np.mean(scores):.2f}")
         logger.info(f"    Std score: {np.std(scores):.2f}")
         logger.info(f"    Score range: {np.min(scores):.2f} - {np.max(scores):.2f}")
 
         # Perform interpolation
-        interp_x = np.linspace(z_positions[0], z_positions[-1],
-                              af_settings['n_steps'] * af_settings['interp_strength'])
+        interp_x = np.linspace(
+            z_positions[0], z_positions[-1], af_settings["n_steps"] * af_settings["interp_strength"]
+        )
 
         try:
             interp_y = scipy.interpolate.interp1d(
-                z_positions, scores, kind=af_settings['interp_kind']
+                z_positions, scores, kind=af_settings["interp_kind"]
             )(interp_x)
 
             interp_best_idx = np.argmax(interp_y)
@@ -710,15 +768,19 @@ def test_autofocus_at_current_position(
 
             result["interp_best_z"] = interp_best_z
 
-            logger.info(f"  Interpolated scores analysis:")
-            logger.info(f"    Best Z (interpolated): {interp_best_z:.2f} um (score={interp_best_score:.2f})")
+            logger.info("  Interpolated scores analysis:")
+            logger.info(
+                f"    Best Z (interpolated): {interp_best_z:.2f} um (score={interp_best_score:.2f})"
+            )
             logger.info(f"    Difference from raw: {abs(interp_best_z - raw_best_z):.2f} um")
 
             # Check if interpolation is creating artifacts
-            if abs(interp_best_z - raw_best_z) > (af_settings['search_range'] / af_settings['n_steps']):
-                logger.warning(f"  WARNING: Interpolated peak differs significantly from raw peak!")
-                logger.warning(f"  This suggests interpolation may be creating artifacts.")
-                logger.warning(f"  Consider reducing interp_strength or using linear interpolation.")
+            if abs(interp_best_z - raw_best_z) > (
+                af_settings["search_range"] / af_settings["n_steps"]
+            ):
+                logger.warning("  WARNING: Interpolated peak differs significantly from raw peak!")
+                logger.warning("  This suggests interpolation may be creating artifacts.")
+                logger.warning("  Consider reducing interp_strength or using linear interpolation.")
 
         except Exception as e:
             logger.error(f"  Interpolation failed: {e}")
@@ -738,13 +800,17 @@ def test_autofocus_at_current_position(
 
         # Generate diagnostic plot
         plot_path = _generate_diagnostic_plot(
-            z_positions, scores,
-            interp_x, interp_y,
-            initial_pos.z, raw_best_z, interp_best_z,
+            z_positions,
+            scores,
+            interp_x,
+            interp_y,
+            initial_pos.z,
+            raw_best_z,
+            interp_best_z,
             af_settings,
             metrics_data,
             output_path,
-            logger
+            logger,
         )
 
         result["plot_path"] = str(plot_path)
@@ -782,33 +848,46 @@ def _load_autofocus_settings(yaml_file_path: str, objective: str, logger) -> Dic
 
     # Defaults
     settings = {
-        'n_steps': 11,
-        'search_range': 15.0,
-        'interp_strength': 100,
-        'interp_kind': 'quadratic',
-        'score_metric_name': 'normalized_variance',
-        'sweep_range_um': 10.0,
-        'sweep_n_steps': 6,
+        "n_steps": 11,
+        "search_range": 15.0,
+        "interp_strength": 100,
+        "interp_kind": "quadratic",
+        "score_metric_name": "normalized_variance",
+        "sweep_range_um": 10.0,
+        "sweep_n_steps": 6,
     }
 
     if autofocus_file.exists():
         try:
-            with open(autofocus_file, 'r') as f:
+            with open(autofocus_file, "r") as f:
                 autofocus_config = yaml.safe_load(f)
 
-            af_settings_list = autofocus_config.get('autofocus_settings', [])
+            af_settings_list = autofocus_config.get("autofocus_settings", [])
             for af_setting in af_settings_list:
-                if af_setting.get('objective') == objective:
-                    settings['n_steps'] = af_setting.get('n_steps', settings['n_steps'])
-                    settings['search_range'] = af_setting.get('search_range_um', settings['search_range'])
-                    settings['interp_strength'] = af_setting.get('interp_strength', settings['interp_strength'])
-                    settings['interp_kind'] = af_setting.get('interp_kind', settings['interp_kind'])
-                    settings['score_metric_name'] = af_setting.get('score_metric', settings['score_metric_name'])
-                    settings['sweep_range_um'] = af_setting.get('sweep_range_um', settings['sweep_range_um'])
-                    settings['sweep_n_steps'] = af_setting.get('sweep_n_steps', settings['sweep_n_steps'])
+                if af_setting.get("objective") == objective:
+                    settings["n_steps"] = af_setting.get("n_steps", settings["n_steps"])
+                    settings["search_range"] = af_setting.get(
+                        "search_range_um", settings["search_range"]
+                    )
+                    settings["interp_strength"] = af_setting.get(
+                        "interp_strength", settings["interp_strength"]
+                    )
+                    settings["interp_kind"] = af_setting.get("interp_kind", settings["interp_kind"])
+                    settings["score_metric_name"] = af_setting.get(
+                        "score_metric", settings["score_metric_name"]
+                    )
+                    settings["sweep_range_um"] = af_setting.get(
+                        "sweep_range_um", settings["sweep_range_um"]
+                    )
+                    settings["sweep_n_steps"] = af_setting.get(
+                        "sweep_n_steps", settings["sweep_n_steps"]
+                    )
                     # Legacy support: old adaptive_initial_step_um -> sweep_range_um
-                    if 'sweep_range_um' not in af_setting and 'adaptive_initial_step_um' in af_setting:
-                        settings['sweep_range_um'] = af_setting['adaptive_initial_step_um'] * 2
+                    if (
+                        "sweep_range_um" not in af_setting
+                        and "adaptive_initial_step_um" in af_setting
+                    ):
+                        settings["sweep_range_um"] = af_setting["adaptive_initial_step_um"] * 2
                     break
         except Exception as e:
             logger.warning(f"Error loading autofocus settings, using defaults: {e}")
@@ -817,24 +896,25 @@ def _load_autofocus_settings(yaml_file_path: str, objective: str, logger) -> Dic
 
     # Map score metric name to function (used by standard autofocus test)
     score_metric_map = {
-        'normalized_variance': AutofocusUtils.autofocus_profile_laplacian_variance,  # fallback for standard AF
-        'laplacian_variance': AutofocusUtils.autofocus_profile_laplacian_variance,
-        'sobel': AutofocusUtils.autofocus_profile_sobel,
-        'brenner_gradient': AutofocusUtils.autofocus_profile_brenner_gradient,
-        'robust_sharpness': AutofocusUtils.autofocus_profile_robust_sharpness_metric,
-        'hybrid_sharpness': AutofocusUtils.autofocus_profile_hybrid_sharpness_metric,
-        'p98_p2': AutofocusUtils.autofocus_profile_laplacian_variance,  # fallback for standard AF
+        "normalized_variance": AutofocusUtils.autofocus_profile_laplacian_variance,  # fallback for standard AF
+        "laplacian_variance": AutofocusUtils.autofocus_profile_laplacian_variance,
+        "sobel": AutofocusUtils.autofocus_profile_sobel,
+        "brenner_gradient": AutofocusUtils.autofocus_profile_brenner_gradient,
+        "robust_sharpness": AutofocusUtils.autofocus_profile_robust_sharpness_metric,
+        "hybrid_sharpness": AutofocusUtils.autofocus_profile_hybrid_sharpness_metric,
+        "p98_p2": AutofocusUtils.autofocus_profile_laplacian_variance,  # fallback for standard AF
     }
 
-    settings['score_metric'] = score_metric_map.get(
-        settings['score_metric_name'],
-        AutofocusUtils.autofocus_profile_laplacian_variance
+    settings["score_metric"] = score_metric_map.get(
+        settings["score_metric_name"], AutofocusUtils.autofocus_profile_laplacian_variance
     )
 
     return settings
 
 
-def _detailed_autofocus_scan(hardware, initial_pos, af_settings, logger) -> Tuple[np.ndarray, np.ndarray, Dict]:
+def _detailed_autofocus_scan(
+    hardware, initial_pos, af_settings, logger
+) -> Tuple[np.ndarray, np.ndarray, Dict]:
     """
     Perform autofocus scan with detailed logging.
 
@@ -843,15 +923,15 @@ def _detailed_autofocus_scan(hardware, initial_pos, af_settings, logger) -> Tupl
         scores: Array of focus scores at each position
         metrics_data: Dict with additional metrics for plotting
     """
-    n_steps = af_settings['n_steps']
-    search_range = af_settings['search_range']
-    score_metric = af_settings['score_metric']
+    n_steps = af_settings["n_steps"]
+    search_range = af_settings["search_range"]
+    score_metric = af_settings["score_metric"]
 
     # Calculate Z steps
     steps = np.linspace(0, search_range, n_steps) - (search_range / 2)
     z_positions = initial_pos.z + steps
 
-    logger.info(f"  Starting autofocus scan:")
+    logger.info("  Starting autofocus scan:")
     logger.info(f"    Z range: {z_positions[0]:.2f} to {z_positions[-1]:.2f} um")
     logger.info(f"    Step size: {search_range / (n_steps - 1):.2f} um")
 
@@ -877,25 +957,37 @@ def _detailed_autofocus_scan(hardware, initial_pos, af_settings, logger) -> Tupl
 
         # Calculate focus score
         score = score_metric(img_gray)
-        if hasattr(score, 'ndim') and score.ndim == 2:
+        if hasattr(score, "ndim") and score.ndim == 2:
             score = np.mean(score)
 
         scores.append(float(score))
         image_means.append(np.mean(img_gray))
 
-        logger.info(f"    Step {i+1}/{n_steps}: Z={z:.2f} um, score={score:.2f}, mean_intensity={image_means[-1]:.1f}")
+        logger.info(
+            f"    Step {i+1}/{n_steps}: Z={z:.2f} um, score={score:.2f}, mean_intensity={image_means[-1]:.1f}"
+        )
 
     metrics_data = {
-        'image_means': np.array(image_means),
-        'score_metric_name': af_settings['score_metric_name'],
+        "image_means": np.array(image_means),
+        "score_metric_name": af_settings["score_metric_name"],
     }
 
     return np.array(z_positions), np.array(scores), metrics_data
 
 
-def _generate_diagnostic_plot(z_positions, scores, interp_x, interp_y,
-                              initial_z, raw_best_z, interp_best_z,
-                              af_settings, metrics_data, output_path, logger):
+def _generate_diagnostic_plot(
+    z_positions,
+    scores,
+    interp_x,
+    interp_y,
+    initial_z,
+    raw_best_z,
+    interp_best_z,
+    af_settings,
+    metrics_data,
+    output_path,
+    logger,
+):
     """Generate comprehensive diagnostic plot for autofocus analysis."""
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -904,50 +996,102 @@ def _generate_diagnostic_plot(z_positions, scores, interp_x, interp_y,
 
     try:
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-        fig.suptitle(f'Autofocus Test Results - {timestamp}', fontsize=14, fontweight='bold')
+        fig.suptitle(f"Autofocus Test Results - {timestamp}", fontsize=14, fontweight="bold")
 
         # Plot 1: Focus curve with raw and interpolated scores
         ax1 = axes[0, 0]
-        ax1.bar(z_positions, scores, width=(z_positions[1]-z_positions[0])*0.8,
-                alpha=0.6, color='steelblue', label='Raw scores')
-        ax1.plot(interp_x, interp_y, 'k-', linewidth=2, label='Interpolated curve')
-        ax1.axvline(initial_z, color='gray', linestyle='--', linewidth=1.5, label=f'Initial Z ({initial_z:.2f})')
-        ax1.axvline(raw_best_z, color='green', linestyle='--', linewidth=1.5, label=f'Raw best ({raw_best_z:.2f})')
-        ax1.axvline(interp_best_z, color='red', linestyle='--', linewidth=2, label=f'Interp best ({interp_best_z:.2f})')
-        ax1.set_xlabel('Z Position (um)', fontsize=11)
-        ax1.set_ylabel('Focus Score', fontsize=11)
-        ax1.set_title('Focus Curve Analysis', fontsize=12, fontweight='bold')
+        ax1.bar(
+            z_positions,
+            scores,
+            width=(z_positions[1] - z_positions[0]) * 0.8,
+            alpha=0.6,
+            color="steelblue",
+            label="Raw scores",
+        )
+        ax1.plot(interp_x, interp_y, "k-", linewidth=2, label="Interpolated curve")
+        ax1.axvline(
+            initial_z,
+            color="gray",
+            linestyle="--",
+            linewidth=1.5,
+            label=f"Initial Z ({initial_z:.2f})",
+        )
+        ax1.axvline(
+            raw_best_z,
+            color="green",
+            linestyle="--",
+            linewidth=1.5,
+            label=f"Raw best ({raw_best_z:.2f})",
+        )
+        ax1.axvline(
+            interp_best_z,
+            color="red",
+            linestyle="--",
+            linewidth=2,
+            label=f"Interp best ({interp_best_z:.2f})",
+        )
+        ax1.set_xlabel("Z Position (um)", fontsize=11)
+        ax1.set_ylabel("Focus Score", fontsize=11)
+        ax1.set_title("Focus Curve Analysis", fontsize=12, fontweight="bold")
         ax1.legend(fontsize=9)
         ax1.grid(True, alpha=0.3)
 
         # Plot 2: Focus scores normalized to show relative differences
         ax2 = axes[0, 1]
         scores_norm = (scores - np.min(scores)) / (np.max(scores) - np.min(scores) + 1e-10)
-        interp_y_norm = (interp_y - np.min(interp_y)) / (np.max(interp_y) - np.min(interp_y) + 1e-10)
-        ax2.plot(z_positions, scores_norm, 'o-', markersize=8, linewidth=2, color='steelblue', label='Raw (normalized)')
-        ax2.plot(interp_x, interp_y_norm, '-', linewidth=1, color='orange', alpha=0.7, label='Interpolated (normalized)')
-        ax2.axvline(interp_best_z, color='red', linestyle='--', linewidth=2, alpha=0.7)
-        ax2.set_xlabel('Z Position (um)', fontsize=11)
-        ax2.set_ylabel('Normalized Focus Score (0-1)', fontsize=11)
-        ax2.set_title('Normalized Focus Scores', fontsize=12, fontweight='bold')
+        interp_y_norm = (interp_y - np.min(interp_y)) / (
+            np.max(interp_y) - np.min(interp_y) + 1e-10
+        )
+        ax2.plot(
+            z_positions,
+            scores_norm,
+            "o-",
+            markersize=8,
+            linewidth=2,
+            color="steelblue",
+            label="Raw (normalized)",
+        )
+        ax2.plot(
+            interp_x,
+            interp_y_norm,
+            "-",
+            linewidth=1,
+            color="orange",
+            alpha=0.7,
+            label="Interpolated (normalized)",
+        )
+        ax2.axvline(interp_best_z, color="red", linestyle="--", linewidth=2, alpha=0.7)
+        ax2.set_xlabel("Z Position (um)", fontsize=11)
+        ax2.set_ylabel("Normalized Focus Score (0-1)", fontsize=11)
+        ax2.set_title("Normalized Focus Scores", fontsize=12, fontweight="bold")
         ax2.legend(fontsize=9)
         ax2.grid(True, alpha=0.3)
 
         # Plot 3: Mean intensity at each Z position (to check for saturation/issues)
         ax3 = axes[1, 0]
-        ax3.plot(z_positions, metrics_data['image_means'], 'o-', markersize=6,
-                linewidth=2, color='purple')
-        ax3.axhline(255, color='red', linestyle='--', linewidth=1, alpha=0.5, label='Saturation (255)')
-        ax3.axvline(interp_best_z, color='red', linestyle='--', linewidth=2, alpha=0.7, label='Best focus Z')
-        ax3.set_xlabel('Z Position (um)', fontsize=11)
-        ax3.set_ylabel('Mean Image Intensity', fontsize=11)
-        ax3.set_title('Image Brightness vs Z Position', fontsize=12, fontweight='bold')
+        ax3.plot(
+            z_positions,
+            metrics_data["image_means"],
+            "o-",
+            markersize=6,
+            linewidth=2,
+            color="purple",
+        )
+        ax3.axhline(
+            255, color="red", linestyle="--", linewidth=1, alpha=0.5, label="Saturation (255)"
+        )
+        ax3.axvline(
+            interp_best_z, color="red", linestyle="--", linewidth=2, alpha=0.7, label="Best focus Z"
+        )
+        ax3.set_xlabel("Z Position (um)", fontsize=11)
+        ax3.set_ylabel("Mean Image Intensity", fontsize=11)
+        ax3.set_title("Image Brightness vs Z Position", fontsize=12, fontweight="bold")
         ax3.legend(fontsize=9)
         ax3.grid(True, alpha=0.3)
 
         # Plot 4: Summary statistics text
         ax4 = axes[1, 1]
-        ax4.axis('off')
+        ax4.axis("off")
 
         summary_text = f"""AUTOFOCUS TEST SUMMARY
 
@@ -979,12 +1123,19 @@ Status:
   {"WARNING - Interp differs from raw" if abs(interp_best_z - raw_best_z) > af_settings['search_range']/af_settings['n_steps'] else "Interp consistent with raw"}
 """
 
-        ax4.text(0.05, 0.95, summary_text, transform=ax4.transAxes,
-                fontsize=10, verticalalignment='top', fontfamily='monospace',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+        ax4.text(
+            0.05,
+            0.95,
+            summary_text,
+            transform=ax4.transAxes,
+            fontsize=10,
+            verticalalignment="top",
+            fontfamily="monospace",
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.3),
+        )
 
         plt.tight_layout()
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
 
         logger.info(f"  Diagnostic plot saved: {plot_path}")

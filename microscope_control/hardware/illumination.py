@@ -12,7 +12,6 @@ Reference hardware:
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -72,19 +71,28 @@ class AnalogIllumination(Illumination):
         max_voltage: Maximum voltage (default 5.0)
     """
 
-    def __init__(self, core, device_name: str,
-                 property_name: str = "Voltage",
-                 min_voltage: float = 0.0,
-                 max_voltage: float = 5.0,
-                 label: str = ""):
+    def __init__(
+        self,
+        core,
+        device_name: str,
+        property_name: str = "Voltage",
+        min_voltage: float = 0.0,
+        max_voltage: float = 5.0,
+        label: str = "",
+    ):
         self._core = core
         self._device = device_name
         self._property = property_name
         self._min_v = min_voltage
         self._max_v = max_voltage
         self._label = label or device_name
-        logger.info("Initialized AnalogIllumination: %s (%s, %.1f-%.1fV)",
-                    self._label, device_name, min_voltage, max_voltage)
+        logger.info(
+            "Initialized AnalogIllumination: %s (%s, %.1f-%.1fV)",
+            self._label,
+            device_name,
+            min_voltage,
+            max_voltage,
+        )
 
     def on(self) -> None:
         """Turn on at maximum voltage."""
@@ -130,19 +138,27 @@ class DevicePropertyIllumination(Illumination):
         label: Human-readable label for logging
     """
 
-    def __init__(self, core, device_name: str,
-                 state_property: str = "State",
-                 intensity_property: str = "Intensity",
-                 max_intensity: float = 2100.0,
-                 label: str = ""):
+    def __init__(
+        self,
+        core,
+        device_name: str,
+        state_property: str = "State",
+        intensity_property: str = "Intensity",
+        max_intensity: float = 2100.0,
+        label: str = "",
+    ):
         self._core = core
         self._device = device_name
         self._state_prop = state_property
         self._intensity_prop = intensity_property
         self._max_intensity = max_intensity
         self._label = label or device_name
-        logger.info("Initialized DevicePropertyIllumination: %s (%s, max=%s)",
-                    self._label, device_name, max_intensity)
+        logger.info(
+            "Initialized DevicePropertyIllumination: %s (%s, max=%s)",
+            self._label,
+            device_name,
+            max_intensity,
+        )
 
     def _is_binary(self) -> bool:
         """True when this source has no separate intensity property.
@@ -195,10 +211,14 @@ class DevicePropertyIllumination(Illumination):
             # non-zero power as "on" (State="1"), zero as "off"
             # (State="0"). Skip the redundant intensity write entirely.
             self._core.set_property(
-                self._device, self._state_prop, "1" if intensity > 0 else "0",
+                self._device,
+                self._state_prop,
+                "1" if intensity > 0 else "0",
             )
             logger.debug(
-                "%s (binary) state set to %s", self._label, "ON" if intensity > 0 else "OFF",
+                "%s (binary) state set to %s",
+                self._label,
+                "ON" if intensity > 0 else "OFF",
             )
             return
 
@@ -213,8 +233,7 @@ class DevicePropertyIllumination(Illumination):
 
     def get_power(self) -> float:
         try:
-            return float(self._core.get_property(
-                self._device, self._intensity_prop))
+            return float(self._core.get_property(self._device, self._intensity_prop))
         except Exception:
             return 0.0
 
@@ -224,8 +243,7 @@ class DevicePropertyIllumination(Illumination):
     def is_on(self) -> bool:
         """Check State property rather than relying on intensity > 0."""
         try:
-            return str(self._core.get_property(
-                self._device, self._state_prop)) == "1"
+            return str(self._core.get_property(self._device, self._state_prop)) == "1"
         except Exception:
             return False
 
@@ -236,12 +254,12 @@ class LEDIllumination(AnalogIllumination):
     Typical setup: LED-Dev1ao0 on NI DAQ, 0-5V range.
     """
 
-    def __init__(self, core, device_name: str = None,
-                 max_voltage: float = 5.0, label: str = "LED"):
+    def __init__(self, core, device_name: str = None, max_voltage: float = 5.0, label: str = "LED"):
         if not device_name:
             raise ValueError("device_name is required for LEDIllumination")
         super().__init__(
-            core, device_name,
+            core,
+            device_name,
             property_name="Voltage",
             min_voltage=0.0,
             max_voltage=max_voltage,
@@ -259,12 +277,14 @@ class PockelsCell(AnalogIllumination):
     Typical setup: PockelsCell-Dev1ao1 on NI DAQ, 0-1V range.
     """
 
-    def __init__(self, core, device_name: str = None,
-                 max_voltage: float = 1.0, label: str = "Pockels Cell"):
+    def __init__(
+        self, core, device_name: str = None, max_voltage: float = 1.0, label: str = "Pockels Cell"
+    ):
         if not device_name:
             raise ValueError("device_name is required for PockelsCell")
         super().__init__(
-            core, device_name,
+            core,
+            device_name,
             property_name="Voltage",
             min_voltage=0.0,
             max_voltage=max_voltage,

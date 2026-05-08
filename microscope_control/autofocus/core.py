@@ -38,7 +38,9 @@ class AutofocusUtils:
 
     @staticmethod
     def get_autofocus_positions(
-        fov: Tuple[float, float], positions: List[Tuple[float, float]], n_tiles: float,
+        fov: Tuple[float, float],
+        positions: List[Tuple[float, float]],
+        n_tiles: float,
         preferred_first_af: int = None,
     ) -> Tuple[List[int], float]:
         """
@@ -159,9 +161,13 @@ class AutofocusUtils:
         logger.info(
             "Spatial grid AF: %d target grid points -> %d unique tile positions "
             "(spacing=%.0f um, grid %dx%d over %.0fx%.0f um area)",
-            len(grid_points), len(af_positions),
-            af_min_distance, len(grid_xs), len(grid_ys),
-            x_max - x_min, y_max - y_min,
+            len(grid_points),
+            len(af_positions),
+            af_min_distance,
+            len(grid_xs),
+            len(grid_ys),
+            x_max - x_min,
+            y_max - y_min,
         )
 
         return af_positions, af_min_distance
@@ -456,6 +462,7 @@ class AutofocusUtils:
         """Deprecated alias for has_sufficient_signal. Log once, forward."""
         if not AutofocusUtils._sig_deprecation_logged:
             import logging as _logging
+
             _logging.getLogger(__name__).info(
                 "has_sufficient_tissue is deprecated; use has_sufficient_signal (same signature)"
             )
@@ -554,7 +561,6 @@ class AutofocusUtils:
         Returns:
             Dictionary with analysis results and recommendations
         """
-        import matplotlib.pyplot as plt
 
         # Convert to grayscale for analysis
         if len(image.shape) == 3:
@@ -672,7 +678,7 @@ class AutofocusUtils:
                     f"  tex={result['texture_threshold']:.3f}, area={result['area_threshold']:.3f} -> {status}"
                 )
 
-            logger.info(f"Recommendations:")
+            logger.info("Recommendations:")
             logger.info(f"  Best mask: {analysis_summary['recommendations']['best_tissue_mask']}")
             logger.info(
                 f"  Suggested texture threshold: {analysis_summary['recommendations']['suggested_texture_threshold']:.4f}"
@@ -735,7 +741,7 @@ class AutofocusUtils:
             "peak_at_edge": False,
             "should_extend_direction": None,
             "warnings": [],
-            "message": ""
+            "message": "",
         }
 
         if len(scores) < 5:
@@ -760,14 +766,20 @@ class AutofocusUtils:
 
         if score_range < MIN_ABSOLUTE_RANGE:
             result["warnings"].append(
-                f"Insufficient absolute score variation ({score_range:.2f} < {MIN_ABSOLUTE_RANGE})")
-            result["message"] = f"No focus gradient detected - score range too small ({score_range:.2f})"
+                f"Insufficient absolute score variation ({score_range:.2f} < {MIN_ABSOLUTE_RANGE})"
+            )
+            result["message"] = (
+                f"No focus gradient detected - score range too small ({score_range:.2f})"
+            )
             return result
 
         if relative_range < MIN_RELATIVE_RANGE:
             result["warnings"].append(
-                f"Insufficient relative score variation ({relative_range:.2%} < {MIN_RELATIVE_RANGE:.0%})")
-            result["message"] = f"No focus gradient detected - scores too flat ({relative_range:.2%} variation)"
+                f"Insufficient relative score variation ({relative_range:.2%} < {MIN_RELATIVE_RANGE:.0%})"
+            )
+            result["message"] = (
+                f"No focus gradient detected - scores too flat ({relative_range:.2%} variation)"
+            )
             return result
 
         # 2. U-shape detection. When the score curve has a clear interior
@@ -827,9 +839,12 @@ class AutofocusUtils:
         else:
             if peak_idx > 0:
                 result["warnings"].append(
-                    f"Only {peak_idx} sample(s) before peak -- ascending trend unconfirmed")
+                    f"Only {peak_idx} sample(s) before peak -- ascending trend unconfirmed"
+                )
             else:
-                result["warnings"].append("Peak at low edge -- no samples before to verify ascending trend")
+                result["warnings"].append(
+                    "Peak at low edge -- no samples before to verify ascending trend"
+                )
             result["has_ascending"] = False
 
         # Descending side: points AFTER peak
@@ -843,21 +858,28 @@ class AutofocusUtils:
         else:
             if points_after > 0:
                 result["warnings"].append(
-                    f"Only {points_after} sample(s) after peak -- descending trend unconfirmed")
+                    f"Only {points_after} sample(s) after peak -- descending trend unconfirmed"
+                )
             else:
-                result["warnings"].append("Peak at high edge -- no samples after to verify descending trend")
+                result["warnings"].append(
+                    "Peak at high edge -- no samples after to verify descending trend"
+                )
             result["has_descending"] = False
 
         # 4. Symmetry score is informational only (kept in output for
         # diagnostics, not used in is_valid). Asymmetry is expected
         # when the user starts AF off-focus.
         left_scores = scores[:peak_idx] if peak_idx > 0 else np.array([])
-        right_scores = scores[peak_idx + 1:] if peak_idx < len(scores) - 1 else np.array([])
+        right_scores = scores[peak_idx + 1 :] if peak_idx < len(scores) - 1 else np.array([])
         if len(left_scores) > 0 and len(right_scores) > 0:
             left_range = np.max(left_scores) - np.min(left_scores) if len(left_scores) > 1 else 0
-            right_range = np.max(right_scores) - np.min(right_scores) if len(right_scores) > 1 else 0
+            right_range = (
+                np.max(right_scores) - np.min(right_scores) if len(right_scores) > 1 else 0
+            )
             if left_range + right_range > 0:
-                result["symmetry_score"] = 1.0 - abs(left_range - right_range) / (left_range + right_range)
+                result["symmetry_score"] = 1.0 - abs(left_range - right_range) / (
+                    left_range + right_range
+                )
             else:
                 result["symmetry_score"] = 1.0
         else:
@@ -892,17 +914,18 @@ class AutofocusUtils:
         # 7. is_valid: prominence + at-least-one-side trend. No edge
         # gate, no symmetry gate, no quality_score floor.
         MIN_PROMINENCE = 0.15
-        result["is_valid"] = (
-            result["peak_prominence"] >= MIN_PROMINENCE
-            and (result["has_ascending"] or result["has_descending"])
+        result["is_valid"] = result["peak_prominence"] >= MIN_PROMINENCE and (
+            result["has_ascending"] or result["has_descending"]
         )
 
         # 8. Human-readable summary.
         if result["is_valid"]:
             extend_note = ""
             if result["should_extend_direction"] is not None:
-                extend_note = (f" (one-sided trend; consider extending "
-                               f"toward {result['should_extend_direction']} Z to verify)")
+                extend_note = (
+                    f" (one-sided trend; consider extending "
+                    f"toward {result['should_extend_direction']} Z to verify)"
+                )
             result["message"] = (
                 f"Valid focus peak detected (quality: {result['quality_score']:.2f}, "
                 f"prominence: {result['peak_prominence']:.2f}){extend_note}"

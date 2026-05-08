@@ -215,10 +215,13 @@ class PycromanagerStage(Stage):
         if z_stage_device and self._core.get_focus_device() != z_stage_device:
             self._core.set_focus_device(z_stage_device)
 
-    def _wait_z_via_busy(self, timeout_ms: float = 10000.0,
-                         poll_interval_ms: float = 3.0,
-                         target_z: Optional[float] = None,
-                         tolerance_um: float = 0.5) -> None:
+    def _wait_z_via_busy(
+        self,
+        timeout_ms: float = 10000.0,
+        poll_interval_ms: float = 3.0,
+        target_z: Optional[float] = None,
+        tolerance_um: float = 0.5,
+    ) -> None:
         """Wait for Z stage to finish moving via tight device_busy polling.
 
         Much faster than core.wait_for_device() on hardware where the MM
@@ -264,8 +267,7 @@ class PycromanagerStage(Stage):
                 try:
                     busy = self._core.device_busy(focus_dev)
                 except Exception as e:
-                    logger.debug("device_busy(%s) failed, falling back: %s",
-                                 focus_dev, e)
+                    logger.debug("device_busy(%s) failed, falling back: %s", focus_dev, e)
                     break
                 if not busy:
                     consecutive_clear += 1
@@ -278,7 +280,8 @@ class PycromanagerStage(Stage):
                 logger.warning(
                     "wait_z busy-poll timed out after %.0f ms on '%s'; "
                     "falling back to wait_for_device",
-                    timeout_ms, focus_dev,
+                    timeout_ms,
+                    focus_dev,
                 )
                 try:
                     self._core.wait_for_device(focus_dev)
@@ -315,7 +318,11 @@ class PycromanagerStage(Stage):
                         "actual=%.3f um, error=%.3f um (tolerance=%.3f um) "
                         "on '%s'. Stage reported not-busy but did not "
                         "arrive. Falling back to wait_for_device.",
-                        target_z, actual_z, err, tolerance_um, focus_dev,
+                        target_z,
+                        actual_z,
+                        err,
+                        tolerance_um,
+                        focus_dev,
                     )
                     try:
                         self._core.wait_for_device(focus_dev)
@@ -330,14 +337,18 @@ class PycromanagerStage(Stage):
                                 "wait_z STILL off-target after fallback: "
                                 "target=%.3f, actual=%.3f, err=%.3f um. "
                                 "Stage controller may be in a bad state.",
-                                target_z, actual_z2, err2,
+                                target_z,
+                                actual_z2,
+                                err2,
                             )
                     except Exception as e:
                         logger.debug("post-fallback position read failed: %s", e)
                 else:
                     logger.debug(
-                        "wait_z arrival OK: target=%.3f, actual=%.3f, "
-                        "err=%.3f um", target_z, actual_z, err,
+                        "wait_z arrival OK: target=%.3f, actual=%.3f, " "err=%.3f um",
+                        target_z,
+                        actual_z,
+                        err,
                     )
             except Exception as e:
                 logger.debug("wait_z arrival check skipped (read failed): %s", e)

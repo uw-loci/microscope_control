@@ -13,9 +13,7 @@ from microscope_control.autofocus.tissue_detection import EmptyRegionDetector
 class TestRefinedEntropy:
     """Test refined entropy-based empty region detection."""
 
-    def test_refined_entropy_empty_vs_tissue(
-        self, synthetic_empty_image, synthetic_tissue_image
-    ):
+    def test_refined_entropy_empty_vs_tissue(self, synthetic_empty_image, synthetic_tissue_image):
         """Empty regions should have lower entropy than tissue regions."""
         empty_result = EmptyRegionDetector.refined_entropy(synthetic_empty_image)
         tissue_result = EmptyRegionDetector.refined_entropy(synthetic_tissue_image)
@@ -26,27 +24,19 @@ class TestRefinedEntropy:
     def test_refined_entropy_is_empty_detection(self, synthetic_empty_image):
         """Empty image should be detected as empty using refined entropy."""
         # Synthetic empty image has entropy ~2.1 due to added noise
-        result = EmptyRegionDetector.refined_entropy(
-            synthetic_empty_image, entropy_threshold=3.0
-        )
+        result = EmptyRegionDetector.refined_entropy(synthetic_empty_image, entropy_threshold=3.0)
         assert result["is_empty"] == True
 
     def test_refined_entropy_tissue_not_empty(self, synthetic_tissue_image):
         """Tissue image should NOT be detected as empty."""
         # Synthetic tissue image has entropy ~4.5 due to texture/variation
-        result = EmptyRegionDetector.refined_entropy(
-            synthetic_tissue_image, entropy_threshold=3.0
-        )
+        result = EmptyRegionDetector.refined_entropy(synthetic_tissue_image, entropy_threshold=3.0)
         assert result["is_empty"] == False
 
     def test_refined_entropy_with_different_window_sizes(self, synthetic_tissue_image):
         """Different window sizes should affect entropy calculation."""
-        result_small = EmptyRegionDetector.refined_entropy(
-            synthetic_tissue_image, window_size=5
-        )
-        result_large = EmptyRegionDetector.refined_entropy(
-            synthetic_tissue_image, window_size=15
-        )
+        result_small = EmptyRegionDetector.refined_entropy(synthetic_tissue_image, window_size=5)
+        result_large = EmptyRegionDetector.refined_entropy(synthetic_tissue_image, window_size=15)
 
         # Both should be valid positive numbers
         assert result_small["mean_entropy"] > 0
@@ -58,9 +48,7 @@ class TestRefinedEntropy:
 class TestSaturationWithContext:
     """Test saturation-based empty region detection."""
 
-    def test_saturation_empty_vs_tissue(
-        self, synthetic_empty_image, synthetic_tissue_image
-    ):
+    def test_saturation_empty_vs_tissue(self, synthetic_empty_image, synthetic_tissue_image):
         """Empty regions typically have high saturation (uniform white)."""
         # Use threshold appropriate for synthetic images (~245)
         empty_result = EmptyRegionDetector.saturation_with_context(
@@ -99,9 +87,7 @@ class TestSaturationWithContext:
 class TestMultiScaleAnalysis:
     """Test multi-scale empty region detection."""
 
-    def test_multiscale_empty_vs_tissue(
-        self, synthetic_empty_image, synthetic_tissue_image
-    ):
+    def test_multiscale_empty_vs_tissue(self, synthetic_empty_image, synthetic_tissue_image):
         """Multi-scale analysis should distinguish empty from tissue."""
         empty_result = EmptyRegionDetector.multi_scale_analysis(synthetic_empty_image)
         tissue_result = EmptyRegionDetector.multi_scale_analysis(synthetic_tissue_image)
@@ -121,9 +107,7 @@ class TestMultiScaleAnalysis:
 class TestColorSpaceAnalysis:
     """Test HSV color space based empty region detection."""
 
-    def test_color_space_empty_vs_tissue(
-        self, synthetic_empty_image, synthetic_tissue_image
-    ):
+    def test_color_space_empty_vs_tissue(self, synthetic_empty_image, synthetic_tissue_image):
         """Color space analysis should distinguish empty (white) from colored tissue."""
         empty_result = EmptyRegionDetector.color_space_analysis(synthetic_empty_image)
         tissue_result = EmptyRegionDetector.color_space_analysis(synthetic_tissue_image)

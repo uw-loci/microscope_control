@@ -5,7 +5,6 @@ Tests the is_coordinate_in_range function that prevents stage crashes
 by validating positions against configured limits.
 """
 
-import numpy as np
 import pytest
 from microscope_control.hardware.base import Position, is_coordinate_in_range
 
@@ -46,9 +45,7 @@ class TestPositionClass:
 class TestIsCoordinateInRange:
     """Test coordinate validation against stage limits."""
 
-    def test_valid_position_within_limits(
-        self, sample_position_valid, sample_stage_limits
-    ):
+    def test_valid_position_within_limits(self, sample_position_valid, sample_stage_limits):
         """Test that valid position within limits is accepted."""
         is_valid = is_coordinate_in_range(sample_stage_limits, sample_position_valid)
 
@@ -108,7 +105,7 @@ class TestIsCoordinateInRangeBoundaryConditions:
 
     def test_position_exactly_at_x_max(self, sample_stage_limits):
         """Test position exactly at X maximum boundary."""
-        x_max = sample_stage_limits['stage']['limits']['x_um']['high']
+        x_max = sample_stage_limits["stage"]["limits"]["x_um"]["high"]
         pos_boundary = Position(x=x_max, y=37500.0, z=5000.0)
 
         is_valid = is_coordinate_in_range(sample_stage_limits, pos_boundary)
@@ -118,7 +115,7 @@ class TestIsCoordinateInRangeBoundaryConditions:
 
     def test_position_exactly_at_x_min(self, sample_stage_limits):
         """Test position exactly at X minimum boundary."""
-        x_min = sample_stage_limits['stage']['limits']['x_um']['low']
+        x_min = sample_stage_limits["stage"]["limits"]["x_um"]["low"]
         pos_boundary = Position(x=x_min, y=37500.0, z=5000.0)
 
         is_valid = is_coordinate_in_range(sample_stage_limits, pos_boundary)
@@ -127,7 +124,7 @@ class TestIsCoordinateInRangeBoundaryConditions:
 
     def test_position_just_inside_x_max(self, sample_stage_limits):
         """Test position just inside X maximum boundary."""
-        x_max = sample_stage_limits['stage']['limits']['x_um']['high']
+        x_max = sample_stage_limits["stage"]["limits"]["x_um"]["high"]
         pos_inside = Position(x=x_max - 0.1, y=37500.0, z=5000.0)
 
         is_valid = is_coordinate_in_range(sample_stage_limits, pos_inside)
@@ -136,7 +133,7 @@ class TestIsCoordinateInRangeBoundaryConditions:
 
     def test_position_just_outside_x_max(self, sample_stage_limits):
         """Test position just outside X maximum boundary."""
-        x_max = sample_stage_limits['stage']['limits']['x_um']['high']
+        x_max = sample_stage_limits["stage"]["limits"]["x_um"]["high"]
         pos_outside = Position(x=x_max + 0.1, y=37500.0, z=5000.0)
 
         is_valid = is_coordinate_in_range(sample_stage_limits, pos_outside)
@@ -145,11 +142,9 @@ class TestIsCoordinateInRangeBoundaryConditions:
 
     def test_all_axes_at_boundaries(self, sample_stage_limits):
         """Test position at all boundary limits simultaneously."""
-        limits = sample_stage_limits['stage']['limits']
+        limits = sample_stage_limits["stage"]["limits"]
         pos_boundary = Position(
-            x=limits['x_um']['high'],
-            y=limits['y_um']['high'],
-            z=limits['z_um']['high']
+            x=limits["x_um"]["high"], y=limits["y_um"]["high"], z=limits["z_um"]["high"]
         )
 
         is_valid = is_coordinate_in_range(sample_stage_limits, pos_boundary)
@@ -212,10 +207,10 @@ class TestIsCoordinateInRangeConfigurationErrors:
     def test_missing_x_limits(self, sample_position_valid):
         """Test behavior when X limits are missing."""
         incomplete_config = {
-            'stage': {
-                'limits': {
-                    'y_um': {'low': 0.0, 'high': 75000.0},
-                    'z_um': {'low': 0.0, 'high': 10000.0}
+            "stage": {
+                "limits": {
+                    "y_um": {"low": 0.0, "high": 75000.0},
+                    "z_um": {"low": 0.0, "high": 10000.0},
                 }
             }
         }
@@ -231,11 +226,11 @@ class TestIsCoordinateInRangeConfigurationErrors:
     def test_malformed_limits_structure(self, sample_position_valid):
         """Test behavior with malformed limits structure."""
         malformed_config = {
-            'stage': {
-                'limits': {
-                    'x': 100000.0,  # Should be dict with min/max, not single value
-                    'y_um': {'low': 0.0, 'high': 75000.0},
-                    'z_um': {'low': 0.0, 'high': 10000.0}
+            "stage": {
+                "limits": {
+                    "x": 100000.0,  # Should be dict with min/max, not single value
+                    "y_um": {"low": 0.0, "high": 75000.0},
+                    "z_um": {"low": 0.0, "high": 10000.0},
                 }
             }
         }
@@ -250,11 +245,11 @@ class TestIsCoordinateInRangeConfigurationErrors:
     def test_inverted_limits(self, sample_position_valid):
         """Test behavior when min > max (configuration error)."""
         inverted_config = {
-            'stage': {
-                'limits': {
-                    'x_um': {'low': 100000.0, 'high': 0.0},  # Inverted!
-                    'y_um': {'low': 0.0, 'high': 75000.0},
-                    'z_um': {'low': 0.0, 'high': 10000.0}
+            "stage": {
+                "limits": {
+                    "x_um": {"low": 100000.0, "high": 0.0},  # Inverted!
+                    "y_um": {"low": 0.0, "high": 75000.0},
+                    "z_um": {"low": 0.0, "high": 10000.0},
                 }
             }
         }
@@ -293,7 +288,7 @@ class TestIsCoordinateInRangeFloatingPoint:
 
     def test_very_small_out_of_range(self, sample_stage_limits):
         """Test position that's very slightly out of range."""
-        x_max = sample_stage_limits['stage']['limits']['x_um']['high']
+        x_max = sample_stage_limits["stage"]["limits"]["x_um"]["high"]
         pos_slightly_out = Position(x=x_max + 1e-6, y=37500.0, z=5000.0)
 
         is_valid = is_coordinate_in_range(sample_stage_limits, pos_slightly_out)
@@ -303,7 +298,7 @@ class TestIsCoordinateInRangeFloatingPoint:
 
     def test_floating_point_boundary(self, sample_stage_limits):
         """Test floating-point comparison at boundaries."""
-        x_max = sample_stage_limits['stage']['limits']['x_um']['high']
+        x_max = sample_stage_limits["stage"]["limits"]["x_um"]["high"]
 
         # Add tiny floating-point error
         pos_with_error = Position(x=x_max + 1e-10, y=37500.0, z=5000.0)
@@ -321,11 +316,11 @@ class TestIsCoordinateInRangeNegativeCoordinates:
     def test_negative_coordinates_allowed(self):
         """Test that negative coordinates are allowed if within limits."""
         config_with_negative = {
-            'stage': {
-                'limits': {
-                    'x_um': {'low': -50000.0, 'high': 50000.0},
-                    'y_um': {'low': -50000.0, 'high': 50000.0},
-                    'z_um': {'low': 0.0, 'high': 10000.0}
+            "stage": {
+                "limits": {
+                    "x_um": {"low": -50000.0, "high": 50000.0},
+                    "y_um": {"low": -50000.0, "high": 50000.0},
+                    "z_um": {"low": 0.0, "high": 10000.0},
                 }
             }
         }
@@ -339,11 +334,11 @@ class TestIsCoordinateInRangeNegativeCoordinates:
     def test_negative_beyond_limit(self):
         """Test negative coordinate beyond negative limit."""
         config_with_negative = {
-            'stage': {
-                'limits': {
-                    'x_um': {'low': -50000.0, 'high': 50000.0},
-                    'y_um': {'low': -50000.0, 'high': 50000.0},
-                    'z_um': {'low': 0.0, 'high': 10000.0}
+            "stage": {
+                "limits": {
+                    "x_um": {"low": -50000.0, "high": 50000.0},
+                    "y_um": {"low": -50000.0, "high": 50000.0},
+                    "z_um": {"low": 0.0, "high": 10000.0},
                 }
             }
         }

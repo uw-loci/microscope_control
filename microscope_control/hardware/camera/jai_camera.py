@@ -9,7 +9,6 @@ The JAI camera uses a 3-sensor prism design (no Bayer filter), meaning:
   active color adjustment during acquisition
 """
 
-import time
 import logging
 from typing import Optional, Tuple, Dict, Any
 
@@ -56,8 +55,9 @@ class JAICamera(PycromanagerCamera):
     FRAME_RATE_MIN = 0.125
     FRAME_RATE_MAX = 25.0
 
-    def __init__(self, core: Core, studio: Optional[Studio],
-                 detector_config: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self, core: Core, studio: Optional[Studio], detector_config: Optional[Dict[str, Any]] = None
+    ):
         super().__init__(core, studio, detector_config)
 
         # Lazily create JAICameraProperties when first needed
@@ -79,7 +79,8 @@ class JAICamera(PycromanagerCamera):
             self._sanitize_continuous_mode_trigger_state()
         except Exception as e:
             logger.warning(
-                "JAICamera startup sanitize failed (non-fatal): %s", e,
+                "JAICamera startup sanitize failed (non-fatal): %s",
+                e,
             )
 
     def _sanitize_continuous_mode_trigger_state(self) -> None:
@@ -109,9 +110,7 @@ class JAICamera(PycromanagerCamera):
         TRIGGER_BLUE_HIGH_MS = 5.6
         in_trigger = TRIGGER_BLUE_LOW_MS < b_exp < TRIGGER_BLUE_HIGH_MS
         unequal = not (
-            abs(r_exp - g_exp) < 0.001
-            and abs(g_exp - b_exp) < 0.001
-            and abs(r_exp - b_exp) < 0.001
+            abs(r_exp - g_exp) < 0.001 and abs(g_exp - b_exp) < 0.001 and abs(r_exp - b_exp) < 0.001
         )
 
         if not (in_trigger and unequal):
@@ -119,7 +118,11 @@ class JAICamera(PycromanagerCamera):
                 "JAICamera startup: hardware state safe "
                 "(R=%.3f G=%.3f B=%.3f ms, in_trigger=%s, unequal=%s); "
                 "no sanitize needed.",
-                r_exp, g_exp, b_exp, in_trigger, unequal,
+                r_exp,
+                g_exp,
+                b_exp,
+                in_trigger,
+                unequal,
             )
             return
 
@@ -135,7 +138,12 @@ class JAICamera(PycromanagerCamera):
             "live view does not show the bar before the user applies a WB "
             "preset. Original values from prior session: aR=%.3f, aB=%.3f, "
             "unified_gain=%.2f.",
-            r_exp, g_exp, b_exp, analog_red, analog_blue, unified_gain,
+            r_exp,
+            g_exp,
+            b_exp,
+            analog_red,
+            analog_blue,
+            unified_gain,
         )
 
         self.apply_settings(
@@ -156,6 +164,7 @@ class JAICamera(PycromanagerCamera):
         """
         if self._properties is None:
             from microscope_control.jai import JAICameraProperties
+
             self._properties = JAICameraProperties(self._core)
         return self._properties
 
@@ -183,8 +192,7 @@ class JAICamera(PycromanagerCamera):
         margin = 1.01
         exposure_s = exposure_ms / 1000.0
         required_frame_rate = round(1.0 / (exposure_s * margin), 3)
-        frame_rate = min(max(required_frame_rate, self.FRAME_RATE_MIN),
-                         self.FRAME_RATE_MAX)
+        frame_rate = min(max(required_frame_rate, self.FRAME_RATE_MIN), self.FRAME_RATE_MAX)
 
         self._core.set_property("JAICamera", "FrameRateHz", frame_rate)
         self._core.set_property("JAICamera", "Exposure", exposure_ms)
@@ -193,8 +201,7 @@ class JAICamera(PycromanagerCamera):
     def get_fov_pixels(self) -> Tuple[int, int]:
         """Get FOV from detector config (JAI dimensions not in device properties)."""
         if "width_px" in self._detector_config and "height_px" in self._detector_config:
-            return (self._detector_config["width_px"],
-                    self._detector_config["height_px"])
+            return (self._detector_config["width_px"], self._detector_config["height_px"])
         # Fallback to image dimensions from core
         return self._core.get_image_width(), self._core.get_image_height()
 
@@ -231,11 +238,11 @@ class JAICamera(PycromanagerCamera):
 
     # --- JAI-specific methods (not on base Camera) ---
 
-    def set_channel_exposures(self, red: float, green: float, blue: float,
-                              auto_enable: bool = True) -> None:
+    def set_channel_exposures(
+        self, red: float, green: float, blue: float, auto_enable: bool = True
+    ) -> None:
         """Set per-channel exposure times in milliseconds."""
-        self.properties.set_channel_exposures(red, green, blue,
-                                              auto_enable=auto_enable)
+        self.properties.set_channel_exposures(red, green, blue, auto_enable=auto_enable)
 
     def get_channel_exposures(self) -> Dict[str, float]:
         """Get per-channel exposure times.
@@ -272,17 +279,20 @@ class JAICamera(PycromanagerCamera):
 
     def set_rb_analog_gains(self, analog_red: float, analog_blue: float) -> None:
         """Set per-channel analog gains for red and blue."""
-        if (self._state_matches("analog_red", analog_red)
-                and self._state_matches("analog_blue", analog_blue)):
+        if self._state_matches("analog_red", analog_red) and self._state_matches(
+            "analog_blue", analog_blue
+        ):
             logger.debug(
                 "set_rb_analog_gains(R=%.3f, B=%.3f): skipped (no change)",
-                analog_red, analog_blue,
+                analog_red,
+                analog_blue,
             )
             return
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "JAICamera.set_rb_analog_gains(R=%.3f, B=%.3f) -- before: aR=%s, aB=%s",
-                analog_red, analog_blue,
+                analog_red,
+                analog_blue,
                 self._safe_get("Gain_AnalogRed"),
                 self._safe_get("Gain_AnalogBlue"),
             )
@@ -317,9 +327,15 @@ class JAICamera(PycromanagerCamera):
             "analog_blue": props.get("blue", 1.0),
         }
 
-    def apply_settings(self, exposures, unified_gain=1.0, analog_red=1.0,
-                        analog_blue=1.0, individual_exposure=True,
-                        force=False):
+    def apply_settings(
+        self,
+        exposures,
+        unified_gain=1.0,
+        analog_red=1.0,
+        analog_blue=1.0,
+        individual_exposure=True,
+        force=False,
+    ):
         """Apply all camera settings atomically, stopping streaming once.
 
         JAI camera properties cannot be changed while streaming. This method
@@ -353,14 +369,18 @@ class JAICamera(PycromanagerCamera):
             r_exp = exposures.get("r", exposures.get("all", 1.0))
             g_exp = exposures.get("g", exposures.get("all", 1.0))
             b_exp = exposures.get("b", exposures.get("all", 1.0))
-            if (abs(r_exp - g_exp) < 0.001
-                    and abs(g_exp - b_exp) < 0.001
-                    and abs(r_exp - b_exp) < 0.001):
+            if (
+                abs(r_exp - g_exp) < 0.001
+                and abs(g_exp - b_exp) < 0.001
+                and abs(r_exp - b_exp) < 0.001
+            ):
                 logger.debug(
                     "JAI apply_settings: caller asked for individual mode but "
                     "R/G/B exposures match (%.4f/%.4f/%.4f); falling through "
                     "to unified to avoid the multi-CCD assembly bug",
-                    r_exp, g_exp, b_exp,
+                    r_exp,
+                    g_exp,
+                    b_exp,
                 )
                 individual_exposure = False
                 exposures = dict(exposures)
@@ -423,8 +443,15 @@ class JAICamera(PycromanagerCamera):
                     "rescaling R %.4f -> %.4f and G %.4f -> %.4f by factor "
                     "%.4f to preserve the WB ratio. See JAI ticket / "
                     "claude-reports/2026-05-06_jai-contamination-bar-*.md.",
-                    b_exp, TRIGGER_BLUE_LOW_MS, TRIGGER_BLUE_HIGH_MS,
-                    b_safe, r_exp, r_safe, g_exp, g_safe, scale,
+                    b_exp,
+                    TRIGGER_BLUE_LOW_MS,
+                    TRIGGER_BLUE_HIGH_MS,
+                    b_safe,
+                    r_exp,
+                    r_safe,
+                    g_exp,
+                    g_safe,
+                    scale,
                 )
                 exposures = dict(exposures)
                 exposures["r"] = r_safe
@@ -433,9 +460,11 @@ class JAICamera(PycromanagerCamera):
                 # If after rescaling all three are equal (within 1 us)
                 # we can drop to unified mode below; recheck.
                 r_exp, g_exp, b_exp = r_safe, g_safe, b_safe
-                if (abs(r_exp - g_exp) < 0.001
-                        and abs(g_exp - b_exp) < 0.001
-                        and abs(r_exp - b_exp) < 0.001):
+                if (
+                    abs(r_exp - g_exp) < 0.001
+                    and abs(g_exp - b_exp) < 0.001
+                    and abs(r_exp - b_exp) < 0.001
+                ):
                     individual_exposure = False
                     exposures["all"] = g_exp
 
@@ -459,7 +488,10 @@ class JAICamera(PycromanagerCamera):
         logger.info(
             "JAI apply_settings: mode=%s, exp=%s, gain=%.2f, aR=%.3f, aB=%.3f",
             "individual" if individual_exposure else "unified",
-            exposures, unified_gain, analog_red, analog_blue,
+            exposures,
+            unified_gain,
+            analog_red,
+            analog_blue,
         )
 
     def clear_awb_corrections(self) -> None:

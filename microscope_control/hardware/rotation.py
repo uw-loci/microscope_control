@@ -8,7 +8,6 @@ for its specific hardware.
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +108,7 @@ class PIZRotationStage(RotationStage):
     for this specific PIZ stage model.
     """
 
-    def __init__(self, core, device_name: str, offset: float,
-                 units_per_deg: float):
+    def __init__(self, core, device_name: str, offset: float, units_per_deg: float):
         """
         Args:
             core: Pycromanager Core object
@@ -124,16 +122,18 @@ class PIZRotationStage(RotationStage):
         self._device = device_name
         self._offset = offset
         self._units_per_deg = float(units_per_deg)
-        logger.info("Initialized PIZRotationStage (device=%s, offset=%.1f, "
-                    "units_per_deg=%.1f)", device_name, offset,
-                    self._units_per_deg)
+        logger.info(
+            "Initialized PIZRotationStage (device=%s, offset=%.1f, " "units_per_deg=%.1f)",
+            device_name,
+            offset,
+            self._units_per_deg,
+        )
 
     def set_angle(self, theta: float) -> None:
         pos = self._angle_to_device(theta)
         self._core.set_position(self._device, pos)
         self._core.wait_for_device(self._device)
-        logger.debug("Set rotation angle to %.1f deg (PIZ position: %.1f)",
-                     theta, pos)
+        logger.debug("Set rotation angle to %.1f deg (PIZ position: %.1f)", theta, pos)
 
     def set_angle_no_wait(self, theta: float) -> None:
         pos = self._angle_to_device(theta)
@@ -188,8 +188,7 @@ class ThorRotationStage(RotationStage):
     read from config.
     """
 
-    def __init__(self, core, device_name: str, units_per_deg: float,
-                 offset: float):
+    def __init__(self, core, device_name: str, units_per_deg: float, offset: float):
         """
         Args:
             core: Pycromanager Core object
@@ -203,16 +202,18 @@ class ThorRotationStage(RotationStage):
         self._device = device_name
         self._units_per_deg = float(units_per_deg)
         self._offset = float(offset)
-        logger.info("Initialized ThorRotationStage (device=%s, "
-                    "units_per_deg=%.1f, offset=%.1f)",
-                    device_name, self._units_per_deg, self._offset)
+        logger.info(
+            "Initialized ThorRotationStage (device=%s, " "units_per_deg=%.1f, offset=%.1f)",
+            device_name,
+            self._units_per_deg,
+            self._offset,
+        )
 
     def set_angle(self, theta: float) -> None:
         pos = self._angle_to_device(theta)
         self._core.set_position(self._device, pos)
         self._core.wait_for_device(self._device)
-        logger.debug("Set rotation angle to %.1f deg (Thor position: %.1f)",
-                     theta, pos)
+        logger.debug("Set rotation angle to %.1f deg (Thor position: %.1f)", theta, pos)
 
     def set_angle_no_wait(self, theta: float) -> None:
         pos = self._angle_to_device(theta)

@@ -22,8 +22,8 @@ def synthetic_focused_image():
 
     # Add sharp edges (high frequency content indicates good focus)
     for i in range(0, size, 50):
-        img[i:i+10, :] = 255
-        img[:, i:i+10] = 255
+        img[i : i + 10, :] = 255
+        img[:, i : i + 10] = 255
 
     # Add some noise for texture
     noise = np.random.randint(0, 30, (size, size), dtype=np.uint8)
@@ -47,8 +47,8 @@ def synthetic_blurred_image():
 
     # Add edges that will be blurred
     for i in range(0, size, 50):
-        img[i:i+10, :] = 255
-        img[:, i:i+10] = 255
+        img[i : i + 10, :] = 255
+        img[:, i : i + 10] = 255
 
     # Apply strong blur (simulates out-of-focus image)
     img = gaussian_filter(img.astype(float), sigma=15)
@@ -98,7 +98,7 @@ def synthetic_tissue_image():
         x, y = np.random.randint(0, size, 2)
         radius = np.random.randint(5, 20)
         y_grid, x_grid = np.ogrid[:size, :size]
-        mask = (x_grid - x)**2 + (y_grid - y)**2 <= radius**2
+        mask = (x_grid - x) ** 2 + (y_grid - y) ** 2 <= radius**2
         img[mask] = np.random.randint(50, 150, 3)
 
     return np.clip(img, 0, 255).astype(np.uint8)
@@ -113,11 +113,11 @@ def sample_stage_limits():
         dict: Stage limit configuration dictionary
     """
     return {
-        'stage': {
-            'limits': {
-                'x_um': {'low': 0.0, 'high': 100000.0},  # micrometers
-                'y_um': {'low': 0.0, 'high': 75000.0},
-                'z_um': {'low': 0.0, 'high': 10000.0}
+        "stage": {
+            "limits": {
+                "x_um": {"low": 0.0, "high": 100000.0},  # micrometers
+                "y_um": {"low": 0.0, "high": 75000.0},
+                "z_um": {"low": 0.0, "high": 10000.0},
             }
         }
     }
@@ -154,14 +154,14 @@ def sample_autofocus_config():
         dict: Autofocus settings dictionary
     """
     return {
-        'autofocus': {
-            'n_steps': 21,
-            'search_range': 200.0,  # micrometers
-            'interp_strength': 10,
-            'interp_kind': 'cubic',
-            'score_metric': 'tenenbaum_gradient',
-            'min_peak_prominence': 0.15,
-            'max_peak_width': 0.7
+        "autofocus": {
+            "n_steps": 21,
+            "search_range": 200.0,  # micrometers
+            "interp_strength": 10,
+            "interp_kind": "cubic",
+            "score_metric": "tenenbaum_gradient",
+            "min_peak_prominence": 0.15,
+            "max_peak_width": 0.7,
         }
     }
 
@@ -186,59 +186,32 @@ def sample_microscope_config():
         dict: Complete microscope configuration dictionary
     """
     return {
-        'microscope': {
-            'name': 'Test Microscope',
-            'type': 'PPM'
-        },
-        'modalities': {
-            'ppm': {
-                'rotation_angles': [0, 45, 90, 135]
-            },
-            'brightfield': {}
-        },
-        'acq_profiles': {
-            'defaults': [
-                {
-                    'objective': '10x',
-                    'settings': {
-                        'pixel_size_xy_um': {'camera1': 0.645}
-                    }
-                }
+        "microscope": {"name": "Test Microscope", "type": "PPM"},
+        "modalities": {"ppm": {"rotation_angles": [0, 45, 90, 135]}, "brightfield": {}},
+        "acq_profiles": {
+            "defaults": [
+                {"objective": "10x", "settings": {"pixel_size_xy_um": {"camera1": 0.645}}}
             ],
-            'profiles': [
-                {
-                    'modality': 'ppm',
-                    'objective': '10x',
-                    'detector': 'camera1'
-                }
-            ]
+            "profiles": [{"modality": "ppm", "objective": "10x", "detector": "camera1"}],
         },
-        'stage': {
-            'limits': {
-                'x_um': {'low': 0.0, 'high': 100000.0},
-                'y_um': {'low': 0.0, 'high': 75000.0},
-                'z_um': {'low': 0.0, 'high': 10000.0}
+        "stage": {
+            "limits": {
+                "x_um": {"low": 0.0, "high": 100000.0},
+                "y_um": {"low": 0.0, "high": 75000.0},
+                "z_um": {"low": 0.0, "high": 10000.0},
             }
         },
-        'objectives': {
-            '10x': {
-                'magnification': 10,
-                'na': 0.3,
-                'pixel_size_um': 0.645
-            },
-            '20x': {
-                'magnification': 20,
-                'na': 0.5,
-                'pixel_size_um': 0.3225
-            }
+        "objectives": {
+            "10x": {"magnification": 10, "na": 0.3, "pixel_size_um": 0.645},
+            "20x": {"magnification": 20, "na": 0.5, "pixel_size_um": 0.3225},
         },
-        'autofocus': {
-            'n_steps': 21,
-            'search_range': 200.0,
-            'interp_strength': 10,
-            'interp_kind': 'cubic',
-            'score_metric': 'tenenbaum_gradient',
-            'min_peak_prominence': 0.15,
-            'max_peak_width': 0.7
-        }
+        "autofocus": {
+            "n_steps": 21,
+            "search_range": 200.0,
+            "interp_strength": 10,
+            "interp_kind": "cubic",
+            "score_metric": "tenenbaum_gradient",
+            "min_peak_prominence": 0.15,
+            "max_peak_width": 0.7,
+        },
     }

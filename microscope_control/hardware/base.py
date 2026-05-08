@@ -18,7 +18,9 @@ logger = logging.getLogger(__name__)
 class Position:
     """Simple position class to replace sp_position dataclass."""
 
-    def __init__(self, x: Optional[float] = None, y: Optional[float] = None, z: Optional[float] = None):
+    def __init__(
+        self, x: Optional[float] = None, y: Optional[float] = None, z: Optional[float] = None
+    ):
         self.x = x
         self.y = y
         self.z = z
@@ -244,8 +246,8 @@ def _check_axis_in_range(axis_name, value, limits_key, stage_limits):
         logger.warning("%s limits not found in configuration", axis_name)
         warnings.warn(f"{axis_name} limits not found in configuration")
         return False
-    low = axis_limits.get('low')
-    high = axis_limits.get('high')
+    low = axis_limits.get("low")
+    high = axis_limits.get("high")
     if low is None or high is None:
         logger.warning("%s limit values are not properly defined: %s", axis_name, axis_limits)
         warnings.warn(f"{axis_name} limit values are not properly defined: {axis_limits}")
@@ -282,7 +284,7 @@ def is_coordinate_in_range(
     if axes is None:
         axes = position.get_specified_axes()
 
-    stage_limits = settings.get('stage', {}).get('limits', {})
+    stage_limits = settings.get("stage", {}).get("limits", {})
 
     x_ok = "x" not in axes or _check_axis_in_range("X", position.x, "x_um", stage_limits)
     y_ok = "y" not in axes or _check_axis_in_range("Y", position.y, "y_um", stage_limits)

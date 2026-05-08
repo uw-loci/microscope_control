@@ -1,6 +1,5 @@
 import numpy as np
 import cv2
-from scipy import ndimage
 from typing import Dict, Any, Optional, Tuple
 import logging
 

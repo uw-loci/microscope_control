@@ -123,8 +123,7 @@ class StagePositionCache:
             self.force_refresh()
         except Exception as e:
             logger.warning(
-                "StagePositionCache: initial read failed (%s); "
-                "polling thread will retry",
+                "StagePositionCache: initial read failed (%s); " "polling thread will retry",
                 e,
             )
 
@@ -156,7 +155,8 @@ class StagePositionCache:
             self._thread = None
         logger.info(
             "StagePositionCache: stopped (polls=%d, errors=%d)",
-            self._poll_count, self._error_count,
+            self._poll_count,
+            self._error_count,
         )
 
     # --- Pause / resume ---
@@ -253,8 +253,7 @@ class StagePositionCache:
                 self._poll_count += 1
                 if consecutive_errors > 0:
                     logger.info(
-                        "StagePositionCache: polling recovered "
-                        "after %d consecutive errors",
+                        "StagePositionCache: polling recovered " "after %d consecutive errors",
                         consecutive_errors,
                     )
                     consecutive_errors = 0
@@ -265,12 +264,14 @@ class StagePositionCache:
                 if consecutive_errors <= 3:
                     logger.warning(
                         "StagePositionCache: poll failed (%d in a row): %s",
-                        consecutive_errors, e,
+                        consecutive_errors,
+                        e,
                     )
                 else:
                     logger.debug(
                         "StagePositionCache: poll failed (%d in a row): %s",
-                        consecutive_errors, e,
+                        consecutive_errors,
+                        e,
                     )
                 # Back off slightly on errors so we don't hammer a
                 # broken bus at full poll rate.

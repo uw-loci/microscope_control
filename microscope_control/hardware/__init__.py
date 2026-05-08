@@ -81,17 +81,20 @@ try:
         PIZRotationStage,
         ThorRotationStage,
     )
-    __all__.extend([
-        "PycromanagerHardware",
-        "init_pycromanager",
-        "MicroManagerConnectionError",
-        "PycromanagerCamera",
-        "JAICamera",
-        "LaserScanningCamera",
-        "PycromanagerStage",
-        "PIZRotationStage",
-        "ThorRotationStage",
-    ])
+
+    __all__.extend(
+        [
+            "PycromanagerHardware",
+            "init_pycromanager",
+            "MicroManagerConnectionError",
+            "PycromanagerCamera",
+            "JAICamera",
+            "LaserScanningCamera",
+            "PycromanagerStage",
+            "PIZRotationStage",
+            "ThorRotationStage",
+        ]
+    )
 except ImportError:
     # pycromanager not installed, skip concrete exports
     pass

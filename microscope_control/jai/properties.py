@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PropertyLimits:
     """Limits for a numeric property."""
+
     min_value: float
     max_value: float
     current_value: float
@@ -112,8 +113,13 @@ class JAICameraProperties:
     # Built-in white balance property and options
     WHITE_BALANCE = "WhiteBalance"
     WHITE_BALANCE_OPTIONS = [
-        "Off", "Continuous", "Once",
-        "Preset3200K", "Preset5000K", "Preset6500K", "Preset7500K"
+        "Off",
+        "Continuous",
+        "Once",
+        "Preset3200K",
+        "Preset5000K",
+        "Preset6500K",
+        "Preset7500K",
     ]
 
     def __init__(
@@ -219,9 +225,7 @@ class JAICameraProperties:
                 f"Failed to get property '{property_name}' from {self.device_name}: {e}"
             )
 
-    def _set_property(
-        self, property_name: str, value: Any, wait: bool = True
-    ) -> None:
+    def _set_property(self, property_name: str, value: Any, wait: bool = True) -> None:
         """
         Set a property value on the camera.
 
@@ -269,12 +273,8 @@ class JAICameraProperties:
                 return None
 
             limits = PropertyLimits(
-                min_value=self.core.get_property_lower_limit(
-                    self.device_name, property_name
-                ),
-                max_value=self.core.get_property_upper_limit(
-                    self.device_name, property_name
-                ),
+                min_value=self.core.get_property_lower_limit(self.device_name, property_name),
+                max_value=self.core.get_property_upper_limit(self.device_name, property_name),
                 current_value=float(self._get_property(property_name)),
             )
             self._property_cache[property_name] = limits
@@ -555,8 +555,7 @@ class JAICameraProperties:
         self.core.wait_for_device(self.device_name)
 
         logger.debug(
-            f"Set R/B analog gains (unified mode): "
-            f"R={red_clamped:.2f}, B={blue_clamped:.2f}"
+            f"Set R/B analog gains (unified mode): " f"R={red_clamped:.2f}, B={blue_clamped:.2f}"
         )
 
     def get_rb_analog_gains(self) -> Dict[str, float]:
@@ -628,7 +627,9 @@ class JAICameraProperties:
         self._set_property(self.GAIN_ANALOG_GREEN, green_clamped)
         self._set_property(self.GAIN_ANALOG_BLUE, blue_clamped)
 
-        logger.debug(f"Set analog gains: R={red_clamped:.2f}, G={green_clamped:.2f}, B={blue_clamped:.2f}")
+        logger.debug(
+            f"Set analog gains: R={red_clamped:.2f}, G={green_clamped:.2f}, B={blue_clamped:.2f}"
+        )
 
     def get_analog_gains(self) -> Dict[str, float]:
         """
@@ -700,7 +701,9 @@ class JAICameraProperties:
         self._set_property(self.BLACK_LEVEL_ALL, value)
         logger.debug(f"Set global black level to {value}")
 
-    def set_black_levels(self, red: float, blue: float, all_channels: Optional[float] = None) -> None:
+    def set_black_levels(
+        self, red: float, blue: float, all_channels: Optional[float] = None
+    ) -> None:
         """
         Set per-channel digital black levels.
 

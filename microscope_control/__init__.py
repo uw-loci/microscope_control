@@ -34,13 +34,19 @@ best_z = autofocus.run_autofocus(current_position)
 
 try:
     from importlib.metadata import version as _get_version
+
     __version__ = _get_version("microscope-control")
 except Exception:
     __version__ = "0.0.0.dev"
 __author__ = "Mike Nelson, Bin Li, Jenu Chacko"
 
 # Make key classes easily accessible
-from microscope_control.hardware.base import MicroscopeHardware, Position, is_mm_running, is_coordinate_in_range
+from microscope_control.hardware.base import (
+    MicroscopeHardware,
+    Position,
+    is_mm_running,
+    is_coordinate_in_range,
+)
 from microscope_control.hardware.camera.base import Camera
 from microscope_control.hardware.stage import Stage
 from microscope_control.hardware.rotation import RotationStage

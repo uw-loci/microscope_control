@@ -48,7 +48,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -99,34 +99,46 @@ class NoiseCharacterizationResults:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         fieldnames = [
-            'unified_gain', 'exposure_ms', 'analog_red', 'analog_blue',
-            'red_mean', 'green_mean', 'blue_mean',
-            'red_stddev', 'green_stddev', 'blue_stddev',
-            'red_snr', 'green_snr', 'blue_snr',
-            'saturation_pct', 'num_frames'
+            "unified_gain",
+            "exposure_ms",
+            "analog_red",
+            "analog_blue",
+            "red_mean",
+            "green_mean",
+            "blue_mean",
+            "red_stddev",
+            "green_stddev",
+            "blue_stddev",
+            "red_snr",
+            "green_snr",
+            "blue_snr",
+            "saturation_pct",
+            "num_frames",
         ]
 
-        with open(output_path, 'w', newline='') as f:
+        with open(output_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for result in self.results:
-                writer.writerow({
-                    'unified_gain': result.unified_gain,
-                    'exposure_ms': result.exposure_ms,
-                    'analog_red': result.analog_red,
-                    'analog_blue': result.analog_blue,
-                    'red_mean': round(result.red_mean, 2),
-                    'green_mean': round(result.green_mean, 2),
-                    'blue_mean': round(result.blue_mean, 2),
-                    'red_stddev': round(result.red_stddev, 3),
-                    'green_stddev': round(result.green_stddev, 3),
-                    'blue_stddev': round(result.blue_stddev, 3),
-                    'red_snr': round(result.red_snr, 1),
-                    'green_snr': round(result.green_snr, 1),
-                    'blue_snr': round(result.blue_snr, 1),
-                    'saturation_pct': round(result.saturation_pct, 2),
-                    'num_frames': result.num_frames,
-                })
+                writer.writerow(
+                    {
+                        "unified_gain": result.unified_gain,
+                        "exposure_ms": result.exposure_ms,
+                        "analog_red": result.analog_red,
+                        "analog_blue": result.analog_blue,
+                        "red_mean": round(result.red_mean, 2),
+                        "green_mean": round(result.green_mean, 2),
+                        "blue_mean": round(result.blue_mean, 2),
+                        "red_stddev": round(result.red_stddev, 3),
+                        "green_stddev": round(result.green_stddev, 3),
+                        "blue_stddev": round(result.blue_stddev, 3),
+                        "red_snr": round(result.red_snr, 1),
+                        "green_snr": round(result.green_snr, 1),
+                        "blue_snr": round(result.blue_snr, 1),
+                        "saturation_pct": round(result.saturation_pct, 2),
+                        "num_frames": result.num_frames,
+                    }
+                )
 
         logger.info(f"Saved {len(self.results)} results to {output_path}")
 
@@ -176,6 +188,7 @@ class JAINoiseCharacterization:
         else:
             try:
                 from microscope_control.jai.properties import JAICameraProperties
+
                 self.jai_props = JAICameraProperties(hardware.core)
             except Exception as e:
                 logger.warning(f"Could not create JAICameraProperties: {e}")
@@ -203,10 +216,16 @@ class JAINoiseCharacterization:
         """
         if not frames:
             return {
-                'red_mean': 0, 'green_mean': 0, 'blue_mean': 0,
-                'red_stddev': 0, 'green_stddev': 0, 'blue_stddev': 0,
-                'red_snr': 0, 'green_snr': 0, 'blue_snr': 0,
-                'saturation_pct': 0,
+                "red_mean": 0,
+                "green_mean": 0,
+                "blue_mean": 0,
+                "red_stddev": 0,
+                "green_stddev": 0,
+                "blue_stddev": 0,
+                "red_snr": 0,
+                "green_snr": 0,
+                "blue_snr": 0,
+                "saturation_pct": 0,
             }
 
         # Stack frames: shape (N, H, W, C)
@@ -215,34 +234,40 @@ class JAINoiseCharacterization:
         if stack.ndim != 4 or stack.shape[3] < 3:
             logger.warning(f"Unexpected image shape: {stack.shape}")
             return {
-                'red_mean': 0, 'green_mean': 0, 'blue_mean': 0,
-                'red_stddev': 0, 'green_stddev': 0, 'blue_stddev': 0,
-                'red_snr': 0, 'green_snr': 0, 'blue_snr': 0,
-                'saturation_pct': 0,
+                "red_mean": 0,
+                "green_mean": 0,
+                "blue_mean": 0,
+                "red_stddev": 0,
+                "green_stddev": 0,
+                "blue_stddev": 0,
+                "red_snr": 0,
+                "green_snr": 0,
+                "blue_snr": 0,
+                "saturation_pct": 0,
             }
 
         # Compute temporal mean and stddev per pixel, then average spatially
         temporal_mean = stack.mean(axis=0)  # (H, W, C)
-        temporal_std = stack.std(axis=0)    # (H, W, C)
+        temporal_std = stack.std(axis=0)  # (H, W, C)
 
         channel_means = {
-            'red': float(temporal_mean[:, :, 0].mean()),
-            'green': float(temporal_mean[:, :, 1].mean()),
-            'blue': float(temporal_mean[:, :, 2].mean()),
+            "red": float(temporal_mean[:, :, 0].mean()),
+            "green": float(temporal_mean[:, :, 1].mean()),
+            "blue": float(temporal_mean[:, :, 2].mean()),
         }
 
         channel_stddevs = {
-            'red': float(temporal_std[:, :, 0].mean()),
-            'green': float(temporal_std[:, :, 1].mean()),
-            'blue': float(temporal_std[:, :, 2].mean()),
+            "red": float(temporal_std[:, :, 0].mean()),
+            "green": float(temporal_std[:, :, 1].mean()),
+            "blue": float(temporal_std[:, :, 2].mean()),
         }
 
         channel_snr = {}
-        for ch in ['red', 'green', 'blue']:
+        for ch in ["red", "green", "blue"]:
             if channel_stddevs[ch] > 0:
                 channel_snr[ch] = channel_means[ch] / channel_stddevs[ch]
             else:
-                channel_snr[ch] = float('inf') if channel_means[ch] > 0 else 0
+                channel_snr[ch] = float("inf") if channel_means[ch] > 0 else 0
 
         # Check for saturation (assuming 8-bit, threshold at 250)
         max_val = temporal_mean.max()
@@ -250,16 +275,16 @@ class JAINoiseCharacterization:
         saturation_pct = 100.0 * np.sum(temporal_mean >= saturation_threshold) / temporal_mean.size
 
         return {
-            'red_mean': channel_means['red'],
-            'green_mean': channel_means['green'],
-            'blue_mean': channel_means['blue'],
-            'red_stddev': channel_stddevs['red'],
-            'green_stddev': channel_stddevs['green'],
-            'blue_stddev': channel_stddevs['blue'],
-            'red_snr': channel_snr['red'],
-            'green_snr': channel_snr['green'],
-            'blue_snr': channel_snr['blue'],
-            'saturation_pct': saturation_pct,
+            "red_mean": channel_means["red"],
+            "green_mean": channel_means["green"],
+            "blue_mean": channel_means["blue"],
+            "red_stddev": channel_stddevs["red"],
+            "green_stddev": channel_stddevs["green"],
+            "blue_stddev": channel_stddevs["blue"],
+            "red_snr": channel_snr["red"],
+            "green_snr": channel_snr["green"],
+            "blue_snr": channel_snr["blue"],
+            "saturation_pct": saturation_pct,
         }
 
     def measure_at_settings(
@@ -289,8 +314,7 @@ class JAINoiseCharacterization:
 
         try:
             self.jai_props.set_channel_exposures(
-                red=exposure_ms, green=exposure_ms, blue=exposure_ms,
-                auto_enable=True
+                red=exposure_ms, green=exposure_ms, blue=exposure_ms, auto_enable=True
             )
         except Exception as e:
             logger.warning(f"Failed to set exposure: {e}")
@@ -308,7 +332,9 @@ class JAINoiseCharacterization:
         all_frames = self._capture_frames(total_frames)
 
         # Discard settle frames
-        analysis_frames = all_frames[self.settle_frames:] if len(all_frames) > self.settle_frames else all_frames
+        analysis_frames = (
+            all_frames[self.settle_frames :] if len(all_frames) > self.settle_frames else all_frames
+        )
 
         # Analyze
         stats = self._analyze_frames(analysis_frames)
@@ -318,16 +344,16 @@ class JAINoiseCharacterization:
             exposure_ms=exposure_ms,
             analog_red=analog_red,
             analog_blue=analog_blue,
-            red_mean=stats['red_mean'],
-            green_mean=stats['green_mean'],
-            blue_mean=stats['blue_mean'],
-            red_stddev=stats['red_stddev'],
-            green_stddev=stats['green_stddev'],
-            blue_stddev=stats['blue_stddev'],
-            red_snr=stats['red_snr'],
-            green_snr=stats['green_snr'],
-            blue_snr=stats['blue_snr'],
-            saturation_pct=stats['saturation_pct'],
+            red_mean=stats["red_mean"],
+            green_mean=stats["green_mean"],
+            blue_mean=stats["blue_mean"],
+            red_stddev=stats["red_stddev"],
+            green_stddev=stats["green_stddev"],
+            blue_stddev=stats["blue_stddev"],
+            red_snr=stats["red_snr"],
+            green_snr=stats["green_snr"],
+            blue_snr=stats["blue_snr"],
+            saturation_pct=stats["saturation_pct"],
             num_frames=len(analysis_frames),
         )
 
@@ -379,8 +405,9 @@ class JAINoiseCharacterization:
 
                     if progress_callback:
                         progress_callback(
-                            current_test, total_tests,
-                            f"Testing gain={gain}, exp={exposure}ms, rb={rb_gain}"
+                            current_test,
+                            total_tests,
+                            f"Testing gain={gain}, exp={exposure}ms, rb={rb_gain}",
                         )
 
                     logger.debug(
@@ -432,7 +459,7 @@ class JAINoiseCharacterization:
 
         # Generate summary report
         report_path = output_path / "noise_characterization_report.txt"
-        with open(report_path, 'w') as f:
+        with open(report_path, "w") as f:
             f.write("=" * 70 + "\n")
             f.write("JAI CAMERA NOISE CHARACTERIZATION REPORT\n")
             f.write("=" * 70 + "\n\n")
@@ -451,7 +478,9 @@ class JAINoiseCharacterization:
             f.write("NOISE BY UNIFIED GAIN (at 25ms exposure)\n")
             f.write("=" * 70 + "\n\n")
 
-            f.write(f"{'Gain':>6} | {'R_stddev':>8} | {'G_stddev':>8} | {'B_stddev':>8} | {'R_mean':>8} | {'G_mean':>8} | {'B_mean':>8}\n")
+            f.write(
+                f"{'Gain':>6} | {'R_stddev':>8} | {'G_stddev':>8} | {'B_stddev':>8} | {'R_mean':>8} | {'G_mean':>8} | {'B_mean':>8}\n"
+            )
             f.write("-" * 70 + "\n")
 
             for gain in sorted(gain_groups.keys()):
@@ -472,21 +501,26 @@ class JAINoiseCharacterization:
 
             # Find optimal settings
             # Best SNR at reasonable signal level
-            good_results = [r for r in results.results
-                          if r.red_mean > 50 and r.saturation_pct < 1.0]
+            good_results = [
+                r for r in results.results if r.red_mean > 50 and r.saturation_pct < 1.0
+            ]
             if good_results:
                 best_snr = max(good_results, key=lambda r: min(r.red_snr, r.green_snr, r.blue_snr))
-                f.write(f"Best balanced SNR:\n")
+                f.write("Best balanced SNR:\n")
                 f.write(f"  Unified gain: {best_snr.unified_gain}\n")
                 f.write(f"  Exposure: {best_snr.exposure_ms}ms\n")
-                f.write(f"  SNR: R={best_snr.red_snr:.1f}, G={best_snr.green_snr:.1f}, B={best_snr.blue_snr:.1f}\n\n")
+                f.write(
+                    f"  SNR: R={best_snr.red_snr:.1f}, G={best_snr.green_snr:.1f}, B={best_snr.blue_snr:.1f}\n\n"
+                )
 
             # Lowest noise at each gain
             f.write("Lowest noise settings per gain:\n")
             for gain in sorted(gain_groups.keys()):
                 group = [r for r in gain_groups[gain] if r.saturation_pct < 5.0]
                 if group:
-                    lowest = min(group, key=lambda r: max(r.red_stddev, r.green_stddev, r.blue_stddev))
+                    lowest = min(
+                        group, key=lambda r: max(r.red_stddev, r.green_stddev, r.blue_stddev)
+                    )
                     f.write(
                         f"  Gain {gain:.1f}: exp={lowest.exposure_ms:.0f}ms, "
                         f"max_stddev={max(lowest.red_stddev, lowest.green_stddev, lowest.blue_stddev):.2f}\n"
@@ -513,7 +547,8 @@ class JAINoiseCharacterization:
     ) -> None:
         """Generate noise characterization plots."""
         import matplotlib
-        matplotlib.use('Agg')
+
+        matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
         output_path = Path(output_path)
@@ -528,22 +563,22 @@ class JAINoiseCharacterization:
                 exp_groups[r.exposure_ms] = []
             exp_groups[r.exposure_ms].append(r)
 
-        colors = ['red', 'green', 'blue']
+        colors = ["red", "green", "blue"]
         for exp_ms in sorted(exp_groups.keys())[:4]:  # Limit to 4 exposures
             group = sorted(exp_groups[exp_ms], key=lambda r: r.unified_gain)
             gains = [r.unified_gain for r in group]
 
             for i, (ax, ch) in enumerate(zip(axes, colors)):
-                stddevs = [getattr(r, f'{ch}_stddev') for r in group]
-                ax.plot(gains, stddevs, 'o-', label=f'{exp_ms}ms')
-                ax.set_xlabel('Unified Gain')
-                ax.set_ylabel('Noise (StdDev)')
-                ax.set_title(f'{ch.capitalize()} Channel Noise vs Gain')
+                stddevs = [getattr(r, f"{ch}_stddev") for r in group]
+                ax.plot(gains, stddevs, "o-", label=f"{exp_ms}ms")
+                ax.set_xlabel("Unified Gain")
+                ax.set_ylabel("Noise (StdDev)")
+                ax.set_title(f"{ch.capitalize()} Channel Noise vs Gain")
                 ax.legend()
                 ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plt.savefig(output_path / 'noise_vs_gain.png', dpi=150)
+        plt.savefig(output_path / "noise_vs_gain.png", dpi=150)
         plt.close()
 
         # Plot 2: SNR heatmap
@@ -557,17 +592,18 @@ class JAINoiseCharacterization:
             for r in results.results:
                 gi = gains.index(r.unified_gain)
                 ei = exposures.index(r.exposure_ms)
-                snr_matrix[gi, ei] = getattr(r, f'{ch}_snr')
+                snr_matrix[gi, ei] = getattr(r, f"{ch}_snr")
 
-            im = axes[i].imshow(snr_matrix, aspect='auto', origin='lower',
-                               extent=[0, len(exposures), 0, len(gains)])
-            axes[i].set_xlabel('Exposure Index')
-            axes[i].set_ylabel('Gain Index')
-            axes[i].set_title(f'{ch.capitalize()} SNR Heatmap')
-            plt.colorbar(im, ax=axes[i], label='SNR')
+            im = axes[i].imshow(
+                snr_matrix, aspect="auto", origin="lower", extent=[0, len(exposures), 0, len(gains)]
+            )
+            axes[i].set_xlabel("Exposure Index")
+            axes[i].set_ylabel("Gain Index")
+            axes[i].set_title(f"{ch.capitalize()} SNR Heatmap")
+            plt.colorbar(im, ax=axes[i], label="SNR")
 
         plt.tight_layout()
-        plt.savefig(output_path / 'snr_heatmap.png', dpi=150)
+        plt.savefig(output_path / "snr_heatmap.png", dpi=150)
         plt.close()
 
         logger.info(f"Saved plots to {output_path}")
@@ -576,7 +612,7 @@ class JAINoiseCharacterization:
 def main():
     """CLI entry point for noise characterization."""
     parser = argparse.ArgumentParser(
-        description='JAI Camera Noise Characterization Tool',
+        description="JAI Camera Noise Characterization Tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -588,52 +624,57 @@ Examples:
 
   # Custom grid
   python noise_characterization.py config.yml --gains 1.0,2.0,4.0 --exposures 10,25,50
-"""
+""",
     )
 
-    parser.add_argument('config_yaml',
-                       help='Path to microscope configuration YAML file')
-    parser.add_argument('--output', '-o', default='./noise_characterization',
-                       help='Output directory for results')
-    parser.add_argument('--quick', action='store_true',
-                       help='Use quick (smaller) test grid')
-    parser.add_argument('--gains', type=str, default=None,
-                       help='Comma-separated list of gains to test')
-    parser.add_argument('--exposures', type=str, default=None,
-                       help='Comma-separated list of exposures (ms) to test')
-    parser.add_argument('--rb-gains', type=str, default=None,
-                       help='Comma-separated list of R/B analog gains to test')
-    parser.add_argument('--frames', type=int, default=10,
-                       help='Number of frames to average per measurement')
-    parser.add_argument('--host', default='127.0.0.1',
-                       help='Microscope server host')
-    parser.add_argument('--port', type=int, default=5000,
-                       help='Microscope server port')
+    parser.add_argument("config_yaml", help="Path to microscope configuration YAML file")
+    parser.add_argument(
+        "--output", "-o", default="./noise_characterization", help="Output directory for results"
+    )
+    parser.add_argument("--quick", action="store_true", help="Use quick (smaller) test grid")
+    parser.add_argument(
+        "--gains", type=str, default=None, help="Comma-separated list of gains to test"
+    )
+    parser.add_argument(
+        "--exposures", type=str, default=None, help="Comma-separated list of exposures (ms) to test"
+    )
+    parser.add_argument(
+        "--rb-gains",
+        type=str,
+        default=None,
+        help="Comma-separated list of R/B analog gains to test",
+    )
+    parser.add_argument(
+        "--frames", type=int, default=10, help="Number of frames to average per measurement"
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="Microscope server host")
+    parser.add_argument("--port", type=int, default=5000, help="Microscope server port")
 
     args = parser.parse_args()
 
     # Setup logging
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
+        format="%(asctime)s - %(levelname)s - %(message)s",
     )
 
     # Parse custom grids
     gains = None
     if args.gains:
-        gains = [float(g) for g in args.gains.split(',')]
+        gains = [float(g) for g in args.gains.split(",")]
 
     exposures = None
     if args.exposures:
-        exposures = [float(e) for e in args.exposures.split(',')]
+        exposures = [float(e) for e in args.exposures.split(",")]
 
     rb_gains = None
     if args.rb_gains:
-        rb_gains = [float(g) for g in args.rb_gains.split(',')]
+        rb_gains = [float(g) for g in args.rb_gains.split(",")]
 
     # Connect to server
     try:
         from microscope_command_server.client import QuPathTestClient
+
         client = QuPathTestClient(host=args.host, port=args.port)
         client.connect()
         logger.info(f"Connected to server at {args.host}:{args.port}")
@@ -653,10 +694,16 @@ Examples:
 
     # For now, print what would be tested
     logger.info("Would test the following configurations:")
-    test_gains = gains or (JAINoiseCharacterization.QUICK_GAINS if args.quick
-                          else JAINoiseCharacterization.DEFAULT_GAINS)
-    test_exposures = exposures or (JAINoiseCharacterization.QUICK_EXPOSURES if args.quick
-                                   else JAINoiseCharacterization.DEFAULT_EXPOSURES)
+    test_gains = gains or (
+        JAINoiseCharacterization.QUICK_GAINS
+        if args.quick
+        else JAINoiseCharacterization.DEFAULT_GAINS
+    )
+    test_exposures = exposures or (
+        JAINoiseCharacterization.QUICK_EXPOSURES
+        if args.quick
+        else JAINoiseCharacterization.DEFAULT_EXPOSURES
+    )
     test_rb = rb_gains or JAINoiseCharacterization.DEFAULT_RB_GAINS
 
     total = len(test_gains) * len(test_exposures) * len(test_rb)
@@ -667,5 +714,5 @@ Examples:
     logger.info(f"  Output directory: {args.output}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

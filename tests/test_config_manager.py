@@ -4,11 +4,9 @@ Unit tests for ConfigManager.
 Tests configuration loading, merging, and validation logic.
 """
 
-import numpy as np
 import pytest
 from microscope_control.config.manager import ConfigManager
 import yaml
-from pathlib import Path
 
 
 class TestConfigMergeSettings:
@@ -16,51 +14,36 @@ class TestConfigMergeSettings:
 
     def test_merge_simple_dicts(self):
         """Test merging two simple dictionaries."""
-        base = {'a': 1, 'b': 2}
-        override = {'b': 3, 'c': 4}
+        base = {"a": 1, "b": 2}
+        override = {"b": 3, "c": 4}
 
         # Access static/class method
         try:
             merged = ConfigManager._merge_settings(base, override)
-            assert merged['a'] == 1
-            assert merged['b'] == 3  # Override wins
-            assert merged['c'] == 4
+            assert merged["a"] == 1
+            assert merged["b"] == 3  # Override wins
+            assert merged["c"] == 4
         except AttributeError:
             pytest.skip("_merge_settings not available as expected")
 
     def test_merge_nested_dicts(self):
         """Test merging nested dictionaries."""
-        base = {
-            'microscope': {
-                'name': 'Base Scope',
-                'stage': {
-                    'x_max': 100000,
-                    'y_max': 75000
-                }
-            }
-        }
+        base = {"microscope": {"name": "Base Scope", "stage": {"x_max": 100000, "y_max": 75000}}}
 
-        override = {
-            'microscope': {
-                'name': 'Override Scope',
-                'stage': {
-                    'y_max': 80000
-                }
-            }
-        }
+        override = {"microscope": {"name": "Override Scope", "stage": {"y_max": 80000}}}
 
         try:
             merged = ConfigManager._merge_settings(base, override)
 
-            assert merged['microscope']['name'] == 'Override Scope'
-            assert merged['microscope']['stage']['x_max'] == 100000  # Kept from base
-            assert merged['microscope']['stage']['y_max'] == 80000  # Overridden
+            assert merged["microscope"]["name"] == "Override Scope"
+            assert merged["microscope"]["stage"]["x_max"] == 100000  # Kept from base
+            assert merged["microscope"]["stage"]["y_max"] == 80000  # Overridden
         except AttributeError:
             pytest.skip("_merge_settings not available")
 
     def test_merge_with_empty_override(self):
         """Test merging with empty override dictionary."""
-        base = {'a': 1, 'b': 2}
+        base = {"a": 1, "b": 2}
         override = {}
 
         try:
@@ -72,7 +55,7 @@ class TestConfigMergeSettings:
     def test_merge_with_empty_base(self):
         """Test merging with empty base dictionary."""
         base = {}
-        override = {'a': 1, 'b': 2}
+        override = {"a": 1, "b": 2}
 
         try:
             merged = ConfigManager._merge_settings(base, override)
@@ -82,8 +65,8 @@ class TestConfigMergeSettings:
 
     def test_merge_doesnt_modify_originals(self):
         """Test that merging doesn't modify original dictionaries."""
-        base = {'a': 1, 'b': 2}
-        override = {'b': 3, 'c': 4}
+        base = {"a": 1, "b": 2}
+        override = {"b": 3, "c": 4}
 
         base_copy = base.copy()
         override_copy = override.copy()
@@ -113,8 +96,8 @@ class TestConfigValidation:
     def test_validate_missing_required_keys(self):
         """Test validation fails with missing required keys."""
         incomplete_config = {
-            'microscope': {
-                'name': 'Test'
+            "microscope": {
+                "name": "Test"
                 # Missing objectives, stage limits, etc.
             }
         }
@@ -145,13 +128,13 @@ class TestConfigValidation:
     def test_validate_invalid_data_types(self):
         """Test validation catches invalid data types."""
         invalid_config = {
-            'microscope': {
-                'name': 'Test',
-                'stage': {
-                    'limits': {
-                        'x': 'not_a_dict',  # Should be dict with min/max
+            "microscope": {
+                "name": "Test",
+                "stage": {
+                    "limits": {
+                        "x": "not_a_dict",  # Should be dict with min/max
                     }
-                }
+                },
             }
         }
 
@@ -172,16 +155,14 @@ class TestConfigManagerInit:
         """Test initialization with valid config file."""
         # Create temporary config file
         config_data = {
-            'microscope': {
-                'name': 'TestScope',
-                'objectives': {
-                    '10x': {'magnification': 10, 'pixel_size_um': 0.65}
-                }
+            "microscope": {
+                "name": "TestScope",
+                "objectives": {"10x": {"magnification": 10, "pixel_size_um": 0.65}},
             }
         }
 
         config_path = temp_output_directory / "test_config.yml"
-        with open(config_path, 'w') as f:
+        with open(config_path, "w") as f:
             yaml.dump(config_data, f)
 
         try:
@@ -219,58 +200,46 @@ class TestConfigManagerGetMethods:
 
     def test_get_microscope_name(self, temp_output_directory):
         """Test getting microscope name from config."""
-        config_data = {
-            'microscope': {
-                'name': 'MyTestScope'
-            }
-        }
+        config_data = {"microscope": {"name": "MyTestScope"}}
 
         config_path = temp_output_directory / "test_config.yml"
-        with open(config_path, 'w') as f:
+        with open(config_path, "w") as f:
             yaml.dump(config_data, f)
 
         try:
             manager = ConfigManager(str(config_path))
-            name = manager.get('microscope', 'name')
-            assert name == 'MyTestScope'
+            name = manager.get("microscope", "name")
+            assert name == "MyTestScope"
         except Exception:
             pytest.skip("ConfigManager.get method not available or different signature")
 
     def test_get_nested_value(self, temp_output_directory):
         """Test getting nested configuration values."""
-        config_data = {
-            'microscope': {
-                'stage': {
-                    'limits': {
-                        'x': {'min': 0, 'max': 100000}
-                    }
-                }
-            }
-        }
+        config_data = {"microscope": {"stage": {"limits": {"x": {"min": 0, "max": 100000}}}}}
 
         config_path = temp_output_directory / "test_config.yml"
-        with open(config_path, 'w') as f:
+        with open(config_path, "w") as f:
             yaml.dump(config_data, f)
 
         try:
             manager = ConfigManager(str(config_path))
-            x_limits = manager.get('microscope', 'stage', 'limits', 'x')
-            assert x_limits['min'] == 0
-            assert x_limits['max'] == 100000
+            x_limits = manager.get("microscope", "stage", "limits", "x")
+            assert x_limits["min"] == 0
+            assert x_limits["max"] == 100000
         except Exception:
             pytest.skip("ConfigManager nested get not available")
 
     def test_get_nonexistent_key(self, temp_output_directory):
         """Test getting nonexistent key returns None or raises error."""
-        config_data = {'microscope': {'name': 'Test'}}
+        config_data = {"microscope": {"name": "Test"}}
 
         config_path = temp_output_directory / "test_config.yml"
-        with open(config_path, 'w') as f:
+        with open(config_path, "w") as f:
             yaml.dump(config_data, f)
 
         try:
             manager = ConfigManager(str(config_path))
-            result = manager.get('nonexistent', 'key')
+            result = manager.get("nonexistent", "key")
             # Should return None or raise KeyError
             assert result is None
         except (KeyError, AttributeError):
@@ -285,14 +254,10 @@ class TestConfigManagerDefaults:
 
     def test_default_values_applied(self, temp_output_directory):
         """Test that default values are applied when keys are missing."""
-        minimal_config = {
-            'microscope': {
-                'name': 'MinimalScope'
-            }
-        }
+        minimal_config = {"microscope": {"name": "MinimalScope"}}
 
         config_path = temp_output_directory / "minimal_config.yml"
-        with open(config_path, 'w') as f:
+        with open(config_path, "w") as f:
             yaml.dump(minimal_config, f)
 
         try:
@@ -309,36 +274,28 @@ class TestConfigManagerObjectiveSettings:
     def test_get_objective_settings(self, temp_output_directory):
         """Test retrieving objective-specific settings."""
         config_data = {
-            'microscope': {
-                'objectives': {
-                    '10x': {
-                        'magnification': 10,
-                        'pixel_size_um': 0.65,
-                        'na': 0.45
-                    },
-                    '20x': {
-                        'magnification': 20,
-                        'pixel_size_um': 0.325,
-                        'na': 0.75
-                    }
+            "microscope": {
+                "objectives": {
+                    "10x": {"magnification": 10, "pixel_size_um": 0.65, "na": 0.45},
+                    "20x": {"magnification": 20, "pixel_size_um": 0.325, "na": 0.75},
                 }
             }
         }
 
         config_path = temp_output_directory / "objectives_config.yml"
-        with open(config_path, 'w') as f:
+        with open(config_path, "w") as f:
             yaml.dump(config_data, f)
 
         try:
             manager = ConfigManager(str(config_path))
 
             # Get 10x objective settings
-            obj_10x = manager.get('microscope', 'objectives', '10x')
-            assert obj_10x['pixel_size_um'] == 0.65
+            obj_10x = manager.get("microscope", "objectives", "10x")
+            assert obj_10x["pixel_size_um"] == 0.65
 
             # Get 20x objective settings
-            obj_20x = manager.get('microscope', 'objectives', '20x')
-            assert obj_20x['pixel_size_um'] == 0.325
+            obj_20x = manager.get("microscope", "objectives", "20x")
+            assert obj_20x["pixel_size_um"] == 0.325
         except Exception:
             pytest.skip("Objective settings retrieval not testable")
 
@@ -349,16 +306,16 @@ class TestConfigManagerAutofocusSettings:
     def test_get_autofocus_settings(self, temp_output_directory, sample_autofocus_config):
         """Test retrieving autofocus settings for an objective."""
         config_path = temp_output_directory / "autofocus_config.yml"
-        with open(config_path, 'w') as f:
+        with open(config_path, "w") as f:
             yaml.dump(sample_autofocus_config, f)
 
         try:
             manager = ConfigManager(str(config_path))
 
-            af_settings = manager.get('autofocus')
+            af_settings = manager.get("autofocus")
             assert af_settings is not None
-            assert af_settings['n_steps'] == 21
-            assert af_settings['search_range'] == 200.0
+            assert af_settings["n_steps"] == 21
+            assert af_settings["search_range"] == 200.0
         except Exception:
             pytest.skip("Autofocus settings retrieval not testable")
 

@@ -1,7 +1,7 @@
 import numpy as np
 import cv2
 from scipy import ndimage
-from typing import Tuple, Dict, Any
+from typing import Dict, Any
 import logging
 
 

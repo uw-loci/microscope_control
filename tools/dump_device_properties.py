@@ -91,7 +91,7 @@ def dump_properties(output_path=None, config_label=None):
     print(f"Found {len(devices)} loaded devices")
 
     lines = []
-    lines.append(f"Micro-Manager Device Properties Dump")
+    lines.append("Micro-Manager Device Properties Dump")
     lines.append(f"Generated: {datetime.datetime.now().isoformat()}")
     if config_label:
         lines.append(f"MM Config: {config_label}")
@@ -161,19 +161,21 @@ def main():
     parser = argparse.ArgumentParser(
         description="Dump all Micro-Manager device properties to a text file.",
         epilog="Examples:\n"
-               "  python dump_device_properties.py --config PPM\n"
-               "  python dump_device_properties.py --config OWS3_widefield\n"
-               "  python dump_device_properties.py --config OWS3_multiphoton\n",
+        "  python dump_device_properties.py --config PPM\n"
+        "  python dump_device_properties.py --config OWS3_widefield\n"
+        "  python dump_device_properties.py --config OWS3_multiphoton\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--config", "-c",
+        "--config",
+        "-c",
         help="Label for the MM config currently loaded (e.g., PPM, "
-             "OWS3_widefield, OWS3_multiphoton). Used in the filename "
-             "and file header.",
+        "OWS3_widefield, OWS3_multiphoton). Used in the filename "
+        "and file header.",
     )
     parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         help="Output file path (default: mm_device_properties_<config>_<date>.txt)",
     )
     args = parser.parse_args()

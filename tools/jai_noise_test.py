@@ -29,7 +29,6 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
 
-
 # ---- Protocol constants (mirror protocol.py) ----
 SETGAIN = b"setgain_"
 SETEXP = b"setexp__"
@@ -158,7 +157,9 @@ def run_test_grid(conn, output_dir, num_noise_frames=10):
                 noise["exposure_ms"] = exp_ms
                 noise["test_type"] = "unified_gain_sweep"
                 results.append(noise)
-                print(f"R={noise['red_std']:.2f} G={noise['green_std']:.2f} B={noise['blue_std']:.2f}")
+                print(
+                    f"R={noise['red_std']:.2f} G={noise['green_std']:.2f} B={noise['blue_std']:.2f}"
+                )
             except Exception as e:
                 print(f"ERROR: {e}")
 
@@ -179,7 +180,9 @@ def run_test_grid(conn, output_dir, num_noise_frames=10):
                 noise["exposure_ms"] = exp_ms
                 noise["test_type"] = "exposure_sweep"
                 results.append(noise)
-                print(f"R={noise['red_std']:.2f} G={noise['green_std']:.2f} B={noise['blue_std']:.2f}")
+                print(
+                    f"R={noise['red_std']:.2f} G={noise['green_std']:.2f} B={noise['blue_std']:.2f}"
+                )
             except Exception as e:
                 print(f"ERROR: {e}")
 
@@ -190,8 +193,11 @@ def run_test_grid(conn, output_dir, num_noise_frames=10):
     for rb_gain in analog_rb_gains:
         test_num += 1
         # Red sweep
-        print(f"  [{test_num}] unified={fixed_gain:.1f}, analog_red={rb_gain:.2f}, exp={fixed_exp:.0f}ms ... ",
-              end="", flush=True)
+        print(
+            f"  [{test_num}] unified={fixed_gain:.1f}, analog_red={rb_gain:.2f}, exp={fixed_exp:.0f}ms ... ",
+            end="",
+            flush=True,
+        )
         try:
             conn.set_gains(fixed_gain, rb_gain, 1.0)
             conn.set_exposure_unified(fixed_exp)
@@ -209,8 +215,11 @@ def run_test_grid(conn, output_dir, num_noise_frames=10):
 
         test_num += 1
         # Blue sweep
-        print(f"  [{test_num}] unified={fixed_gain:.1f}, analog_blue={rb_gain:.2f}, exp={fixed_exp:.0f}ms ... ",
-              end="", flush=True)
+        print(
+            f"  [{test_num}] unified={fixed_gain:.1f}, analog_blue={rb_gain:.2f}, exp={fixed_exp:.0f}ms ... ",
+            end="",
+            flush=True,
+        )
         try:
             conn.set_gains(fixed_gain, 1.0, rb_gain)
             conn.set_exposure_unified(fixed_exp)
@@ -245,10 +254,20 @@ def save_csv(results, output_dir):
         return csv_path
 
     fieldnames = [
-        "test_type", "unified_gain", "analog_red", "analog_blue", "exposure_ms",
-        "red_mean", "green_mean", "blue_mean",
-        "red_std", "green_std", "blue_std",
-        "red_snr", "green_snr", "blue_snr",
+        "test_type",
+        "unified_gain",
+        "analog_red",
+        "analog_blue",
+        "exposure_ms",
+        "red_mean",
+        "green_mean",
+        "blue_mean",
+        "red_std",
+        "green_std",
+        "blue_std",
+        "red_snr",
+        "green_snr",
+        "blue_snr",
     ]
 
     with open(csv_path, "w", newline="") as f:
@@ -273,15 +292,23 @@ def generate_plots(results, output_dir):
     # ---- Plot 1: Noise vs Unified Gain ----
     fig, ax = plt.subplots(figsize=(8, 5))
     for exp_ms in [25.0, 100.0]:
-        mask = np.array([
-            t == "unified_gain_sweep" and r["exposure_ms"] == exp_ms
-            for t, r in zip(test_types, results)
-        ])
+        mask = np.array(
+            [
+                t == "unified_gain_sweep" and r["exposure_ms"] == exp_ms
+                for t, r in zip(test_types, results)
+            ]
+        )
         if mask.any():
             gains = arr["unified_gain"][mask]
-            ax.plot(gains, arr["red_std"][mask], "r-o", label=f"Red (exp={exp_ms:.0f}ms)", alpha=0.8)
-            ax.plot(gains, arr["green_std"][mask], "g-s", label=f"Green (exp={exp_ms:.0f}ms)", alpha=0.8)
-            ax.plot(gains, arr["blue_std"][mask], "b-^", label=f"Blue (exp={exp_ms:.0f}ms)", alpha=0.8)
+            ax.plot(
+                gains, arr["red_std"][mask], "r-o", label=f"Red (exp={exp_ms:.0f}ms)", alpha=0.8
+            )
+            ax.plot(
+                gains, arr["green_std"][mask], "g-s", label=f"Green (exp={exp_ms:.0f}ms)", alpha=0.8
+            )
+            ax.plot(
+                gains, arr["blue_std"][mask], "b-^", label=f"Blue (exp={exp_ms:.0f}ms)", alpha=0.8
+            )
     ax.set_xlabel("Unified Gain")
     ax.set_ylabel("Noise (StdDev)")
     ax.set_title("Noise vs Unified Gain (per channel)")
@@ -294,14 +321,18 @@ def generate_plots(results, output_dir):
     # ---- Plot 2: Noise vs Exposure ----
     fig, ax = plt.subplots(figsize=(8, 5))
     for gain in [1.0, 5.0]:
-        mask = np.array([
-            t == "exposure_sweep" and r["unified_gain"] == gain
-            for t, r in zip(test_types, results)
-        ])
+        mask = np.array(
+            [
+                t == "exposure_sweep" and r["unified_gain"] == gain
+                for t, r in zip(test_types, results)
+            ]
+        )
         if mask.any():
             exps = arr["exposure_ms"][mask]
             ax.plot(exps, arr["red_std"][mask], "r-o", label=f"Red (gain={gain:.0f})", alpha=0.8)
-            ax.plot(exps, arr["green_std"][mask], "g-s", label=f"Green (gain={gain:.0f})", alpha=0.8)
+            ax.plot(
+                exps, arr["green_std"][mask], "g-s", label=f"Green (gain={gain:.0f})", alpha=0.8
+            )
             ax.plot(exps, arr["blue_std"][mask], "b-^", label=f"Blue (gain={gain:.0f})", alpha=0.8)
     ax.set_xlabel("Exposure (ms)")
     ax.set_ylabel("Noise (StdDev)")
@@ -316,15 +347,23 @@ def generate_plots(results, output_dir):
     # ---- Plot 3: SNR vs Unified Gain ----
     fig, ax = plt.subplots(figsize=(8, 5))
     for exp_ms in [25.0, 100.0]:
-        mask = np.array([
-            t == "unified_gain_sweep" and r["exposure_ms"] == exp_ms
-            for t, r in zip(test_types, results)
-        ])
+        mask = np.array(
+            [
+                t == "unified_gain_sweep" and r["exposure_ms"] == exp_ms
+                for t, r in zip(test_types, results)
+            ]
+        )
         if mask.any():
             gains = arr["unified_gain"][mask]
-            ax.plot(gains, arr["red_snr"][mask], "r-o", label=f"Red (exp={exp_ms:.0f}ms)", alpha=0.8)
-            ax.plot(gains, arr["green_snr"][mask], "g-s", label=f"Green (exp={exp_ms:.0f}ms)", alpha=0.8)
-            ax.plot(gains, arr["blue_snr"][mask], "b-^", label=f"Blue (exp={exp_ms:.0f}ms)", alpha=0.8)
+            ax.plot(
+                gains, arr["red_snr"][mask], "r-o", label=f"Red (exp={exp_ms:.0f}ms)", alpha=0.8
+            )
+            ax.plot(
+                gains, arr["green_snr"][mask], "g-s", label=f"Green (exp={exp_ms:.0f}ms)", alpha=0.8
+            )
+            ax.plot(
+                gains, arr["blue_snr"][mask], "b-^", label=f"Blue (exp={exp_ms:.0f}ms)", alpha=0.8
+            )
     ax.set_xlabel("Unified Gain")
     ax.set_ylabel("SNR (Mean / StdDev)")
     ax.set_title("SNR vs Unified Gain (per channel)")
@@ -372,10 +411,17 @@ def main():
     parser = argparse.ArgumentParser(description="JAI Camera Noise Characterization Tool")
     parser.add_argument("--host", default="127.0.0.1", help="Server host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=5000, help="Server port (default: 5000)")
-    parser.add_argument("--output-dir", default=None,
-                        help="Output directory (default: ./noise_results_YYYYMMDD_HHMMSS)")
-    parser.add_argument("--frames", type=int, default=10,
-                        help="Number of frames for noise measurement (default: 10)")
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Output directory (default: ./noise_results_YYYYMMDD_HHMMSS)",
+    )
+    parser.add_argument(
+        "--frames",
+        type=int,
+        default=10,
+        help="Number of frames for noise measurement (default: 10)",
+    )
     args = parser.parse_args()
 
     # Create output directory

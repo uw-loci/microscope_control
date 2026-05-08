@@ -7,14 +7,18 @@ delegated to RotationStage subclasses in hardware/rotation.py.
 """
 
 import warnings
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 import logging
 import time
 from pycromanager import Core, Studio
-from microscope_control.hardware.base import MicroscopeHardware, is_mm_running, is_coordinate_in_range, Position
+from microscope_control.hardware.base import (
+    MicroscopeHardware,
+    is_mm_running,
+    is_coordinate_in_range,
+    Position,
+)
 from microscope_control.autofocus.core import AutofocusUtils
 from microscope_imageprocessing.focus import (
-    UnknownMetricError,
     resolve_metric,
 )
 
@@ -33,6 +37,7 @@ def obj_2_list(name):
 
 class MicroManagerConnectionError(Exception):
     """Raised when connection to Micro-Manager fails."""
+
     pass
 
 
@@ -171,9 +176,6 @@ class PycromanagerHardware(MicroscopeHardware):
         Returns:
             Dict of detector_id -> Camera instance
         """
-        from microscope_control.hardware.camera.pycromanager_camera import PycromanagerCamera
-        from microscope_control.hardware.camera.jai_camera import JAICamera
-        from microscope_control.hardware.camera.laser_scanning_camera import LaserScanningCamera
 
         registry = {}
         id_detectors = self.settings.get("id_detector", {})
@@ -185,21 +187,25 @@ class PycromanagerHardware(MicroscopeHardware):
                 continue
             try:
                 cam = self._create_camera_for_device(
-                    device, det_config, det_id,
+                    device,
+                    det_config,
+                    det_id,
                 )
                 registry[det_id] = cam
                 logger.info(
                     "Registered camera: %s -> %s (flip_x=%s, flip_y=%s)",
-                    det_id, type(cam).__name__,
-                    cam.flip_x, cam.flip_y,
+                    det_id,
+                    type(cam).__name__,
+                    cam.flip_x,
+                    cam.flip_y,
                 )
             except Exception as e:
                 logger.warning("Could not create camera for %s: %s", det_id, e)
         return registry
 
-    def _create_camera_for_device(self, device_name: str,
-                                   detector_config: Dict[str, Any],
-                                   detector_id: str):
+    def _create_camera_for_device(
+        self, device_name: str, detector_config: Dict[str, Any], detector_id: str
+    ):
         """Create the appropriate Camera subclass for a device.
 
         Uses the ``camera_type`` field from detector config to select the
@@ -227,7 +233,8 @@ class PycromanagerHardware(MicroscopeHardware):
             logger.warning(
                 "Unknown camera_type '%s' for detector %s, "
                 "falling back to generic PycromanagerCamera",
-                camera_type, detector_id,
+                camera_type,
+                detector_id,
             )
         return cls(self.core, self.studio, detector_config)
 
@@ -293,7 +300,10 @@ class PycromanagerHardware(MicroscopeHardware):
         self._active_detector_id = detector_id
         logger.info(
             "Active camera switched to %s (%s, flip_x=%s, flip_y=%s)",
-            detector_id, device_name, cam.flip_x, cam.flip_y,
+            detector_id,
+            device_name,
+            cam.flip_x,
+            cam.flip_y,
         )
 
     @property
@@ -315,8 +325,11 @@ class PycromanagerHardware(MicroscopeHardware):
                 continue
             source = self._build_illumination_from_config(mod_config)
             if source is not None:
-                logger.info("Created default illumination: %s from modality '%s'",
-                            type(source).__name__, mod_name)
+                logger.info(
+                    "Created default illumination: %s from modality '%s'",
+                    type(source).__name__,
+                    mod_name,
+                )
                 return source
         return None
 
@@ -327,8 +340,11 @@ class PycromanagerHardware(MicroscopeHardware):
         (laser power) sections. Returns the first one found, or None.
         """
         from microscope_control.hardware.illumination import (
-            LEDIllumination, DevicePropertyIllumination, PockelsCell,
+            LEDIllumination,
+            DevicePropertyIllumination,
+            PockelsCell,
         )
+
         # Check for transmitted/epi illumination (LED, DiaLamp, etc.)
         illum = mod_config.get("illumination")
         if isinstance(illum, dict) and illum.get("device"):
@@ -463,12 +479,15 @@ class PycromanagerHardware(MicroscopeHardware):
                         connector=connector,
                         max_gain_percent=max_gain,
                     )
-                logger.info("Created detector: %s (%s) from modality '%s'",
-                            type(det).__name__, device, mod_name)
+                logger.info(
+                    "Created detector: %s (%s) from modality '%s'",
+                    type(det).__name__,
+                    device,
+                    mod_name,
+                )
                 return det
             except Exception as e:
-                logger.warning("Could not create detector for %s: %s",
-                               device, e)
+                logger.warning("Could not create detector for %s: %s", device, e)
         return None
 
     # --- MM ConfigGroup preset application ---
@@ -528,7 +547,8 @@ class PycromanagerHardware(MicroscopeHardware):
             logger.warning(
                 "apply_profile_illumination: no acquisition profile found for '%s'. "
                 "Available profiles: %s",
-                profile_name, sorted(profiles.keys()),
+                profile_name,
+                sorted(profiles.keys()),
             )
             return None
 
@@ -544,7 +564,8 @@ class PycromanagerHardware(MicroscopeHardware):
         if self._illumination is None:
             logger.info(
                 "apply_profile_illumination: no active illumination device; cannot set intensity %s for profile '%s'",
-                illum_intensity, resolved_key,
+                illum_intensity,
+                resolved_key,
             )
             return None
 
@@ -552,13 +573,16 @@ class PycromanagerHardware(MicroscopeHardware):
             self._illumination.set_power(illum_intensity)
             logger.info(
                 "apply_profile_illumination: set illumination to %s from profile '%s'",
-                illum_intensity, resolved_key,
+                illum_intensity,
+                resolved_key,
             )
             return float(illum_intensity)
         except Exception as e:
             logger.warning(
                 "apply_profile_illumination: failed to set illumination %s for profile '%s': %s",
-                illum_intensity, resolved_key, e,
+                illum_intensity,
+                resolved_key,
+                e,
             )
             return None
 
@@ -606,7 +630,8 @@ class PycromanagerHardware(MicroscopeHardware):
                 "No acquisition profile found for '%s' (tried exact match, "
                 "stripped counter suffix, and short-form fallback). "
                 "Available profiles: %s",
-                profile_name, sorted(profiles.keys()),
+                profile_name,
+                sorted(profiles.keys()),
             )
             return
 
@@ -614,7 +639,8 @@ class PycromanagerHardware(MicroscopeHardware):
         if resolved_key != profile_name:
             logger.info(
                 "Applying mode setup for profile: %s (resolved from '%s')",
-                resolved_key, profile_name,
+                resolved_key,
+                profile_name,
             )
         else:
             logger.info("Applying mode setup for profile: %s", resolved_key)
@@ -655,8 +681,11 @@ class PycromanagerHardware(MicroscopeHardware):
             new_illum = self.get_illumination_for_modality(modality_name)
             if new_illum is not None:
                 self._illumination = new_illum
-                logger.info("Switched illumination to %s for modality '%s'",
-                            type(new_illum).__name__, modality_name)
+                logger.info(
+                    "Switched illumination to %s for modality '%s'",
+                    type(new_illum).__name__,
+                    modality_name,
+                )
 
         # === STEP 5: Set illumination intensity ===
         # Channel-based profiles (widefield IF, BF+IF) drive illumination
@@ -690,7 +719,7 @@ class PycromanagerHardware(MicroscopeHardware):
                 logger.info("Setting mode Z position: %.1f", z_pos)
                 self._stage.move_z_no_wait(z_pos)
             f_pos = mode_pos.get("f")
-            if f_pos is not None and hasattr(self._stage, 'move_f'):
+            if f_pos is not None and hasattr(self._stage, "move_f"):
                 logger.info("Setting mode F position: %.1f", f_pos)
                 self._stage.move_f(f_pos)
 
@@ -699,9 +728,7 @@ class PycromanagerHardware(MicroscopeHardware):
         # software X-axis inversion because the merged config uses a
         # single Invert-X pre-init setting. Profiles that originally
         # used a different inversion set stage_invert_x_correction: true.
-        self.stage_invert_x_correction = bool(
-            profile.get("stage_invert_x_correction", False)
-        )
+        self.stage_invert_x_correction = bool(profile.get("stage_invert_x_correction", False))
         if self.stage_invert_x_correction:
             logger.info("Stage X-axis inversion correction ACTIVE for this profile")
 
@@ -739,32 +766,29 @@ class PycromanagerHardware(MicroscopeHardware):
                 source.off()
                 logger.info("Pre-switch teardown: turned off %s", label)
             except Exception as e:
-                logger.warning(
-                    "Pre-switch teardown: could not turn off %s: %s", label, e
-                )
+                logger.warning("Pre-switch teardown: could not turn off %s: %s", label, e)
 
         if self._illumination is not None:
-            dev = getattr(self._illumination, "_device", None) \
-                or getattr(self._illumination, "_label", "current")
+            dev = getattr(self._illumination, "_device", None) or getattr(
+                self._illumination, "_label", "current"
+            )
             seen_devices.add(str(dev))
             _try_off(self._illumination, f"current illumination ({dev})")
 
         for mod_name, mod_config in modalities.items():
             if not isinstance(mod_config, dict):
                 continue
-            illum_cfg = mod_config.get("illumination") \
-                or mod_config.get("pockels_cell")
-            device_name = (
-                illum_cfg.get("device") if isinstance(illum_cfg, dict) else None
-            )
+            illum_cfg = mod_config.get("illumination") or mod_config.get("pockels_cell")
+            device_name = illum_cfg.get("device") if isinstance(illum_cfg, dict) else None
             if device_name and device_name in seen_devices:
                 continue
             try:
                 source = self._build_illumination_from_config(mod_config)
             except Exception as e:
                 logger.debug(
-                    "Pre-switch teardown: could not build illumination for "
-                    "modality '%s': %s", mod_name, e,
+                    "Pre-switch teardown: could not build illumination for " "modality '%s': %s",
+                    mod_name,
+                    e,
                 )
                 continue
             if source is None:
@@ -802,7 +826,7 @@ class PycromanagerHardware(MicroscopeHardware):
         if self._detector is not None:
             try:
                 # Use disable_all_channels if available (multi-channel PMTs)
-                if hasattr(self._detector, 'disable_all_channels'):
+                if hasattr(self._detector, "disable_all_channels"):
                     self._detector.disable_all_channels()
                 else:
                     self._detector.disable()
@@ -835,7 +859,9 @@ class PycromanagerHardware(MicroscopeHardware):
             except Exception as e:
                 logger.error(
                     "SAFETY WARNING: Could not close %s (%s): %s",
-                    shutter_key, device, e,
+                    shutter_key,
+                    device,
+                    e,
                 )
 
         # 3. Final system wait to ensure all safety states are applied
@@ -872,6 +898,7 @@ class PycromanagerHardware(MicroscopeHardware):
 
         # Strategy 2: strip trailing "_<digits>" counter
         import re
+
         stripped = re.sub(r"_\d+$", "", profile_name)
         if stripped != profile_name and stripped in profiles:
             return stripped
@@ -935,7 +962,8 @@ class PycromanagerHardware(MicroscopeHardware):
                 old_cache.stop()
             except Exception as e:
                 logger.warning(
-                    "Could not cleanly stop previous StagePositionCache: %s", e,
+                    "Could not cleanly stop previous StagePositionCache: %s",
+                    e,
                 )
         self._stage_cache = StagePositionCache(new_stage)
         self._stage_cache.start()
@@ -945,7 +973,9 @@ class PycromanagerHardware(MicroscopeHardware):
     def _create_rotation_stage(self):
         """Create the appropriate RotationStage subclass, or None."""
         from microscope_control.hardware.rotation import (
-            PIZRotationStage, ThorRotationStage, DummyRotationStage,
+            PIZRotationStage,
+            ThorRotationStage,
+            DummyRotationStage,
         )
 
         rotation_config = self._find_rotation_stage_config()
@@ -959,9 +989,7 @@ class PycromanagerHardware(MicroscopeHardware):
             return DummyRotationStage()
 
         # Look up the actual MM device name from id_stage config
-        mm_device = (
-            self.settings.get("id_stage", {}).get(r_device_name, {}).get("device")
-        )
+        mm_device = self.settings.get("id_stage", {}).get(r_device_name, {}).get("device")
         if not mm_device:
             raise ValueError(
                 f"No rotation stage device found in configuration. "
@@ -985,7 +1013,8 @@ class PycromanagerHardware(MicroscopeHardware):
             else:
                 logger.debug(
                     "No rotation_type in config for '%s', using device name '%s'",
-                    r_device_name, mm_device,
+                    r_device_name,
+                    mm_device,
                 )
                 # Legacy fallback: match on device name
                 cls = None
@@ -1015,8 +1044,7 @@ class PycromanagerHardware(MicroscopeHardware):
                         f"Add units_per_deg to the id_stage section in your "
                         f"microscope config YAML (e.g. units_per_deg: 1000.0)."
                     )
-                stage = PIZRotationStage(self.core, mm_device, offset,
-                                         float(units_per_deg))
+                stage = PIZRotationStage(self.core, mm_device, offset, float(units_per_deg))
             elif cls == ThorRotationStage or (cls is None and "Thor" in mm_device):
                 units_per_deg = stage_config.get("units_per_deg")
                 if units_per_deg is None:
@@ -1034,9 +1062,9 @@ class PycromanagerHardware(MicroscopeHardware):
                         f"Add thor_offset to the id_stage section in your "
                         f"microscope config YAML (e.g. thor_offset: 276)."
                     )
-                stage = ThorRotationStage(self.core, mm_device,
-                                          float(units_per_deg),
-                                          float(thor_offset))
+                stage = ThorRotationStage(
+                    self.core, mm_device, float(units_per_deg), float(thor_offset)
+                )
             elif cls == DummyRotationStage:
                 stage = DummyRotationStage()
             else:
@@ -1069,8 +1097,9 @@ class PycromanagerHardware(MicroscopeHardware):
         if self._camera_registry:
             return next(iter(self._camera_registry.values()))
         # Last resort: create and cache a generic camera for the active MM camera
-        if not hasattr(self, '_fallback_camera'):
+        if not hasattr(self, "_fallback_camera"):
             from microscope_control.hardware.camera.pycromanager_camera import PycromanagerCamera
+
             self._fallback_camera = PycromanagerCamera(self.core, self.studio, {})
         return self._fallback_camera
 
@@ -1134,7 +1163,7 @@ class PycromanagerHardware(MicroscopeHardware):
             if isinstance(rot_stage, dict) and rot_stage.get("device"):
                 # Check if optics are disabled (modalities.<mod>.optics == "NA")
                 optics_value = mod_config.get("optics", 1)
-                optics_disabled = (str(optics_value) == "NA")
+                optics_disabled = str(optics_value) == "NA"
                 return (rot_stage["device"], optics_disabled)
         return None
 
@@ -1278,8 +1307,6 @@ class PycromanagerHardware(MicroscopeHardware):
         # Stop streaming -- snap_image() cannot run during sequence acquisition
         self.camera.stop_if_streaming()
 
-        from microscope_control.autofocus.core import AutofocusUtils
-
         # Read stage Z limits once for edge-retry clamping. Same accessor as
         # sweep_focus / autofocus_sweep_drift_check.
         stage_limits = self.settings.get("stage", {}).get("limits", {}).get("z_um", {})
@@ -1303,7 +1330,9 @@ class PycromanagerHardware(MicroscopeHardware):
                 scores = []
                 fallback_scores = []  # p98_p2 computed alongside primary metric
                 for step_number in range(n_steps):
-                    new_pos = Position(current_pos.x, current_pos.y, attempt_center + steps[step_number])
+                    new_pos = Position(
+                        current_pos.x, current_pos.y, attempt_center + steps[step_number]
+                    )
                     self.move_to_position(new_pos)
 
                     img, tags = self.snap_image()
@@ -1340,8 +1369,13 @@ class PycromanagerHardware(MicroscopeHardware):
                 # Save diagnostic CSV BEFORE validation check (so it saves even on failure)
                 if diagnostic_output_path is not None:
                     self._save_autofocus_diagnostic_csv(
-                        z_steps, scores_array, validation, new_z,
-                        diagnostic_output_path, position_index, current_pos
+                        z_steps,
+                        scores_array,
+                        validation,
+                        new_z,
+                        diagnostic_output_path,
+                        position_index,
+                        current_pos,
                     )
 
                 # Edge-retry has priority over p98_p2 fallback. When the
@@ -1357,8 +1391,10 @@ class PycromanagerHardware(MicroscopeHardware):
                 #     because too few samples or peak landed at the edge),
                 #     AND
                 #   - the stage Z limits leave room to extend.
-                if (edge_retries_used < edge_retries
-                        and validation.get('should_extend_direction') is not None):
+                if (
+                    edge_retries_used < edge_retries
+                    and validation.get("should_extend_direction") is not None
+                ):
                     retry_center, retry_range = self._compute_edge_retry_window(
                         validation=validation,
                         cur_center=attempt_center,
@@ -1373,10 +1409,13 @@ class PycromanagerHardware(MicroscopeHardware):
                             "  Edge retry %d/%d: one-sided trend (extend %s); "
                             "center %.2f -> %.2f um, range %.1f -> %.1f um "
                             "(window [%.2f, %.2f])",
-                            edge_retries_used, edge_retries,
-                            validation['should_extend_direction'],
-                            attempt_center, retry_center,
-                            attempt_range, retry_range,
+                            edge_retries_used,
+                            edge_retries,
+                            validation["should_extend_direction"],
+                            attempt_center,
+                            retry_center,
+                            attempt_range,
+                            retry_range,
                             retry_center - retry_range / 2.0,
                             retry_center + retry_range / 2.0,
                         )
@@ -1384,13 +1423,15 @@ class PycromanagerHardware(MicroscopeHardware):
                         attempt_range = retry_range
                         continue
 
-                if not validation['is_valid']:
+                if not validation["is_valid"]:
                     logger.warning("*** AUTOFOCUS PEAK QUALITY WARNING ***")
                     logger.warning(f"  {validation['message']}")
-                    for warning in validation['warnings']:
+                    for warning in validation["warnings"]:
                         logger.warning(f"    - {warning}")
-                    logger.warning(f"  Quality metrics: prominence={validation['peak_prominence']:.2f}, "
-                                 f"quality={validation['quality_score']:.2f}")
+                    logger.warning(
+                        f"  Quality metrics: prominence={validation['peak_prominence']:.2f}, "
+                        f"quality={validation['quality_score']:.2f}"
+                    )
 
                     # Try p98_p2 fallback (already computed, no re-acquisition).
                     # Only reached when the primary metric has no usable peak
@@ -1398,41 +1439,54 @@ class PycromanagerHardware(MicroscopeHardware):
                     # which is handled above via edge-retry on the primary.
                     if fallback_scores:
                         fallback_array = np.array(fallback_scores)
-                        fallback_validation = AutofocusUtils.validate_focus_peak(z_steps, fallback_array)
-                        if fallback_validation['is_valid']:
+                        fallback_validation = AutofocusUtils.validate_focus_peak(
+                            z_steps, fallback_array
+                        )
+                        if fallback_validation["is_valid"]:
                             fallback_interp_y = scipy.interpolate.interp1d(
-                                z_steps, fallback_scores, kind=interp_kind)(interp_x)
-                            fallback_z = float(np.clip(
-                                interp_x[np.argmax(fallback_interp_y)],
-                                z_steps[0], z_steps[-1]))
-                            logger.info(f"  p98_p2 fallback found valid peak at Z={fallback_z:.2f} um "
-                                        f"(quality={fallback_validation['quality_score']:.2f})")
+                                z_steps, fallback_scores, kind=interp_kind
+                            )(interp_x)
+                            fallback_z = float(
+                                np.clip(
+                                    interp_x[np.argmax(fallback_interp_y)], z_steps[0], z_steps[-1]
+                                )
+                            )
+                            logger.info(
+                                f"  p98_p2 fallback found valid peak at Z={fallback_z:.2f} um "
+                                f"(quality={fallback_validation['quality_score']:.2f})"
+                            )
                             new_z = fallback_z
                             validation = fallback_validation
                         else:
-                            logger.warning(f"  p98_p2 fallback also invalid: {fallback_validation['message']}")
+                            logger.warning(
+                                f"  p98_p2 fallback also invalid: {fallback_validation['message']}"
+                            )
 
-                    if not validation['is_valid'] and raise_on_invalid_peak:
+                    if not validation["is_valid"] and raise_on_invalid_peak:
                         # Return failure dict for manual focus fallback loop
-                        logger.warning("  Autofocus failed - moving to computed best Z and returning failure dict")
+                        logger.warning(
+                            "  Autofocus failed - moving to computed best Z and returning failure dict"
+                        )
                         best_pos = Position(current_pos.x, current_pos.y, new_z)
                         self.move_to_position(best_pos)
                         return {
-                            'success': False,
-                            'message': validation['message'],
-                            'quality_score': validation['quality_score'],
-                            'peak_prominence': validation['peak_prominence'],
-                            'attempted_z': new_z,
-                            'original_z': starting_pos.z,
-                            'validation': validation
+                            "success": False,
+                            "message": validation["message"],
+                            "quality_score": validation["quality_score"],
+                            "peak_prominence": validation["peak_prominence"],
+                            "attempted_z": new_z,
+                            "original_z": starting_pos.z,
+                            "validation": validation,
                         }
-                    elif not validation['is_valid']:
+                    elif not validation["is_valid"]:
                         # Test mode: log and proceed for diagnostic purposes
                         logger.warning("  Proceeding with autofocus result for diagnostic analysis")
                 else:
                     logger.info(f"Autofocus peak validation: {validation['message']}")
-                    logger.debug(f"  Quality score: {validation['quality_score']:.2f}, "
-                               f"prominence: {validation['peak_prominence']:.2f}")
+                    logger.debug(
+                        f"  Quality score: {validation['quality_score']:.2f}, "
+                        f"prominence: {validation['peak_prominence']:.2f}"
+                    )
 
                 if pop_a_plot:
                     plt.figure()
@@ -1471,17 +1525,15 @@ class PycromanagerHardware(MicroscopeHardware):
         the clamped new sweep wouldn't cover any ground outside the band the
         previous sweep already covered.
         """
-        has_asc = bool(validation.get('has_ascending', False))
-        has_desc = bool(validation.get('has_descending', False))
+        has_asc = bool(validation.get("has_ascending", False))
+        has_desc = bool(validation.get("has_descending", False))
         # Directional edge: asc XOR desc. asc-only -> peak at end (search higher);
         # desc-only -> peak at start (search lower). Both-or-neither isn't a
         # directional edge -- there's no informative direction to shift.
         if has_asc == has_desc:
             return None, None
         if z_min is None or z_max is None:
-            logger.warning(
-                "  Edge retry: stage Z limits not configured; skipping"
-            )
+            logger.warning("  Edge retry: stage Z limits not configured; skipping")
             return None, None
 
         new_range = float(cur_range) * float(widen_factor)
@@ -1493,7 +1545,9 @@ class PycromanagerHardware(MicroscopeHardware):
             logger.warning(
                 "  Edge retry: stage Z limits leave no usable sweep band "
                 "(z_min=%.1f, z_max=%.1f, margin=%.1f); skipping",
-                z_min, z_max, margin,
+                z_min,
+                z_max,
+                margin,
             )
             return None, None
         if available < new_range:
@@ -1527,14 +1581,19 @@ class PycromanagerHardware(MicroscopeHardware):
                 "  Edge retry: stage Z limits prevent extending toward %s "
                 "(would clamp window to [%.2f, %.2f] um vs prior [%.2f, %.2f]); "
                 "skipping",
-                direction_label, new_low, new_high, old_low, old_high,
+                direction_label,
+                new_low,
+                new_high,
+                old_low,
+                old_high,
             )
             return None, None
 
         return clamped_center, new_range
 
-    def _save_autofocus_diagnostic_csv(self, z_positions, scores, validation, result_z,
-                                       output_path, position_index, current_pos):
+    def _save_autofocus_diagnostic_csv(
+        self, z_positions, scores, validation, result_z, output_path, position_index, current_pos
+    ):
         """
         Save autofocus diagnostic data to CSV file in the acquisition folder.
 
@@ -1560,44 +1619,50 @@ class PycromanagerHardware(MicroscopeHardware):
             csv_filename = f"autofocus_diagnostic{pos_str}_{timestamp}.csv"
             csv_path = output_path / csv_filename
 
-            with open(csv_path, 'w', newline='') as csvfile:
+            with open(csv_path, "w", newline="") as csvfile:
                 writer = csv.writer(csvfile)
 
                 # Write header with metadata
-                writer.writerow(['# Autofocus Diagnostic Data (Standard Autofocus)'])
-                writer.writerow(['# Timestamp', timestamp])
+                writer.writerow(["# Autofocus Diagnostic Data (Standard Autofocus)"])
+                writer.writerow(["# Timestamp", timestamp])
                 if position_index is not None:
-                    writer.writerow(['# Position Index', position_index])
-                writer.writerow(['# Starting Position', f'X={current_pos.x:.2f}, Y={current_pos.y:.2f}, Z={current_pos.z:.2f}'])
-                writer.writerow(['# Autofocus Result Z', f'{result_z:.2f}'])
-                writer.writerow(['# Z Shift', f'{result_z - current_pos.z:.2f}'])
-                writer.writerow(['#'])
-                writer.writerow(['# VALIDATION RESULTS'])
-                writer.writerow(['# Status', 'VALID' if validation['is_valid'] else 'INVALID'])
-                writer.writerow(['# Quality Score', f"{validation['quality_score']:.3f}"])
-                writer.writerow(['# Peak Prominence', f"{validation['peak_prominence']:.3f}"])
-                writer.writerow(['# Has Ascending', validation['has_ascending']])
-                writer.writerow(['# Has Descending', validation['has_descending']])
-                writer.writerow(['# Symmetry Score', f"{validation['symmetry_score']:.3f}"])
-                writer.writerow(['# Message', validation['message']])
-                if validation['warnings']:
-                    for warning in validation['warnings']:
-                        writer.writerow(['# Warning', warning])
-                writer.writerow(['#'])
+                    writer.writerow(["# Position Index", position_index])
+                writer.writerow(
+                    [
+                        "# Starting Position",
+                        f"X={current_pos.x:.2f}, Y={current_pos.y:.2f}, Z={current_pos.z:.2f}",
+                    ]
+                )
+                writer.writerow(["# Autofocus Result Z", f"{result_z:.2f}"])
+                writer.writerow(["# Z Shift", f"{result_z - current_pos.z:.2f}"])
+                writer.writerow(["#"])
+                writer.writerow(["# VALIDATION RESULTS"])
+                writer.writerow(["# Status", "VALID" if validation["is_valid"] else "INVALID"])
+                writer.writerow(["# Quality Score", f"{validation['quality_score']:.3f}"])
+                writer.writerow(["# Peak Prominence", f"{validation['peak_prominence']:.3f}"])
+                writer.writerow(["# Has Ascending", validation["has_ascending"]])
+                writer.writerow(["# Has Descending", validation["has_descending"]])
+                writer.writerow(["# Symmetry Score", f"{validation['symmetry_score']:.3f}"])
+                writer.writerow(["# Message", validation["message"]])
+                if validation["warnings"]:
+                    for warning in validation["warnings"]:
+                        writer.writerow(["# Warning", warning])
+                writer.writerow(["#"])
 
                 # Write data header
-                writer.writerow(['Z_Position_um', 'Focus_Score'])
+                writer.writerow(["Z_Position_um", "Focus_Score"])
 
                 # Write data
                 for z, score in zip(z_positions, scores):
-                    writer.writerow([f'{z:.2f}', f'{score:.4f}'])
+                    writer.writerow([f"{z:.2f}", f"{score:.4f}"])
 
             logger.info(f"Autofocus diagnostic CSV saved: {csv_path}")
         except Exception as e:
             logger.warning(f"Failed to save autofocus diagnostic CSV: {e}")
 
-    def _score_single_metric(self, pixels, img_w, img_h, nch, cy, cx,
-                             metric_name="normalized_variance"):
+    def _score_single_metric(
+        self, pixels, img_w, img_h, nch, cy, cx, metric_name="normalized_variance"
+    ):
         """Score a frame with a single focus metric on center crop.
 
         Crop size: min(512, image_dim) to handle cameras smaller than 512px.
@@ -1636,15 +1701,19 @@ class PycromanagerHardware(MicroscopeHardware):
             # Find best channel (non-saturated, prefer B then G then R)
             best_ch = None
             for ch in [0, 1, 2]:  # B, G, R in BGRA
-                roi_test = img[cy - crop_half:cy + crop_half, cx - crop_half:cx + crop_half, ch]
+                roi_test = img[cy - crop_half : cy + crop_half, cx - crop_half : cx + crop_half, ch]
                 if float(np.mean(roi_test)) < sat_threshold:
                     best_ch = ch
                     break
             if best_ch is None:
                 best_ch = 1  # fallback to green
-            roi = img[cy - crop_half:cy + crop_half, cx - crop_half:cx + crop_half, best_ch].astype(np.float32)
+            roi = img[
+                cy - crop_half : cy + crop_half, cx - crop_half : cx + crop_half, best_ch
+            ].astype(np.float32)
         else:
-            roi = pixels.reshape(img_h, img_w)[cy - crop_half:cy + crop_half, cx - crop_half:cx + crop_half].astype(np.float32)
+            roi = pixels.reshape(img_h, img_w)[
+                cy - crop_half : cy + crop_half, cx - crop_half : cx + crop_half
+            ].astype(np.float32)
 
         ch_mean = float(np.mean(roi))
 
@@ -1767,7 +1836,8 @@ class PycromanagerHardware(MicroscopeHardware):
                         tagged = self.core.get_tagged_image()
                         pixels = tagged.pix
                         sc, _ = self._score_single_metric(
-                            pixels, img_w, img_h, nch, cy, cx, score_metric)
+                            pixels, img_w, img_h, nch, cy, cx, score_metric
+                        )
                         if i < len(z_positions_list) - 1:
                             self.core.wait_for_device(z_dev)
                         result.append((actual_z, sc))
@@ -1810,11 +1880,13 @@ class PycromanagerHardware(MicroscopeHardware):
                 f"step={z_positions[1]-z_positions[0]:.1f}um, "
                 f"range={z_positions[-1]-z_positions[0]:.1f}um, "
                 f"current={initial_z:.1f}, exposure={exposure:.2f}ms, "
-                f"img={img_w}x{img_h}x{nch}")
+                f"img={img_w}x{img_h}x{nch}"
+            )
         except Exception:
             logger.info(
                 f"Sweep drift check: [{z_positions[0]:.1f} -> "
-                f"{z_positions[-1]:.1f}], current={initial_z:.1f}")
+                f"{z_positions[-1]:.1f}], current={initial_z:.1f}"
+            )
 
         t0 = time.perf_counter()
         total_pts = 0
@@ -1826,7 +1898,8 @@ class PycromanagerHardware(MicroscopeHardware):
         if len(measurements) < 3:
             logger.warning(
                 f"Sweep drift check: only {len(measurements)} "
-                f"measurements in {elapsed:.0f}ms, keeping current Z")
+                f"measurements in {elapsed:.0f}ms, keeping current Z"
+            )
             self.core.set_position(initial_z)
             self.core.wait_for_device(z_dev)
             return initial_z
@@ -1853,15 +1926,14 @@ class PycromanagerHardware(MicroscopeHardware):
 
             ext_positions = _make_z_positions(new_center)
             if not ext_positions:
-                logger.info(
-                    f"Sweep retry {retry+1}: window would exceed Z limits, "
-                    f"stopping")
+                logger.info(f"Sweep retry {retry+1}: window would exceed Z limits, " f"stopping")
                 break
 
             logger.info(
                 f"Sweep drift check: peak at boundary (idx={best_idx}), "
                 f"score trend {sr_pct:.1f}% -- retry {retry+1} "
-                f"[{ext_positions[0]:.1f} -> {ext_positions[-1]:.1f}]")
+                f"[{ext_positions[0]:.1f} -> {ext_positions[-1]:.1f}]"
+            )
 
             ext_measurements = _sweep_one_window(ext_positions)
             total_pts += len(ext_measurements)
@@ -1891,7 +1963,8 @@ class PycromanagerHardware(MicroscopeHardware):
                 f"Sweep drift check: peak at boundary after all attempts "
                 f"(boundary Z={boundary_z:.2f} vs initial Z={initial_z:.2f}). "
                 f"Metric did not bracket focus -- holding at initial Z "
-                f"({elapsed:.0f}ms)")
+                f"({elapsed:.0f}ms)"
+            )
             self.core.set_position(initial_z)
             self.core.wait_for_device(z_dev)
             return initial_z
@@ -1917,7 +1990,8 @@ class PycromanagerHardware(MicroscopeHardware):
                             f"{float(scores[0]):.2f}/{float(scores[-1]):.2f}, "
                             f"valley_depth={valley_depth:.2f}) -- metric is "
                             f"contrast-inverted, holding at initial Z "
-                            f"({elapsed:.0f}ms)")
+                            f"({elapsed:.0f}ms)"
+                        )
                         self.core.set_position(initial_z)
                         self.core.wait_for_device(z_dev)
                         return initial_z
@@ -1933,7 +2007,8 @@ class PycromanagerHardware(MicroscopeHardware):
             logger.info(
                 f"Sweep drift check: score range {score_range_pct:.1f}% "
                 f"< 2% -- metric not discriminating focus, "
-                f"keeping current Z ({elapsed:.0f}ms)")
+                f"keeping current Z ({elapsed:.0f}ms)"
+            )
             self.core.set_position(initial_z)
             self.core.wait_for_device(z_dev)
             return initial_z
@@ -1954,15 +2029,18 @@ class PycromanagerHardware(MicroscopeHardware):
 
         logger.info(
             f"Sweep drift check: {drift:+.2f}um, improvement "
-            f"{improvement:.1%} ({total_pts} pts in {elapsed:.0f}ms)")
+            f"{improvement:.1%} ({total_pts} pts in {elapsed:.0f}ms)"
+        )
         return best_z
 
-    def white_balance(self, img=None, background_image=None, gain=1.0,
-                      white_balance_profile=None):
+    def white_balance(self, img=None, background_image=None, gain=1.0, white_balance_profile=None):
         """Apply software white balance (delegates to camera with settings)."""
         return self.camera.white_balance(
-            img, background_image=background_image, gain=gain,
-            white_balance_profile=white_balance_profile, settings=self.settings,
+            img,
+            background_image=background_image,
+            gain=gain,
+            white_balance_profile=white_balance_profile,
+            settings=self.settings,
         )
 
     def get_device_properties(self, scope: str = "used") -> Dict[str, Dict[str, Any]]:
@@ -2050,13 +2128,13 @@ class PycromanagerHardware(MicroscopeHardware):
             obj_list = group_config.get("objectives", [])
             if target_objective in obj_list:
                 sequence_steps = group_config.get("sequence", [])
-                logger.info("Objective swap: using '%s' sequence for %s",
-                            group_name, target_objective)
+                logger.info(
+                    "Objective swap: using '%s' sequence for %s", group_name, target_objective
+                )
                 break
 
         if sequence_steps is None:
-            logger.debug("Objective '%s' not in any swap sequence, skipping",
-                         target_objective)
+            logger.debug("Objective '%s' not in any swap sequence, skipping", target_objective)
             return
 
         # Get turret device and desired position from config
@@ -2073,8 +2151,7 @@ class PycromanagerHardware(MicroscopeHardware):
         if desired_turret_label:
             current_label = self.core.get_property(*obj_slider)
             if current_label == desired_turret_label:
-                logger.info("Objective already at %s, no swap needed",
-                            desired_turret_label)
+                logger.info("Objective already at %s, no swap needed", desired_turret_label)
                 return
 
         # Execute the sequence
