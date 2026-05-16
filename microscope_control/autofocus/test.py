@@ -687,13 +687,39 @@ def _generate_diagnostic_scan_plot(
     peak_idx = np.argmax(scores)
     peak_z = z_positions[peak_idx]
 
-    # CRITICAL: Move to the peak position found in diagnostic scan
-    # The scan leaves us at the last Z position, need to move to actual focus peak
-    logger.info(
-        f"  Diagnostic scan peak found at Z={peak_z:.2f} um (autofocus result was {center_z:.2f} um)"
-    )
+    # Restore stage to the AUTOFOCUS RESULT (center_z), not the diagnostic
+    # scan's argmax. The Test button reports what Standard AF actually
+    # does -- silently moving to a different Z based on a follow-up
+    # diagnostic scan makes the CSV's "Autofocus Result Z" disagree with
+    # where the stage actually ends, which masks real AF problems
+    # (2026-05-15: empirical analysis caught run std_223650 reporting
+    # Result Z=1830.08 while the diagnostic scan peak was at Z=1823.20
+    # and the stage had been moved there silently). Disagreement is
+    # logged for visibility; it indicates the AF's interpolation or
+    # search range needs tuning.
+    disagreement_um = abs(peak_z - center_z)
+    if disagreement_um > 1.0:
+        logger.warning(
+            "  Diagnostic scan peak at Z=%.2f um disagrees with AF result "
+            "Z=%.2f um by %.2f um -- AF interpolation may be off, or scan "
+            "drift between AF and diagnostic. Stage left at AF result; "
+            "CSV reports both values.",
+            peak_z,
+            center_z,
+            disagreement_um,
+        )
+    else:
+        logger.info(
+            "  Diagnostic scan peak Z=%.2f matches AF result Z=%.2f " "within %.2f um",
+            peak_z,
+            center_z,
+            disagreement_um,
+        )
+    # Stage is currently at z_positions[-1] (last diagnostic step).
+    # Move back to AF's reported result so the post-test state matches
+    # what the CSV reports.
     focused_pos = Position(
-        hardware.get_current_position().x, hardware.get_current_position().y, peak_z
+        hardware.get_current_position().x, hardware.get_current_position().y, center_z
     )
     hardware.move_to_position(focused_pos)
 
