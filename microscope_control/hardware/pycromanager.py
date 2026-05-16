@@ -1732,6 +1732,7 @@ class PycromanagerHardware(MicroscopeHardware):
         n_steps=5,
         score_metric="normalized_variance",
         max_retries=2,
+        samples_out: Optional[list] = None,
     ) -> float:
         """Drift check using stepped Z sweep with blocking moves and snaps.
 
@@ -1755,6 +1756,16 @@ class PycromanagerHardware(MicroscopeHardware):
                 "sobel", "brenner_gradient", "p98_p2".
             max_retries: Additional sweep attempts on boundary peaks (default 2).
                 0 disables retries. Each retry extends range by one window.
+            samples_out: Optional list to receive per-step samples for
+                diagnostic / test use. When provided, each step appends
+                a (window_idx, actual_z, score) tuple where window_idx
+                is 0 for the initial sweep and 1..max_retries for edge
+                retries. Pass None (default) for production calls --
+                keeps the sweep allocation-free in the hot acquisition
+                path. The TESTADAF (Test Sweep Drift Check) handler in
+                autofocus/test.py uses this to write a CSV + PNG of the
+                sweep curve so the operator can validate metric choice
+                empirically the same way the Standard test already does.
 
         Returns:
             The best-focus Z position (or current Z if sweep failed).
@@ -1893,6 +1904,9 @@ class PycromanagerHardware(MicroscopeHardware):
 
         measurements = _sweep_one_window(z_positions)
         total_pts += len(measurements)
+        if samples_out is not None:
+            for actual_z, sc in measurements:
+                samples_out.append((0, float(actual_z), float(sc)))
         elapsed = (time.perf_counter() - t0) * 1000
 
         if len(measurements) < 3:
@@ -1937,6 +1951,9 @@ class PycromanagerHardware(MicroscopeHardware):
 
             ext_measurements = _sweep_one_window(ext_positions)
             total_pts += len(ext_measurements)
+            if samples_out is not None:
+                for actual_z, sc in ext_measurements:
+                    samples_out.append((retry + 1, float(actual_z), float(sc)))
 
             if len(ext_measurements) < 3:
                 break

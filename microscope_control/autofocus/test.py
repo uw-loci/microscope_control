@@ -250,13 +250,17 @@ def test_adaptive_autofocus_at_current_position(
         logger.info(f"    sweep_n_steps: {sweep_n_steps}")
         logger.info(f"    score_metric: {score_metric}")
 
-        # Call the sweep drift check
+        # Call the sweep drift check. Pass a samples_out list so we can
+        # write the (z, metric) curve to disk for empirical analysis --
+        # production callers pass None and pay no allocation cost.
         logger.info("  Calling hardware.autofocus_sweep_drift_check()...")
 
+        sweep_samples: list = []
         final_z = hardware.autofocus_sweep_drift_check(
             range_um=sweep_range,
             n_steps=sweep_n_steps,
             score_metric=score_metric,
+            samples_out=sweep_samples,
         )
 
         result["final_z"] = final_z
@@ -265,9 +269,34 @@ def test_adaptive_autofocus_at_current_position(
         logger.info("  Sweep drift check completed:")
         logger.info(f"    Final Z: {final_z:.2f} um")
         logger.info(f"    Z shift: {result['z_shift']:.2f} um")
+        logger.info(f"    Samples captured: {len(sweep_samples)}")
 
-        result["plot_path"] = None
-        logger.info("  No diagnostic plot for sweep drift check (designed for speed)")
+        # Write diagnostic CSV + PNG. Mirrors the format used by the
+        # Standard test in _write_test_results so analysis scripts can
+        # ingest both with the same parser.
+        if sweep_samples:
+            try:
+                _write_sweep_test_results(
+                    output_path=output_path,
+                    samples=sweep_samples,
+                    initial_z=initial_pos.z,
+                    final_z=final_z,
+                    sweep_range=sweep_range,
+                    sweep_n_steps=sweep_n_steps,
+                    score_metric=score_metric,
+                    logger=logger,
+                )
+                # Surface the plot path in the result so the editor
+                # status line can show it (matches Standard test
+                # behavior).
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                result["plot_path"] = str(output_path / f"autofocus_test_sweep_{timestamp}.png")
+            except Exception as e:
+                logger.warning(f"Failed to write sweep test diagnostic files: {e}")
+                result["plot_path"] = None
+        else:
+            result["plot_path"] = None
+            logger.warning("Sweep produced no samples; no diagnostic files written")
 
         result["message"] = f"Sweep drift check completed. Z shift: {result['z_shift']:.2f} um."
         result["success"] = True
@@ -289,6 +318,146 @@ def test_adaptive_autofocus_at_current_position(
                 logger.warning("Failed to return to initial position: %s", e)
 
     return result
+
+
+def _write_sweep_test_results(
+    output_path: Path,
+    samples: list,
+    initial_z: float,
+    final_z: float,
+    sweep_range: float,
+    sweep_n_steps: int,
+    score_metric: str,
+    logger: logging.Logger,
+) -> None:
+    """Write a CSV + PNG for one sweep drift check test run.
+
+    Mirrors the Standard test's filename pattern
+    (``autofocus_test_<type>_<timestamp>.{csv,png}``) so analysis
+    scripts can ingest both with the same parser. The CSV has commented
+    header rows with run parameters followed by per-step data:
+    ``Window, Z_Position_um, Focus_Score``.
+
+    Args:
+        output_path: Directory to write into (must exist).
+        samples: List of ``(window_idx, z, score)`` tuples produced by
+            ``autofocus_sweep_drift_check`` when ``samples_out`` is set.
+            window_idx is 0 for the initial sweep, 1..N for edge
+            retries.
+        initial_z, final_z: Stage Z before and after the sweep.
+        sweep_range, sweep_n_steps, score_metric: Sweep parameters.
+        logger: Logger.
+    """
+    import csv
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = output_path / f"autofocus_test_sweep_{timestamp}.csv"
+    png_path = output_path / f"autofocus_test_sweep_{timestamp}.png"
+
+    z_shift = final_z - initial_z
+    z_arr = np.array([s[1] for s in samples])
+    score_arr = np.array([s[2] for s in samples])
+    window_arr = np.array([s[0] for s in samples])
+    peak_idx = int(np.argmax(score_arr))
+    peak_z = float(z_arr[peak_idx])
+
+    try:
+        with open(csv_path, "w", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["# Sweep Drift Check Diagnostic Data"])
+            writer.writerow(["# Timestamp", timestamp])
+            writer.writerow(["# Test Type", "sweep"])
+            writer.writerow(["# Metric", score_metric])
+            writer.writerow(["# Sweep Range (um)", f"{sweep_range:.2f}"])
+            writer.writerow(["# Sweep N Steps", sweep_n_steps])
+            writer.writerow(["# Initial Z", f"{initial_z:.3f}"])
+            writer.writerow(["# Final Z (committed)", f"{final_z:.3f}"])
+            writer.writerow(["# Z Shift", f"{z_shift:+.3f}"])
+            writer.writerow(["# Scan Peak Z", f"{peak_z:.3f}"])
+            writer.writerow(["# Total Samples", len(samples)])
+            writer.writerow(["# Windows", int(window_arr.max()) + 1])
+            writer.writerow(["#"])
+            writer.writerow(["Window", "Z_Position_um", "Focus_Score"])
+            for w, z, sc in samples:
+                writer.writerow([w, f"{z:.3f}", f"{sc:.4f}"])
+        logger.info(f"  CSV data saved: {csv_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save sweep CSV: {e}")
+        return
+
+    try:
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+
+        # Color per window so retries are visually distinct from the
+        # initial sweep. Plot in order so connecting line shows scan
+        # sequence.
+        n_windows = int(window_arr.max()) + 1
+        colors = ["steelblue", "darkorange", "seagreen", "firebrick"]
+        for w in range(n_windows):
+            mask = window_arr == w
+            label = "Initial sweep" if w == 0 else f"Edge retry {w}"
+            ax.plot(
+                z_arr[mask],
+                score_arr[mask],
+                "o-",
+                markersize=6,
+                linewidth=1.8,
+                color=colors[w % len(colors)],
+                label=label,
+            )
+        ax.axvline(
+            initial_z,
+            color="gray",
+            linestyle=":",
+            linewidth=1.2,
+            label=f"Initial Z ({initial_z:.2f} um)",
+        )
+        ax.axvline(
+            final_z,
+            color="red",
+            linestyle="--",
+            linewidth=2.0,
+            label=f"Committed Z ({final_z:.2f} um)",
+        )
+
+        ax.set_xlabel("Z Position (um)", fontsize=11)
+        ax.set_ylabel("Focus Score", fontsize=11)
+        ax.set_title(
+            f"Sweep Drift Check Test\n"
+            f"Metric: {score_metric} | Range: {sweep_range:.1f} um, "
+            f"{sweep_n_steps} steps | Z shift: {z_shift:+.2f} um",
+            fontsize=12,
+            fontweight="bold",
+        )
+        ax.legend(fontsize=9, loc="best")
+        ax.grid(True, alpha=0.3)
+
+        textstr = (
+            f"Initial Z: {initial_z:.3f} um\n"
+            f"Final Z:   {final_z:.3f} um\n"
+            f"Z shift:   {z_shift:+.3f} um\n"
+            f"Scan peak: {peak_z:.3f} um\n"
+            f"Samples:   {len(samples)} ({n_windows} window"
+            f"{'s' if n_windows != 1 else ''})"
+        )
+        props = dict(boxstyle="round", facecolor="lightyellow", alpha=0.7)
+        ax.text(
+            0.02,
+            0.98,
+            textstr,
+            transform=ax.transAxes,
+            fontsize=9,
+            family="monospace",
+            verticalalignment="top",
+            bbox=props,
+        )
+
+        plt.tight_layout()
+        plt.savefig(png_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        logger.info(f"  Plot saved: {png_path}")
+    except Exception as e:
+        logger.warning(f"Failed to generate sweep plot: {e}")
 
 
 def test_autofocus_validation(
