@@ -54,6 +54,11 @@ from microscope_control.hardware.stage import Stage
 
 logger = logging.getLogger(__name__)
 
+# Number of consecutive poll failures before we treat it as a sustained
+# problem worth a WARNING. Below this, transient serial-bus blips are
+# logged at DEBUG so they don't dominate long-running session logs.
+_SUSTAINED_ERROR_THRESHOLD = 3
+
 
 class StagePositionCache:
     """Shared cache of the latest stage XYZ position.
@@ -251,27 +256,38 @@ class StagePositionCache:
                     self._z = z
                     self._timestamp = time.monotonic()
                 self._poll_count += 1
-                if consecutive_errors > 0:
+                # Only announce recovery if we previously logged a WARNING.
+                # Singleton blips (1-2 errors) don't get a WARN, so they
+                # don't need a paired recovery INFO either -- that pair
+                # was the bulk of the weekend log spam.
+                if consecutive_errors >= _SUSTAINED_ERROR_THRESHOLD:
                     logger.info(
-                        "StagePositionCache: polling recovered " "after %d consecutive errors",
+                        "StagePositionCache: polling recovered after %d consecutive errors",
                         consecutive_errors,
                     )
-                    consecutive_errors = 0
+                consecutive_errors = 0
             except Exception as e:
                 self._error_count += 1
                 consecutive_errors += 1
-                # Loud at first, quiet once we know it's persistent.
-                if consecutive_errors <= 3:
-                    logger.warning(
-                        "StagePositionCache: poll failed (%d in a row): %s",
-                        consecutive_errors,
-                        e,
-                    )
-                else:
+                # Java exceptions from mmcorej (Pycromanager ZMQ bridge)
+                # render their full stack trace via __str__; strip to the
+                # first line so the log isn't dominated by 13-line stacks
+                # for transient serial-bus blips.
+                summary = str(e).splitlines()[0] if str(e) else type(e).__name__
+                # Quiet for short transients (~500 ms cache staleness is
+                # harmless), loud once errors persist enough to suggest a
+                # real wire / device problem worth investigating.
+                if consecutive_errors < _SUSTAINED_ERROR_THRESHOLD:
                     logger.debug(
                         "StagePositionCache: poll failed (%d in a row): %s",
                         consecutive_errors,
-                        e,
+                        summary,
+                    )
+                else:
+                    logger.warning(
+                        "StagePositionCache: poll failed (%d in a row): %s",
+                        consecutive_errors,
+                        summary,
                     )
                 # Back off slightly on errors so we don't hammer a
                 # broken bus at full poll rate.
