@@ -243,24 +243,29 @@ class TestIsCoordinateInRangeConfigurationErrors:
             pass
 
     def test_inverted_limits(self, sample_position_valid):
-        """Test behavior when min > max (configuration error)."""
+        """Limits given as low > high are normalized, not rejected wholesale.
+
+        'low'/'high' are just min/max labels -- an inverted-axis scope yields a
+        descending pair when limits are copied from the stage readout, and the
+        check must tolerate either order.
+        """
         inverted_config = {
             "stage": {
                 "limits": {
-                    "x_um": {"low": 100000.0, "high": 0.0},  # Inverted!
+                    "x_um": {"low": 100000.0, "high": 0.0},  # descending
                     "y_um": {"low": 0.0, "high": 75000.0},
                     "z_um": {"low": 0.0, "high": 10000.0},
                 }
             }
         }
 
-        # Position that would be valid with correct limits
-        pos = Position(x=50000.0, y=37500.0, z=5000.0)
+        # Position inside the normalized range [0, 100000] on every axis.
+        pos_inside = Position(x=50000.0, y=37500.0, z=5000.0)
+        assert is_coordinate_in_range(inverted_config, pos_inside) is True
 
-        is_valid = is_coordinate_in_range(inverted_config, pos)
-
-        # With inverted limits, this position should be out of range
-        assert is_valid is False
+        # Past the normalized max on the descending axis -- still rejected.
+        pos_outside = Position(x=150000.0, y=37500.0, z=5000.0)
+        assert is_coordinate_in_range(inverted_config, pos_outside) is False
 
 
 class TestIsCoordinateInRangeMultipleViolations:

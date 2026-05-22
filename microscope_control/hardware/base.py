@@ -252,10 +252,15 @@ def _check_axis_in_range(axis_name, value, limits_key, stage_limits):
         logger.warning("%s limit values are not properly defined: %s", axis_name, axis_limits)
         warnings.warn(f"{axis_name} limit values are not properly defined: {axis_limits}")
         return False
-    if low <= value <= high:
+    # 'low'/'high' are min/max labels in either order. An inverted-axis scope
+    # naturally yields a descending pair when limits are copied from the stage
+    # readout; normalize so the check never rejects every position.
+    lo = min(low, high)
+    hi = max(low, high)
+    if lo <= value <= hi:
         return True
-    logger.warning("%s position %s out of range [%s, %s]", axis_name, value, low, high)
-    warnings.warn(f"{axis_name} position {value} out of range [{low}, {high}]")
+    logger.warning("%s position %s out of range [%s, %s]", axis_name, value, lo, hi)
+    warnings.warn(f"{axis_name} position {value} out of range [{lo}, {hi}]")
     return False
 
 
