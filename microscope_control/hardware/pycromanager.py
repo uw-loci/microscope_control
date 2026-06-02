@@ -1423,6 +1423,39 @@ class PycromanagerHardware(MicroscopeHardware):
                         attempt_range = retry_range
                         continue
 
+                # Reaching here without `continue` means we are NOT extending
+                # further. If the validator still wants to extend (peak at the
+                # window edge with a one-sided, never-bracketed trend) but we
+                # have run out of edge retries or Z headroom, the metric never
+                # bracketed focus in ANY window we searched. Committing this
+                # boundary peak is exactly the runaway that walked PPM 40x from
+                # Z=34 to Z=104 on 2026-05-31 (the standard-AF "extend high"
+                # path chasing a contrast-inverted one-sided ramp). Refuse it:
+                # demote to invalid so the p98_p2 fallback (or manual focus)
+                # takes over, and target the original hint Z so we do not move
+                # the stage to the unverified boundary if nothing else
+                # brackets. See claude-reports/2026-06-02_autofocus-focus-runaway.md.
+                if validation.get("should_extend_direction") is not None:
+                    logger.warning(
+                        "  Edge-retry budget exhausted with peak still at the "
+                        "%s boundary after %d retr%s -- focus never bracketed; "
+                        "refusing unbracketed edge peak Z=%.2f and falling back",
+                        validation["should_extend_direction"],
+                        edge_retries_used,
+                        "y" if edge_retries_used == 1 else "ies",
+                        new_z,
+                    )
+                    validation = dict(validation)
+                    validation["is_valid"] = False
+                    validation["message"] = (
+                        f"Edge-retry exhausted; {validation['should_extend_direction']}"
+                        "-side trend never bracketed focus (refusing unbracketed "
+                        "boundary peak)"
+                    )
+                    # Fall back toward the original hint unless the p98_p2
+                    # path below finds a properly bracketed peak.
+                    new_z = starting_pos.z
+
                 if not validation["is_valid"]:
                     logger.warning("*** AUTOFOCUS PEAK QUALITY WARNING ***")
                     logger.warning(f"  {validation['message']}")
@@ -1442,7 +1475,16 @@ class PycromanagerHardware(MicroscopeHardware):
                         fallback_validation = AutofocusUtils.validate_focus_peak(
                             z_steps, fallback_array
                         )
-                        if fallback_validation["is_valid"]:
+                        # Require the fallback to BRACKET focus, not merely be
+                        # "valid". A fallback whose own peak sits at the window
+                        # edge with a one-sided trend (should_extend_direction
+                        # set) is itself an unverified edge guess -- swapping it
+                        # in would re-introduce the runaway we just refused on
+                        # the primary metric.
+                        if (
+                            fallback_validation["is_valid"]
+                            and fallback_validation.get("should_extend_direction") is None
+                        ):
                             fallback_interp_y = scipy.interpolate.interp1d(
                                 z_steps, fallback_scores, kind=interp_kind
                             )(interp_x)
@@ -1733,6 +1775,7 @@ class PycromanagerHardware(MicroscopeHardware):
         score_metric="normalized_variance",
         max_retries=2,
         samples_out: Optional[list] = None,
+        max_total_drift_um: Optional[float] = None,
     ) -> float:
         """Drift check using stepped Z sweep with blocking moves and snaps.
 
@@ -1756,6 +1799,20 @@ class PycromanagerHardware(MicroscopeHardware):
                 "sobel", "brenner_gradient", "p98_p2".
             max_retries: Additional sweep attempts on boundary peaks (default 2).
                 0 disables retries. Each retry extends range by one window.
+            max_total_drift_um: Hard cap on how far the committed best-focus Z
+                may move from the starting Z. A drift check corrects small
+                thermal drift (1-2 um) around an already-good focus; a
+                correction larger than this means focus was *lost*, not
+                drifting, and must be recovered by a full standard AF / manual
+                focus rather than silently committed by the fast drift check.
+                When the computed peak exceeds the cap the stage is held at the
+                starting Z and the starting Z is returned. Defaults to
+                ``range_um`` (one full search window). This is the containment
+                net for the contrast-inversion runaway documented in
+                ``claude-reports/2026-06-02_autofocus-focus-runaway.md`` and the
+                earlier ``2026-05-04_sweep-focus-runaway.md`` (section D):
+                a saturated / contrast-inverted metric produces a one-sided
+                ramp whose edge-retry chases the stage far off focus.
             samples_out: Optional list to receive per-step samples for
                 diagnostic / test use. When provided, each step appends
                 a (window_idx, actual_z, score) tuple where window_idx
@@ -1788,6 +1845,14 @@ class PycromanagerHardware(MicroscopeHardware):
         z_max = z_limits["high"]
 
         half = range_um / 2.0
+
+        # Hard cap on the committed correction (see docstring). Default to one
+        # full search window. Any peak farther than this from the starting Z is
+        # treated as lost focus, not drift, and refused -- the stage holds at
+        # initial_z and the slower standard AF / manual path recovers it.
+        drift_cap_um = (
+            float(max_total_drift_um) if max_total_drift_um is not None else float(range_um)
+        )
 
         stage_config = self.settings.get("stage", {})
         z_stage_device = stage_config.get("z_stage", None)
@@ -1938,6 +2003,28 @@ class PycromanagerHardware(MicroscopeHardware):
             else:
                 new_center = boundary_z - half
 
+            # Don't chase a boundary peak past the drift cap. A run of
+            # same-direction extensions is the signature of a contrast-
+            # inverted / saturated metric ramping toward the edge, not a
+            # real focus peak one window over. On 2026-05-31 (PPM 40x) the
+            # first window [-2.5, 17.5] peaked at its high edge and the
+            # edge-retry extended to [17.5, 37.5], committing +26.64 um --
+            # the seed of an unrecoverable Z runaway. Refuse to extend
+            # beyond initial_z +/- drift_cap_um; hold at the starting Z and
+            # let the slower standard AF / manual path recover real focus
+            # loss. See claude-reports/2026-06-02_autofocus-focus-runaway.md.
+            if abs(new_center - initial_z) > drift_cap_um:
+                logger.warning(
+                    f"Sweep drift check: edge-retry {retry+1} would center at "
+                    f"Z={new_center:.2f} ({abs(new_center - initial_z):.1f} um "
+                    f"from start Z={initial_z:.2f}, cap {drift_cap_um:.1f} um) -- "
+                    f"refusing to chase boundary peak (metric likely "
+                    f"contrast-inverted), holding at initial Z"
+                )
+                self.core.set_position(initial_z)
+                self.core.wait_for_device(z_dev)
+                return initial_z
+
             ext_positions = _make_z_positions(new_center)
             if not ext_positions:
                 logger.info(f"Sweep retry {retry+1}: window would exceed Z limits, " f"stopping")
@@ -2041,6 +2128,23 @@ class PycromanagerHardware(MicroscopeHardware):
                 best_z = z_peak
 
         drift = best_z - initial_z
+
+        # Final containment net: even a peak that brackets cleanly inside an
+        # extended window must not move focus farther than the drift cap. A
+        # drift check corrects small thermal drift; a larger correction means
+        # focus was lost and belongs to the standard AF / manual path, not a
+        # silent commit here.
+        if abs(drift) > drift_cap_um:
+            logger.warning(
+                f"Sweep drift check: best Z={best_z:.2f} is {abs(drift):.1f} um "
+                f"from start Z={initial_z:.2f} (cap {drift_cap_um:.1f} um) -- "
+                f"correction too large for a drift check, holding at initial Z "
+                f"({elapsed:.0f}ms); recover with standard AF"
+            )
+            self.core.set_position(initial_z)
+            self.core.wait_for_device(z_dev)
+            return initial_z
+
         self.core.set_position(best_z)
         self.core.wait_for_device(z_dev)
 

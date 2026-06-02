@@ -4,6 +4,24 @@ Shared pytest fixtures for microscope_control tests.
 Provides synthetic test data for image processing, autofocus, and coordinate testing.
 """
 
+import sys
+import types
+
+# pycromanager is a hardware-only dependency (the Micro-Manager bridge) that is
+# not installed in the WSL dev environment. microscope_control/__init__.py
+# imports it eagerly, so without a stand-in NO test in this suite can even be
+# collected off the microscope workstation. Only Core/Studio are referenced at
+# import time, and only for live hardware. Provide a minimal stub when the real
+# package is absent; the real one is always preferred when present.
+if "pycromanager" not in sys.modules:
+    try:
+        import pycromanager  # noqa: F401
+    except ModuleNotFoundError:
+        _pycromanager_stub = types.ModuleType("pycromanager")
+        _pycromanager_stub.Core = type("Core", (), {})
+        _pycromanager_stub.Studio = type("Studio", (), {})
+        sys.modules["pycromanager"] = _pycromanager_stub
+
 import numpy as np
 import pytest
 from microscope_control.hardware.base import Position
