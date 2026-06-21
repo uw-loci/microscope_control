@@ -7,7 +7,7 @@ delegated to RotationStage subclasses in hardware/rotation.py.
 """
 
 import warnings
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Callable
 import logging
 import time
 from pycromanager import Core, Studio
@@ -16,6 +16,7 @@ from microscope_control.hardware.base import (
     is_mm_running,
     is_coordinate_in_range,
     Position,
+    AutofocusAborted,
 )
 from microscope_control.autofocus.core import AutofocusUtils
 from microscope_imageprocessing.focus import (
@@ -1776,6 +1777,7 @@ class PycromanagerHardware(MicroscopeHardware):
         max_retries=2,
         samples_out: Optional[list] = None,
         max_total_drift_um: Optional[float] = None,
+        should_abort: Optional[Callable[[], bool]] = None,
     ) -> float:
         """Drift check using stepped Z sweep with blocking moves and snaps.
 
@@ -1823,9 +1825,17 @@ class PycromanagerHardware(MicroscopeHardware):
                 autofocus/test.py uses this to write a CSV + PNG of the
                 sweep curve so the operator can validate metric choice
                 empirically the same way the Standard test already does.
+            should_abort: Optional callable polled between Z steps. When it
+                returns True the sweep restores the stage to the pre-sweep Z
+                and raises ``AutofocusAborted`` so the caller can report a
+                user cancellation (distinct from a failure). Pass None
+                (default) for the non-cancellable acquisition path.
 
         Returns:
             The best-focus Z position (or current Z if sweep failed).
+
+        Raises:
+            AutofocusAborted: if ``should_abort()`` returned True mid-sweep.
         """
 
         self.camera.stop_if_streaming()
@@ -1892,6 +1902,19 @@ class PycromanagerHardware(MicroscopeHardware):
                     self.core.wait_for_device(z_dev)
                     arrival_misses = 0
                     for i in range(len(z_positions_list)):
+                        # Cooperative cancellation: the client (Live Viewer)
+                        # sent ABORTAF. Restore Z to the pre-sweep position
+                        # while we still hold the stage lock, then unwind.
+                        if should_abort is not None and should_abort():
+                            logger.warning(
+                                "Sweep drift check: abort requested at step %d; "
+                                "restoring Z to %.2f",
+                                i,
+                                initial_z,
+                            )
+                            self.core.set_position(initial_z)
+                            self.core.wait_for_device(z_dev)
+                            raise AutofocusAborted()
                         target_now = float(z_positions_list[i])
                         actual_z = self.core.get_position()
                         # Arrival check on every step. Logged at WARNING
@@ -1924,6 +1947,10 @@ class PycromanagerHardware(MicroscopeHardware):
                             f"arrival errors > {arrival_tol_um:.2f} um. "
                             f"Sweep results may be unreliable."
                         )
+                except AutofocusAborted:
+                    # Propagate cancellation past the generic step-error
+                    # handler so the caller can report it as a cancel.
+                    raise
                 except Exception as e:
                     logger.warning(f"Sweep window failed at step: {e}")
             finally:

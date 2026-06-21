@@ -15,6 +15,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class AutofocusAborted(Exception):
+    """Raised when an autofocus sweep is cancelled by a client request.
+
+    A cooperative-cancellation signal: the sweep loop polls a caller-supplied
+    ``should_abort()`` callable between Z steps and raises this to unwind the
+    sweep after restoring the stage to its pre-sweep Z. Callers distinguish a
+    user cancel from a genuine failure by catching this type explicitly.
+    """
+
+
 class Position:
     """Simple position class to replace sp_position dataclass."""
 

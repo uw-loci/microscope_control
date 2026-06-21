@@ -21,11 +21,11 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import scipy.interpolate
 from datetime import datetime
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, Callable
 import logging
 
 from microscope_control.autofocus.core import AutofocusUtils
-from microscope_control.hardware.base import Position
+from microscope_control.hardware.base import Position, AutofocusAborted
 
 # Use validate_focus_peak from AutofocusUtils
 validate_focus_peak = AutofocusUtils.validate_focus_peak
@@ -183,6 +183,7 @@ def test_adaptive_autofocus_at_current_position(
     output_folder_path: str,
     objective: str,
     logger: Optional[logging.Logger] = None,
+    should_abort: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """
     Test sweep drift check at current microscope position.
@@ -217,6 +218,7 @@ def test_adaptive_autofocus_at_current_position(
 
     result = {
         "success": False,
+        "cancelled": False,
         "initial_z": None,
         "final_z": None,
         "z_shift": None,
@@ -261,6 +263,7 @@ def test_adaptive_autofocus_at_current_position(
             n_steps=sweep_n_steps,
             score_metric=score_metric,
             samples_out=sweep_samples,
+            should_abort=should_abort,
         )
 
         result["final_z"] = final_z
@@ -302,6 +305,19 @@ def test_adaptive_autofocus_at_current_position(
         result["success"] = True
 
         logger.info("=== ADAPTIVE AUTOFOCUS TEST COMPLETED ===")
+
+    except AutofocusAborted:
+        # Client cancelled the sweep. The sweep already restored Z to the
+        # pre-sweep position before unwinding; report it as a cancel, not a
+        # failure, so the UI does not show the "autofocus failed" dialog.
+        logger.info("Sweep autofocus cancelled by client request")
+        result["cancelled"] = True
+        result["success"] = False
+        # The abort can only fire after initial_pos is read (the sweep runs
+        # well after it), so initial_pos is always defined here.
+        result["final_z"] = initial_pos.z
+        result["z_shift"] = 0.0
+        result["message"] = "Sweep autofocus cancelled; Z restored to start"
 
     except Exception as e:
         logger.error(f"Adaptive autofocus test failed: {e}", exc_info=True)
