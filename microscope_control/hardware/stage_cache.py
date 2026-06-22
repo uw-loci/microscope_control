@@ -210,7 +210,31 @@ class StagePositionCache:
         if max_age_ms is not None:
             age_ms = (time.monotonic() - ts) * 1000.0
             if age_ms > max_age_ms:
-                return self.force_refresh()
+                # Cache is stale. Normally force a live read -- but that
+                # acquires the stage lock, and a long stage-locked operation
+                # (sweep autofocus holds it for ~13s while it steps through Z)
+                # would block this read for the WHOLE operation. That stall
+                # propagates to the client: the aux-socket position poll
+                # blocks while holding the client's aux-socket lock, which in
+                # turn blocks the ABORTAF cancel command -- making sweep
+                # autofocus effectively uncancellable (the cancel only takes
+                # effect once AF finishes on its own). Probe the stage lock
+                # without blocking; if the stage is busy, return the stale
+                # snapshot (harmless for a position display) so the aux socket
+                # stays responsive and cancel reaches the server promptly.
+                stage_lock = getattr(self._stage, "lock", None)
+                if stage_lock is None or stage_lock.acquire(blocking=False):
+                    try:
+                        return self.force_refresh()
+                    finally:
+                        if stage_lock is not None:
+                            stage_lock.release()
+                logger.debug(
+                    "StagePositionCache: stage busy (locked); returning stale "
+                    "position (age=%.0f ms) instead of blocking on force_refresh",
+                    age_ms,
+                )
+                return Position(x, y, z)
 
         return Position(x, y, z)
 
