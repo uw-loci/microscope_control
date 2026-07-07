@@ -56,12 +56,18 @@ class JAICamera(PycromanagerCamera):
     FRAME_RATE_MAX = 25.0
 
     def __init__(
-        self, core: Core, studio: Optional[Studio], detector_config: Optional[Dict[str, Any]] = None
+        self,
+        core: Core,
+        studio: Optional[Studio],
+        detector_config: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(core, studio, detector_config)
 
         # Lazily create JAICameraProperties when first needed
         self._properties = None
+        # Saved PixelFormat captured when high-bit-depth mode is entered, so
+        # set_high_bit_mode(False) can restore whatever the camera was in.
+        self._saved_pixel_format = None
         logger.info("Initialized JAICamera (3-CCD prism, no debayering)")
 
         # 2026-05-06: JAI camera properties (individual-exposure mode, per-
@@ -201,7 +207,10 @@ class JAICamera(PycromanagerCamera):
     def get_fov_pixels(self) -> Tuple[int, int]:
         """Get FOV from detector config (JAI dimensions not in device properties)."""
         if "width_px" in self._detector_config and "height_px" in self._detector_config:
-            return (self._detector_config["width_px"], self._detector_config["height_px"])
+            return (
+                self._detector_config["width_px"],
+                self._detector_config["height_px"],
+            )
         # Fallback to image dimensions from core
         return self._core.get_image_width(), self._core.get_image_height()
 
@@ -237,6 +246,125 @@ class JAICamera(PycromanagerCamera):
         return False
 
     # --- JAI-specific methods (not on base Camera) ---
+
+    def set_high_bit_mode(self, enabled: bool) -> bool:
+        """Switch the JAI to a higher-bit-depth PixelFormat, or restore it.
+
+        The JAI 3-CCD prism delivers 8-bit RGB by default. For PPM the
+        birefringence is a normalized difference of two angle images; computing
+        it from higher-bit inputs sharply reduces quantization noise in the dark
+        crossed-polarizer regions (where the normalized ratio is dominated by a
+        few coarse 8-bit levels). This flips the MM device property that selects
+        the pixel format so subsequent snaps return uint16 frames, then flips it
+        back.
+
+        The property name and its allowed values are camera- and MM-adapter-
+        specific, so they are read from detector_config rather than hardcoded.
+        Add a block like this to the JAI detector entry in the microscope YAML::
+
+            high_bit_depth:
+              property: PixelFormat     # MM device property that selects depth
+              high_value: BGR12         # value that selects the high-bit format
+              low_value: BGR8           # optional; captured from HW if omitted
+              device: JAICamera         # optional; defaults to the camera device
+              bit_depth: 12             # optional; real sensor bits, for logging
+
+        If the block (or property/high_value) is absent, this is a no-op that
+        leaves the camera in its current 8-bit format and returns False, so the
+        feature is safely inert until configured on the target scope.
+
+        Args:
+            enabled: True to enter high-bit mode, False to restore.
+
+        Returns:
+            True if the hardware format was actually changed, False on no-op
+            (not configured) or failure. Never raises -- a failure degrades to
+            the current format so acquisition continues.
+        """
+        cfg = self._detector_config.get("high_bit_depth") or {}
+        prop = cfg.get("property")
+        high_value = cfg.get("high_value")
+        device = cfg.get("device") or self._name
+
+        if not prop or high_value is None:
+            if enabled:
+                logger.warning(
+                    "JAI high-bit-depth requested but not configured "
+                    "(detector_config.high_bit_depth.property / .high_value "
+                    "missing); staying at the current 8-bit format. Discover "
+                    "the JAI PixelFormat property on the scope and add it to "
+                    "the detector YAML."
+                )
+            return False
+
+        try:
+            self.stop_if_streaming()
+            if enabled:
+                # Capture the current format so we can restore it, unless the
+                # config pins an explicit low_value.
+                if self._saved_pixel_format is None:
+                    try:
+                        self._saved_pixel_format = self._core.get_property(device, prop)
+                    except Exception as e:
+                        logger.warning(
+                            "JAI high-bit-depth: could not read current %s.%s "
+                            "(%s); will fall back to configured low_value on "
+                            "restore.",
+                            device,
+                            prop,
+                            e,
+                        )
+                        self._saved_pixel_format = None
+                self._core.set_property(device, prop, high_value)
+                self._core.wait_for_device(device)
+                logger.info(
+                    "JAI high-bit-depth ENABLED: %s.%s = %s (bytes/pixel now %s)",
+                    device,
+                    prop,
+                    high_value,
+                    self._safe_get_bpp(),
+                )
+                return True
+            else:
+                restore_value = self._saved_pixel_format
+                if restore_value is None:
+                    restore_value = cfg.get("low_value")
+                if restore_value is None:
+                    logger.warning(
+                        "JAI high-bit-depth: no saved format and no low_value "
+                        "configured; leaving %s.%s as-is.",
+                        device,
+                        prop,
+                    )
+                    return False
+                self._core.set_property(device, prop, restore_value)
+                self._core.wait_for_device(device)
+                self._saved_pixel_format = None
+                logger.info(
+                    "JAI high-bit-depth RESTORED: %s.%s = %s (bytes/pixel now %s)",
+                    device,
+                    prop,
+                    restore_value,
+                    self._safe_get_bpp(),
+                )
+                return True
+        except Exception as e:
+            logger.error(
+                "JAI high-bit-depth %s failed for %s.%s (%s); acquisition will "
+                "continue at whatever format the camera is currently in.",
+                "enable" if enabled else "restore",
+                device,
+                prop,
+                e,
+            )
+            return False
+
+    def _safe_get_bpp(self) -> str:
+        """Current MM bytes-per-pixel as a string, or '?' on failure."""
+        try:
+            return str(self._core.get_bytes_per_pixel())
+        except Exception:
+            return "?"
 
     def set_channel_exposures(
         self, red: float, green: float, blue: float, auto_enable: bool = True

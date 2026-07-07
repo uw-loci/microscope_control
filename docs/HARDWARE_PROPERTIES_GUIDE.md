@@ -61,7 +61,48 @@ The Prior ProScan controller exposes speed as a percentage (1-100) of maximum ve
 | JAICamera | Exposure | 0.1-1000 ms | Per-channel on 3-CCD |
 | JAICamera | WhiteBalance | Off, Once, Continuous | Must be Off during calibrated acquisition |
 | JAICamera | FrameRateHz | 1-38 | Affects streaming capture rate |
+| JAICamera | PixelFormat | BGR8, BGR12, etc. | Selects color depth; used for PPM high-bit mode |
 | QCamera | Exposure | 0.01-10000 ms | Teledyne MicroPublisher 6 |
+
+### JAI High-Bit-Depth PixelFormat Configuration (PPM)
+
+The JAI 3-CCD camera delivers 8-bit RGB by default. For PPM (polarized light microscopy), the birefringence is computed from a normalized difference of angle images. Computing from higher-bit inputs (e.g., 12-bit) sharply reduces quantization noise in dark regions (crossed-polarizer angles).
+
+To enable high-bit-depth capture, add a `high_bit_depth` block to the JAI detector entry in your microscope YAML configuration:
+
+```yaml
+detectors:
+  LOCI_DETECTOR_JAI_001:
+    # ... existing camera configuration ...
+    high_bit_depth:
+      property: PixelFormat           # MM device property name (discover via dump tool)
+      high_value: BGR12               # Value to select high-bit format
+      low_value: BGR8                 # Optional; if omitted, captured from HW when mode entered
+      device: JAICamera               # Optional; defaults to the camera device name
+      bit_depth: 12                   # Optional; real sensor bits, for logging/reference
+```
+
+**How to discover your camera's PixelFormat property values:**
+
+1. Run the device properties dump tool:
+   ```bash
+   python tools/dump_device_properties.py --output mm_device_properties.txt
+   ```
+
+2. Search the output for `JAICamera` and look for any property containing "Pixel" or "Format"
+   - Common examples: `PixelFormat`, `BitDepth`, `Color Depth`
+   - Note the exact property name and all allowed values
+
+3. Identify the 8-bit and higher-bit values (e.g., `BGR8` for 8-bit, `BGR12` for 12-bit)
+
+4. Add them to the YAML block as shown above
+
+**Behavior:**
+- When high-bit mode is enabled, the camera's PixelFormat property is switched to the high-value
+- Subsequent image captures return uint16 frames instead of uint8
+- When high-bit mode is disabled, the previous format is restored (or falls back to `low_value` if the original format could not be captured)
+- If the configuration is absent or incomplete, high-bit mode is a no-op and the camera stays at its current format
+- The feature is safe to configure but inactive until explicitly triggered by acquisition workflows
 
 ### How Properties Are Used in QPSC
 
