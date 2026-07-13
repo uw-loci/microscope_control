@@ -1285,13 +1285,15 @@ class PycromanagerHardware(MicroscopeHardware):
             position_index: Optional position index to include in CSV filename
             edge_retries: When > 0 and the validated peak lands at an edge of
                           the swept range with a directional trend
-                          (asc XOR desc), shift the sweep center toward the
-                          inferred peak direction and re-sweep with
-                          ``search_range *= edge_widen_factor``. Same algorithm
-                          as ``autofocus_sweep_drift_check``'s edge-retry,
-                          applied to the dense full-AF path. Sweeps are clamped
-                          to the configured stage Z limits; if clamping leaves
-                          no new ground to search, the retry is skipped.
+                          (asc XOR desc), place a widened window
+                          (``search_range *= edge_widen_factor``) mostly
+                          beyond the already-covered band (old edge ~10%
+                          into the new window), image ONLY the Z targets
+                          outside that band, and re-run peak detection on
+                          the merged sample set -- no re-imaging of covered
+                          ground. Windows are clamped to the configured
+                          stage Z limits; if clamping leaves no new ground
+                          to search, the retry is skipped.
             edge_widen_factor: Multiplier applied to search_range on each edge retry.
 
         Returns:
@@ -1322,18 +1324,47 @@ class PycromanagerHardware(MicroscopeHardware):
         attempt_center = starting_pos.z
         attempt_range = float(search_range)
 
+        # Samples retained across edge retries (2026-07-13): an edge retry
+        # keeps every (z, score) already measured and images ONLY Z targets
+        # outside the covered band, then runs peak detection on the merged
+        # set. Metric and exposure are constant within one autofocus()
+        # call so scores stay comparable across attempts; targets are
+        # always visited in ascending Z, so every sample is approached
+        # from below -- the same backlash direction as the original sweep.
+        # validate_focus_peak and interp1d are order-based and tolerate
+        # the non-uniform spacing of a merged set.
+        retained = []  # sorted list of (z, primary_score, p98_p2)
+
         try:
             while True:
                 steps = np.linspace(0, attempt_range, n_steps) - (attempt_range / 2)
                 current_pos = Position(starting_pos.x, starting_pos.y, attempt_center)
-                z_steps = attempt_center + steps
+                z_targets = attempt_center + steps
 
-                scores = []
-                fallback_scores = []  # p98_p2 computed alongside primary metric
-                for step_number in range(n_steps):
-                    new_pos = Position(
-                        current_pos.x, current_pos.y, attempt_center + steps[step_number]
+                if retained:
+                    covered_low = retained[0][0]
+                    covered_high = retained[-1][0]
+                    # Half a step of tolerance: a target that close to an
+                    # existing sample adds no information.
+                    tol = (attempt_range / max(n_steps - 1, 1)) / 2.0
+                    new_targets = [
+                        float(z)
+                        for z in z_targets
+                        if z < covered_low - tol or z > covered_high + tol
+                    ]
+                    logger.info(
+                        "  Edge retry reuses %d retained samples covering "
+                        "[%.2f, %.2f] um; imaging %d new Z positions",
+                        len(retained),
+                        covered_low,
+                        covered_high,
+                        len(new_targets),
                     )
+                else:
+                    new_targets = [float(z) for z in z_targets]
+
+                for z_target in sorted(new_targets):
+                    new_pos = Position(current_pos.x, current_pos.y, z_target)
                     self.move_to_position(new_pos)
 
                     img, tags = self.snap_image()
@@ -1345,11 +1376,16 @@ class PycromanagerHardware(MicroscopeHardware):
                     score = score_metric(img_gray)
                     if hasattr(score, "ndim") and score.ndim == 2:
                         score = np.mean(score)
-                    scores.append(score)
 
                     # Always compute p98_p2 as fallback (negligible cost, no extra acquisition)
                     p98_p2 = float(np.percentile(img_gray, 98) - np.percentile(img_gray, 2))
-                    fallback_scores.append(p98_p2)
+                    retained.append((z_target, float(score), p98_p2))
+
+                retained.sort(key=lambda s: s[0])
+                z_steps = np.array([s[0] for s in retained])
+                scores = [s[1] for s in retained]
+                fallback_scores = [s[2] for s in retained]
+                n_samples = len(retained)
 
                 # VALIDATE FOCUS PEAK QUALITY
                 scores_array = np.array(scores)
@@ -1363,7 +1399,7 @@ class PycromanagerHardware(MicroscopeHardware):
                 # result on a sweep that only sampled 1943..2017), and
                 # the stage then moves to a Z position whose focus
                 # quality was never actually measured.
-                interp_x = np.linspace(z_steps[0], z_steps[-1], n_steps * interp_strength)
+                interp_x = np.linspace(z_steps[0], z_steps[-1], n_samples * interp_strength)
                 interp_y = scipy.interpolate.interp1d(z_steps, scores, kind=interp_kind)(interp_x)
                 new_z = float(np.clip(interp_x[np.argmax(interp_y)], z_steps[0], z_steps[-1]))
 
@@ -1403,6 +1439,8 @@ class PycromanagerHardware(MicroscopeHardware):
                         widen_factor=float(edge_widen_factor),
                         z_min=z_min_cfg,
                         z_max=z_max_cfg,
+                        covered_low=float(z_steps[0]),
+                        covered_high=float(z_steps[-1]),
                     )
                     if retry_center is not None:
                         edge_retries_used += 1
@@ -1560,13 +1598,26 @@ class PycromanagerHardware(MicroscopeHardware):
         z_min,
         z_max,
         margin=5.0,
+        covered_low=None,
+        covered_high=None,
     ):
         """Compute (new_center, new_range) for a peak-at-edge AF retry.
+
+        ``covered_low`` / ``covered_high`` bound the Z band ALL previous
+        attempts have already sampled (not just the last window). When
+        given, the new window is placed so the covered band's edge sits
+        ~10% into it -- enough overlap to catch a peak right on the old
+        edge, with ~90% of the window exploring new ground -- and the
+        extend-direction sanity guard compares against the covered band.
+        When omitted, the last window's bounds are used for both.
+        (2026-07-13: previously the old edge was the MIDPOINT of the
+        retry window, so ~half of every retry re-scanned Z the previous
+        sweep had already imaged.)
 
         Returns ``(None, None)`` when no retry should be attempted: either the
         failure isn't a directional edge, stage Z limits aren't configured, or
         the clamped new sweep wouldn't cover any ground outside the band the
-        previous sweep already covered.
+        previous sweeps already covered.
         """
         has_asc = bool(validation.get("has_ascending", False))
         has_desc = bool(validation.get("has_descending", False))
@@ -1579,9 +1630,21 @@ class PycromanagerHardware(MicroscopeHardware):
             logger.warning("  Edge retry: stage Z limits not configured; skipping")
             return None, None
 
+        old_low = (
+            float(covered_low)
+            if covered_low is not None
+            else float(cur_center) - float(cur_range) / 2.0
+        )
+        old_high = (
+            float(covered_high)
+            if covered_high is not None
+            else float(cur_center) + float(cur_range) / 2.0
+        )
+
         new_range = float(cur_range) * float(widen_factor)
         shift_sign = 1 if (has_asc and not has_desc) else -1
-        target_center = float(cur_center) + shift_sign * (float(cur_range) / 2.0)
+        edge = old_high if shift_sign > 0 else old_low
+        target_center = edge + shift_sign * (new_range / 2.0 - 0.1 * new_range)
 
         available = (z_max - margin) - (z_min + margin)
         if available <= 0:
@@ -1611,8 +1674,6 @@ class PycromanagerHardware(MicroscopeHardware):
         # window hit a junk peak at the high edge.
         new_low = clamped_center - half
         new_high = clamped_center + half
-        old_low = float(cur_center) - float(cur_range) / 2.0
-        old_high = float(cur_center) + float(cur_range) / 2.0
         if shift_sign < 0:
             extended_in_direction = new_low < old_low - 1e-3
             direction_label = "low"
