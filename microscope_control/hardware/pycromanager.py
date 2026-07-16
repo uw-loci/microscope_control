@@ -1335,6 +1335,18 @@ class PycromanagerHardware(MicroscopeHardware):
         # the non-uniform spacing of a merged set.
         retained = []  # sorted list of (z, primary_score, p98_p2)
 
+        # Wall-clock safety net. If the primary metric never brackets focus (e.g. a
+        # gradient metric going flat on a bright PPM background), the edge-retry loop
+        # would otherwise launch progressively wider sweeps -- observed as three
+        # ~2-minute sweeps (~6 min total) with zero tile progress, which trips the
+        # acquisition client's ~300 s no-progress watchdog and wedges the run. Once
+        # this budget is spent, stop launching new edge-retry sweeps and defer to the
+        # hint Z (the exhausted-retries branch below), so acquisition proceeds and the
+        # per-tile drift check can correct the residual. Sized to keep total autofocus
+        # comfortably under the client watchdog even for a slow first sweep.
+        af_deadline_s = 90.0
+        t_af_start = time.perf_counter()
+
         try:
             while True:
                 steps = np.linspace(0, attempt_range, n_steps) - (attempt_range / 2)
@@ -1428,9 +1440,11 @@ class PycromanagerHardware(MicroscopeHardware):
                 #     because too few samples or peak landed at the edge),
                 #     AND
                 #   - the stage Z limits leave room to extend.
+                af_elapsed_s = time.perf_counter() - t_af_start
                 if (
                     edge_retries_used < edge_retries
                     and validation.get("should_extend_direction") is not None
+                    and af_elapsed_s < af_deadline_s
                 ):
                     retry_center, retry_range = self._compute_edge_retry_window(
                         validation=validation,
@@ -1476,12 +1490,15 @@ class PycromanagerHardware(MicroscopeHardware):
                 # brackets. See claude-reports/2026-06-02_autofocus-focus-runaway.md.
                 if validation.get("should_extend_direction") is not None:
                     logger.warning(
-                        "  Edge-retry budget exhausted with peak still at the "
-                        "%s boundary after %d retr%s -- focus never bracketed; "
-                        "refusing unbracketed edge peak Z=%.2f and falling back",
+                        "  Edge-retry search stopped with peak still at the %s "
+                        "boundary after %d retr%s (%.0f s elapsed, budget %.0f s) -- "
+                        "focus never bracketed; refusing unbracketed edge peak Z=%.2f "
+                        "and deferring to hint Z",
                         validation["should_extend_direction"],
                         edge_retries_used,
                         "y" if edge_retries_used == 1 else "ies",
+                        af_elapsed_s,
+                        af_deadline_s,
                         new_z,
                     )
                     validation = dict(validation)

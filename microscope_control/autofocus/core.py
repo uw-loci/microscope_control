@@ -261,6 +261,23 @@ class AutofocusUtils:
         return float(np.mean(gradient_magnitude * weight_mask))
 
     @staticmethod
+    def autofocus_profile_p98_p2(image: np.ndarray) -> float:
+        """Percentile dynamic range (P98 - P2): robust on bright PPM background.
+
+        On PPM at 20x the bright, low-texture background swamps gradient metrics
+        (laplacian / sobel / brenner / tenengrad): they read nearly flat and
+        never bracket a focus peak, which drives the edge-retry sweep into a
+        runaway (repeated "one-sided trend, extend high"). The 98th-minus-2nd
+        percentile spread instead tracks how crisply the sparse birefringent
+        fibers stand out from the background, giving a clean single peak at
+        focus. This is the same quantity the sweep already computes inline as its
+        p98_p2 fallback; exposing it as a primary metric is what lets the PPM 20x
+        autofocus config (score_metric: p98_p2) actually take effect on the
+        acquisition sweep (not just the streaming/drift check).
+        """
+        return float(np.percentile(image, 98) - np.percentile(image, 2))
+
+    @staticmethod
     def has_sufficient_signal(
         image: np.ndarray,
         texture_threshold: float = 0.02,

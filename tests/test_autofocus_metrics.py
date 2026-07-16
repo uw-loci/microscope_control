@@ -311,5 +311,38 @@ class TestMultiMetricAnalysis:
             pytest.skip("multi_metric_analysis not available")
 
 
+class TestAutofocusProfileP98P2:
+    """Regression tests for the p98_p2 acquisition-sweep profile metric.
+
+    The multi-slide PPM acquisition hang was caused by ``score_metric: p98_p2``
+    (set for PPM 20x) having no backing profile function, so the acquisition
+    sweep silently resolved it to a gradient metric that reads flat on bright PPM
+    backgrounds. These lock in that the primary metric now exists and returns the
+    percentile dynamic range.
+    """
+
+    def test_p98_p2_equals_percentile_spread(self):
+        from microscope_control.autofocus.core import AutofocusUtils
+
+        img = np.arange(100, dtype=np.float32).reshape(10, 10)
+        expected = float(np.percentile(img, 98) - np.percentile(img, 2))
+        value = AutofocusUtils.autofocus_profile_p98_p2(img)
+        assert value == pytest.approx(expected)
+        # Must be a plain scalar float: the acquisition sweep only averages a
+        # metric result when it is 2-D, so a scalar keeps it on the direct path.
+        assert isinstance(value, float)
+
+    def test_p98_p2_higher_dynamic_range_scores_higher(self):
+        from microscope_control.autofocus.core import AutofocusUtils
+
+        low = np.full((10, 10), 100.0, dtype=np.float32)
+        low[0, 0] = 110.0  # tiny spread
+        high = np.full((10, 10), 100.0, dtype=np.float32)
+        high[:5, :] = 250.0  # wide spread (crisp features against background)
+        assert AutofocusUtils.autofocus_profile_p98_p2(
+            high
+        ) > AutofocusUtils.autofocus_profile_p98_p2(low)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
