@@ -58,11 +58,41 @@ The Prior ProScan controller exposes speed as a percentage (1-100) of maximum ve
 
 | Device | Property | Example Values | Notes |
 |--------|----------|---------------|-------|
-| JAICamera | Exposure | 0.1-1000 ms | Per-channel on 3-CCD |
+| JAICamera | Exposure | 0.1-1000 ms | Per-channel on 3-CCD; see Contamination Window below |
 | JAICamera | WhiteBalance | Off, Once, Continuous | Must be Off during calibrated acquisition |
 | JAICamera | FrameRateHz | 1-38 | Affects streaming capture rate |
 | JAICamera | PixelFormat | BGR8, BGR12, etc. | Selects color depth; used for PPM high-bit mode |
 | QCamera | Exposure | 0.01-10000 ms | Teledyne MicroPublisher 6 |
+
+### JAI Contamination Window (Continuous-Mode Exposure Bug)
+
+The JAI AP-3200T-USB camera exhibits a hardware bug in continuous/streaming mode: when per-channel (individual) exposures are active and the **blue channel falls between 4.0 and 5.6 ms**, captured frames contain a stale-content band (the "contamination bar") at the bottom. This affects **live preview and continuous sampling** (e.g., streaming autofocus) but **NOT snap-mode acquisition**.
+
+**Workaround:**
+
+For any code path using individual per-channel exposures in continuous mode (live preview, streaming AF, rapid continuous sampling), snap the blue exposure out of the (4.0, 5.6) ms window before applying settings:
+
+```python
+from microscope_control.hardware.camera.jai_camera import JAICamera
+
+# Before applying per-channel exposures in continuous mode:
+r_safe, g_safe, b_safe, was_snapped = JAICamera.snap_exposures_out_of_trigger_window(
+    red=12.0, green=15.0, blue=4.5  # If blue in (4.0, 5.6), it snaps to 4.0 or 5.6
+)
+# blue 4.5 snaps to the nearer edge 4.0 (scale 4.0/4.5 = 0.889); R and G scale by
+# the same factor to preserve the WB ratio:
+# Returns: (10.667, 13.333, 4.0, True)
+
+if was_snapped:
+    logger.warning("Blue exposure snapped out of contamination window")
+    # Apply r_safe, g_safe, b_safe instead of the originals
+```
+
+**Key points:**
+- **Snap-mode acquisition is unaffected** -- do not snap in snap-mode paths (they need exact exposures)
+- **Live/continuous paths must snap** -- snapping is required only for continuous-mode individual exposures
+- **WB ratio preserved** -- R and G are rescaled by the same factor, so R/B and G/B ratios remain constant; only absolute intensity shifts slightly
+- **Reference:** `claude-reports/2026-05-06_jai-contamination-bar-*.md`, `claude-reports/2026-07-24_jai-live-exposure-snap-gap.md`
 
 ### JAI High-Bit-Depth PixelFormat Configuration (PPM)
 

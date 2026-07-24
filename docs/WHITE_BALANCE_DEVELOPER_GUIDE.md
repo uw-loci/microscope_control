@@ -283,6 +283,25 @@ The existing functions check for `"JAI"` in the camera name. For a new camera, y
 
 ## 5. Key Gotchas
 
+### Continuous-Mode Contamination Window (JAI Hardware Bug)
+
+The JAI AP-3200T-USB camera has a hardware bug in continuous/streaming mode: when individual (per-channel) exposures are active with unequal channels and the **blue exposure falls between 4.0 and 5.6 milliseconds**, captured frames contain a stale-content band (the "contamination bar") at the bottom. This affects live preview and continuous sampling (streaming AF, rapid continuous imaging) but **NOT snap-mode acquisition**.
+
+**Mitigation:** Use the helper method `JAICamera.snap_exposures_out_of_trigger_window()` before applying individual exposures in continuous-mode code paths:
+
+```python
+r_safe, g_safe, b_safe, was_snapped = JAICamera.snap_exposures_out_of_trigger_window(
+    red=r_exp, green=g_exp, blue=b_exp
+)
+if was_snapped:
+    logger.warning("Snapped blue exposure to avoid contamination window")
+    # Apply r_safe, g_safe, b_safe instead
+```
+
+The method snaps blue to the nearer safe boundary (4.0 or 5.6 ms) and rescales R/G by the same factor to preserve the white-balance ratio. **Do not snap in snap-mode paths** -- snap-mode is unaffected by the bug and needs exact exposures.
+
+**Reference:** `claude-reports/2026-05-06_jai-contamination-bar-*.md` and `claude-reports/2026-07-24_jai-live-exposure-snap-gap.md`.
+
 ### Frame Rate vs Exposure
 
 On some cameras (including JAI), the maximum exposure time is limited by the current frame rate setting. If the frame rate is set to 30 fps, no channel can exceed ~33ms exposure. The calibrator must either lower the frame rate first or use gain compensation when exposure limits are reached.

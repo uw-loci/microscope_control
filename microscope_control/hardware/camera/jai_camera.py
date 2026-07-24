@@ -55,6 +55,48 @@ class JAICamera(PycromanagerCamera):
     FRAME_RATE_MIN = 0.125
     FRAME_RATE_MAX = 25.0
 
+    # JAI continuous-mode contamination trigger window (ms). When individual
+    # (per-channel) exposures are active with unequal channels and the BLUE
+    # channel lands in (TRIGGER_BLUE_LOW_MS, TRIGGER_BLUE_HIGH_MS), the camera
+    # streams frames with a fixed-row stale-content band at the bottom -- the
+    # "contamination bar" / half-frame freeze. Snap mode is unaffected. Boundary
+    # characterised empirically on the JAI AP-3200T-USB (2026-05-06); see
+    # claude-reports/2026-05-06_jai-contamination-bar-*.md and
+    # claude-reports/2026-07-24_jai-live-exposure-snap-gap.md. Live-preview and
+    # continuous-sampling paths must snap blue out of this window; snap-mode
+    # acquisition paths must NOT (they are clean and need exact exposures).
+    TRIGGER_BLUE_LOW_MS = 4.0
+    TRIGGER_BLUE_HIGH_MS = 5.6
+    # Floor applied after rescaling R/G so the snap never under-shoots the
+    # hardware exposure floor (EXPOSURE_MIN ~0.04 ms; 0.05 as a buffer).
+    SNAP_MIN_AFTER_RESCALE_MS = 0.05
+
+    @staticmethod
+    def snap_exposures_out_of_trigger_window(red, green, blue):
+        """Snap per-channel exposures out of the JAI continuous-mode contamination
+        trigger window.
+
+        If ``blue`` is inside (TRIGGER_BLUE_LOW_MS, TRIGGER_BLUE_HIGH_MS), snap it
+        to the nearer safe edge and rescale ``red`` and ``green`` by the same
+        factor so the white-balance ratio (R/B, G/B) is preserved exactly; only
+        the absolute light level shifts a few percent (recovered downstream by
+        normalisation). Returns ``(red, green, blue, snapped)``.
+
+        Only meaningful for individual (per-channel) exposures on continuous/live
+        paths. Snap-mode acquisition is unaffected by the bug and must NOT snap
+        (it needs exact exposures), so those callers must not use this.
+        """
+        low = JAICamera.TRIGGER_BLUE_LOW_MS
+        high = JAICamera.TRIGGER_BLUE_HIGH_MS
+        if not (low < blue < high):
+            return red, green, blue, False
+        b_safe = low if (blue - low) <= (high - blue) else high
+        scale = b_safe / blue
+        floor = JAICamera.SNAP_MIN_AFTER_RESCALE_MS
+        r_safe = max(red * scale, floor)
+        g_safe = max(green * scale, floor)
+        return r_safe, g_safe, b_safe, True
+
     def __init__(
         self,
         core: Core,
@@ -112,9 +154,7 @@ class JAICamera(PycromanagerCamera):
         g_exp = ch.get("green", 1.0)
         b_exp = ch.get("blue", 1.0)
 
-        TRIGGER_BLUE_LOW_MS = 4.0
-        TRIGGER_BLUE_HIGH_MS = 5.6
-        in_trigger = TRIGGER_BLUE_LOW_MS < b_exp < TRIGGER_BLUE_HIGH_MS
+        in_trigger = self.TRIGGER_BLUE_LOW_MS < b_exp < self.TRIGGER_BLUE_HIGH_MS
         unequal = not (
             abs(r_exp - g_exp) < 0.001 and abs(g_exp - b_exp) < 0.001 and abs(r_exp - b_exp) < 0.001
         )
@@ -540,61 +580,42 @@ class JAICamera(PycromanagerCamera):
         # normalisation. Snap-mode acquisitions are unaffected by the
         # bug at any value, so this only matters for live preview and
         # any continuous-mode sampling (streaming AF, rapid scan).
-        TRIGGER_BLUE_LOW_MS = 4.0
-        TRIGGER_BLUE_HIGH_MS = 5.6
+        # Snap BLUE out of the trigger window via the shared helper (single source
+        # of truth for the boundary), rescaling R/G to preserve the WB ratio.
         if individual_exposure:
             r_exp = exposures.get("r", exposures.get("all", 1.0))
             g_exp = exposures.get("g", exposures.get("all", 1.0))
             b_exp = exposures.get("b", exposures.get("all", 1.0))
-            if TRIGGER_BLUE_LOW_MS < b_exp < TRIGGER_BLUE_HIGH_MS:
-                # Pick the nearer safe boundary
-                if (b_exp - TRIGGER_BLUE_LOW_MS) <= (TRIGGER_BLUE_HIGH_MS - b_exp):
-                    b_safe = TRIGGER_BLUE_LOW_MS
-                else:
-                    b_safe = TRIGGER_BLUE_HIGH_MS
-                # Preserve WB ratio: scale R and G by the same factor.
-                # Because R_new/B_new = (R_old * s)/(B_old * s) = R_old/B_old.
-                scale = b_safe / b_exp
-                r_safe = r_exp * scale
-                g_safe = g_exp * scale
-                # Hard clamp to camera minimum so we never under-shoot
-                # the hardware's exposure floor while rescaling. EXPOSURE_MIN
-                # in JAICameraProperties is around 0.04 ms; pick a safer
-                # 0.05 ms here as a buffer.
-                MIN_AFTER_RESCALE_MS = 0.05
-                r_safe = max(r_safe, MIN_AFTER_RESCALE_MS)
-                g_safe = max(g_safe, MIN_AFTER_RESCALE_MS)
+            r_safe, g_safe, b_safe, snapped = self.snap_exposures_out_of_trigger_window(
+                r_exp, g_exp, b_exp
+            )
+            if snapped:
                 logger.warning(
-                    "JAI apply_settings: blue exposure %.4f ms in continuous-"
-                    "mode contamination trigger window (%.1f, %.1f) ms; "
-                    "snapping B to %.4f ms (nearer safe edge) and "
-                    "rescaling R %.4f -> %.4f and G %.4f -> %.4f by factor "
-                    "%.4f to preserve the WB ratio. See JAI ticket / "
-                    "claude-reports/2026-05-06_jai-contamination-bar-*.md.",
+                    "JAI apply_settings: blue exposure %.4f ms in continuous-mode "
+                    "contamination trigger window (%.1f, %.1f) ms; snapped B to "
+                    "%.4f ms and rescaled R %.4f -> %.4f, G %.4f -> %.4f to preserve "
+                    "the WB ratio. See claude-reports/2026-05-06_jai-contamination-bar-*.md.",
                     b_exp,
-                    TRIGGER_BLUE_LOW_MS,
-                    TRIGGER_BLUE_HIGH_MS,
+                    self.TRIGGER_BLUE_LOW_MS,
+                    self.TRIGGER_BLUE_HIGH_MS,
                     b_safe,
                     r_exp,
                     r_safe,
                     g_exp,
                     g_safe,
-                    scale,
                 )
                 exposures = dict(exposures)
                 exposures["r"] = r_safe
                 exposures["g"] = g_safe
                 exposures["b"] = b_safe
-                # If after rescaling all three are equal (within 1 us)
-                # we can drop to unified mode below; recheck.
-                r_exp, g_exp, b_exp = r_safe, g_safe, b_safe
+                # If the snap made all three equal (within 1 us), drop to unified.
                 if (
-                    abs(r_exp - g_exp) < 0.001
-                    and abs(g_exp - b_exp) < 0.001
-                    and abs(r_exp - b_exp) < 0.001
+                    abs(r_safe - g_safe) < 0.001
+                    and abs(g_safe - b_safe) < 0.001
+                    and abs(r_safe - b_safe) < 0.001
                 ):
                     individual_exposure = False
-                    exposures["all"] = g_exp
+                    exposures["all"] = g_safe
 
         if individual_exposure:
             self.enable_individual_exposure()
