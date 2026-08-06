@@ -128,10 +128,14 @@ class Camera(ABC):
         """
         return [1]
 
-    def get_binning(self) -> int:
-        """Return the current binning factor.
+    def get_binning(self) -> "int | None":
+        """Return the current binning factor, or None if it cannot be read.
 
-        Default: 1. Subclasses override to read MM "Binning" property.
+        Default: 1. This is NOT a fabricated measurement -- the base class
+        also reports ``get_available_binnings() == [1]``, so for a camera
+        with no binning support 1 is the only possible value and saying so
+        is true. Subclasses that actually query the hardware override this
+        and return None when the read fails.
         """
         return 1
 
@@ -284,9 +288,17 @@ class Camera(ABC):
         """Switch to unified exposure mode. No-op if not supported."""
         pass
 
-    def get_unified_gain(self) -> float:
-        """Get the unified (all-channel) gain. Default: 1.0."""
-        return 1.0
+    def get_unified_gain(self) -> "float | None":
+        """Get the unified (all-channel) gain, or None when not reportable.
+
+        Default: None, matching ``get_gain_range()`` above -- a camera with
+        no unified-gain concept does not have a unified gain of 1.0, it has
+        no answer. Returning 1.0 here claimed "unity gain, no amplification"
+        for every non-JAI camera, which is a statement about the hardware we
+        have not checked. Subclasses that can read gain override this and
+        return None only when the read fails.
+        """
+        return None
 
     def set_unified_gain(self, gain: float) -> None:
         """Set unified gain for all channels. No-op if not supported."""

@@ -12,6 +12,7 @@ Reference hardware:
 
 import logging
 from abc import ABC, abstractmethod
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,14 @@ class Illumination(ABC):
 
     All illumination sources support on/off and a power level. The
     meaning of "power" is source-specific (voltage, percentage, mW).
+
+    READING POWER CAN FAIL, AND FAILURE IS NOT ZERO. ``get_power`` and
+    ``is_on`` return ``None`` when the device could not be read. They must
+    never substitute a number, because 0.0 / False is the specific claim
+    "this source is dark" -- and acting on that claim is how you open a
+    shutter into a live beam or expose a PMT that is actually powered.
+    An unreadable source is not a safe source; callers must treat ``None``
+    as "unknown, do not assume", never as "off".
     """
 
     @abstractmethod
@@ -43,8 +52,14 @@ class Illumination(ABC):
         ...
 
     @abstractmethod
-    def get_power(self) -> float:
-        """Get current illumination power level."""
+    def get_power(self) -> Optional[float]:
+        """Get current illumination power level, or None if it cannot be read.
+
+        Returns:
+            The power level in source-specific units, or ``None`` when the
+            device could not be queried. Never fabricate 0.0 here -- see the
+            class docstring.
+        """
         ...
 
     @abstractmethod
@@ -52,9 +67,12 @@ class Illumination(ABC):
         """Return (min_power, max_power) for this source."""
         ...
 
-    def is_on(self) -> bool:
-        """Whether the source is currently emitting."""
-        return self.get_power() > 0
+    def is_on(self) -> Optional[bool]:
+        """Whether the source is currently emitting, or None if unknown."""
+        power = self.get_power()
+        if power is None:
+            return None
+        return power > 0
 
 
 class AnalogIllumination(Illumination):
@@ -112,11 +130,18 @@ class AnalogIllumination(Illumination):
         self._core.set_property(self._device, self._property, voltage)
         logger.debug("%s voltage set to %.3f", self._label, voltage)
 
-    def get_power(self) -> float:
+    def get_power(self) -> Optional[float]:
         try:
             return float(self._core.get_property(self._device, self._property))
-        except Exception:
-            return 0.0
+        except Exception as e:
+            logger.warning(
+                "Could not read power from %s (%s.%s): %s",
+                self._label,
+                self._device,
+                self._property,
+                e,
+            )
+            return None
 
     def get_power_range(self) -> tuple:
         return (self._min_v, self._max_v)
@@ -231,21 +256,39 @@ class DevicePropertyIllumination(Illumination):
             self._core.set_property(self._device, self._state_prop, "0")
         logger.debug("%s intensity set to %.0f", self._label, intensity)
 
-    def get_power(self) -> float:
+    def get_power(self) -> Optional[float]:
         try:
             return float(self._core.get_property(self._device, self._intensity_prop))
-        except Exception:
-            return 0.0
+        except Exception as e:
+            logger.warning(
+                "Could not read intensity from %s (%s.%s): %s",
+                self._label,
+                self._device,
+                self._intensity_prop,
+                e,
+            )
+            return None
 
     def get_power_range(self) -> tuple:
         return (0.0, self._max_intensity)
 
-    def is_on(self) -> bool:
-        """Check State property rather than relying on intensity > 0."""
+    def is_on(self) -> Optional[bool]:
+        """Check State property rather than relying on intensity > 0.
+
+        Returns None if the State property cannot be read -- an unreadable
+        source must not report itself as off.
+        """
         try:
             return str(self._core.get_property(self._device, self._state_prop)) == "1"
-        except Exception:
-            return False
+        except Exception as e:
+            logger.warning(
+                "Could not read state from %s (%s.%s): %s",
+                self._label,
+                self._device,
+                self._state_prop,
+                e,
+            )
+            return None
 
 
 class LEDIllumination(AnalogIllumination):

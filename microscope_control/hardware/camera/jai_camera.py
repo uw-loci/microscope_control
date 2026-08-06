@@ -183,13 +183,13 @@ class JAICamera(PycromanagerCamera):
             "Running apply_settings to invoke the blue-window snap-out so "
             "live view does not show the bar before the user applies a WB "
             "preset. Original values from prior session: aR=%.3f, aB=%.3f, "
-            "unified_gain=%.2f.",
+            "unified_gain=%s.",
             r_exp,
             g_exp,
             b_exp,
             analog_red,
             analog_blue,
-            unified_gain,
+            "unknown" if unified_gain is None else f"{unified_gain:.2f}",
         )
 
         self.apply_settings(
@@ -441,8 +441,8 @@ class JAICamera(PycromanagerCamera):
                 self._safe_get("GainIsIndividual"),
             )
 
-    def get_unified_gain(self) -> float:
-        """Get unified gain value."""
+    def get_unified_gain(self) -> "float | None":
+        """Get unified gain value, or None if the property could not be read."""
         return self.properties.get_unified_gain()
 
     def set_rb_analog_gains(self, analog_red: float, analog_blue: float) -> None:
@@ -630,15 +630,24 @@ class JAICamera(PycromanagerCamera):
             exp = exposures.get("all", exposures.get("g", 1.0))
             self._core.set_exposure(exp)
 
-        self.set_unified_gain(unified_gain)
+        # unified_gain=None means the caller could not read the current gain.
+        # Leave the hardware gain alone rather than writing a substitute -- a
+        # failed read is not permission to change the camera's state.
+        if unified_gain is None:
+            logger.warning(
+                "JAI apply_settings: unified gain is unknown; leaving the "
+                "hardware gain untouched instead of writing a default"
+            )
+        else:
+            self.set_unified_gain(unified_gain)
         self.set_rb_analog_gains(analog_red=analog_red, analog_blue=analog_blue)
         self.disable_individual_gain()
 
         logger.info(
-            "JAI apply_settings: mode=%s, exp=%s, gain=%.2f, aR=%.3f, aB=%.3f",
+            "JAI apply_settings: mode=%s, exp=%s, gain=%s, aR=%.3f, aB=%.3f",
             "individual" if individual_exposure else "unified",
             exposures,
-            unified_gain,
+            "unknown" if unified_gain is None else f"{unified_gain:.2f}",
             analog_red,
             analog_blue,
         )

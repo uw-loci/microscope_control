@@ -215,15 +215,23 @@ class PycromanagerCamera(Camera):
                 continue
         return sorted(out) if out else [1]
 
-    def get_binning(self) -> int:
+    def get_binning(self) -> "int | None":
+        """Return the current binning factor, or None if it cannot be read.
+
+        Returning 1 on failure would be a claim that the camera is not
+        binning, which silently corrupts every pixel-size and FOV
+        calculation downstream, and makes a save/restore round-trip
+        (see rapid_scan) reset the hardware to 1x. None means "ask again
+        or refuse", never "1".
+        """
         try:
             raw = str(self._core.get_property(self._name, "Binning")).strip()
             if "x" in raw.lower():
                 raw = raw.lower().split("x", 1)[0]
             return int(raw)
         except Exception as e:
-            logger.debug("Camera %s could not read Binning: %s", self._name, e)
-            return 1
+            logger.warning("Camera %s could not read Binning: %s", self._name, e)
+            return None
 
     def set_binning(self, value: int) -> None:
         if value < 1:

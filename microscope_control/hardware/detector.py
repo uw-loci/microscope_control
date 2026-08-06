@@ -24,6 +24,13 @@ class Detector(ABC):
     triggers the acquisition, while the Detector amplifies and converts
     photons to signal. On systems like the CAMM, the OSc-LSM scan
     engine and the DCC-100 PMT are independent devices.
+
+    READING GAIN CAN FAIL, AND FAILURE IS NOT ZERO. ``get_gain`` returns
+    ``None`` when the controller could not be read. 0.0 is the specific
+    claim "this PMT is at zero high-voltage" -- i.e. safe to expose to
+    light. A read failure is not evidence of that, and treating it as
+    such is how you damage a tube. Callers must treat ``None`` as
+    "unknown, assume the detector may be live".
     """
 
     @abstractmethod
@@ -37,8 +44,12 @@ class Detector(ABC):
         ...
 
     @abstractmethod
-    def is_enabled(self) -> bool:
-        """Whether the detector is currently active."""
+    def is_enabled(self) -> Optional[bool]:
+        """Whether the detector is currently active, or None if unknown.
+
+        Same rule as ``get_gain``: a read failure is not evidence the
+        detector is off.
+        """
         ...
 
     @abstractmethod
@@ -52,8 +63,14 @@ class Detector(ABC):
         ...
 
     @abstractmethod
-    def get_gain(self) -> float:
-        """Get current detector gain."""
+    def get_gain(self) -> Optional[float]:
+        """Get current detector gain, or None if it cannot be read.
+
+        Returns:
+            Gain in detector-specific units, or ``None`` when the device
+            could not be queried. Never fabricate 0.0 -- see the class
+            docstring.
+        """
         ...
 
     @abstractmethod
@@ -137,12 +154,15 @@ class PMTDetector(Detector):
         self._core.wait_for_system()
         logger.info("PMT disabled (%s)", self._device)
 
-    def is_enabled(self) -> bool:
+    def is_enabled(self) -> Optional[bool]:
         try:
             status = self._core.get_property(self._device, self._status_property)
             return status == "On"
-        except Exception:
-            return False
+        except Exception as e:
+            logger.warning(
+                "Could not read PMT status from %s.%s: %s", self._device, self._status_property, e
+            )
+            return None
 
     def set_gain(self, gain: float) -> None:
         """Set PMT high-voltage gain as a percentage.
@@ -155,13 +175,16 @@ class PMTDetector(Detector):
         self._core.set_property(self._device, self._gain_property, percent)
         logger.debug("PMT gain set to %.1f%% (connector %d)", percent, self._connector)
 
-    def get_gain(self) -> float:
-        """Get current gain as a fraction (0.0 - 1.0)."""
+    def get_gain(self) -> Optional[float]:
+        """Get current gain as a fraction (0.0 - 1.0), or None if unreadable."""
         try:
             percent = float(self._core.get_property(self._device, self._gain_property))
             return percent / 100.0
-        except Exception:
-            return 0.0
+        except Exception as e:
+            logger.warning(
+                "Could not read PMT gain from %s.%s: %s", self._device, self._gain_property, e
+            )
+            return None
 
     def get_gain_range(self) -> Tuple[float, float]:
         """Return gain range as fractions."""
@@ -279,11 +302,17 @@ class DCUDetector(Detector):
         self._core.wait_for_system()
         logger.info("DCU channel %d disabled (%s)", self._channel, self._device)
 
-    def is_enabled(self) -> bool:
+    def is_enabled(self) -> Optional[bool]:
         try:
             return self._core.get_property(self._device, self._enable_prop) == "On"
-        except Exception:
-            return False
+        except Exception as e:
+            logger.warning(
+                "Could not read DCU channel status from %s.%s: %s",
+                self._device,
+                self._enable_prop,
+                e,
+            )
+            return None
 
     def set_gain(self, gain: float) -> None:
         """Set PMT high-voltage gain as a fraction (0.0-1.0)."""
@@ -291,12 +320,15 @@ class DCUDetector(Detector):
         self._core.set_property(self._device, self._gain_prop, percent)
         logger.debug("DCU channel %d gain set to %.1f%%", self._channel, percent)
 
-    def get_gain(self) -> float:
-        """Get current gain as a fraction (0.0 - 1.0)."""
+    def get_gain(self) -> Optional[float]:
+        """Get current gain as a fraction (0.0 - 1.0), or None if unreadable."""
         try:
             return float(self._core.get_property(self._device, self._gain_prop)) / 100.0
-        except Exception:
-            return 0.0
+        except Exception as e:
+            logger.warning(
+                "Could not read PMT gain from %s.%s: %s", self._device, self._gain_prop, e
+            )
+            return None
 
     def get_gain_range(self) -> Tuple[float, float]:
         return (0.0, self._max_gain / 100.0)

@@ -486,8 +486,17 @@ class JAICameraProperties:
         for attempt in range(1, max_retries + 1):
             self._set_property(self.GAIN_UNIFIED, clamped)
 
-            # Read back and verify
+            # Read back and verify. An unreadable property is a verification
+            # FAILURE, not a pass -- while get_unified_gain() fabricated 1.0
+            # on error, writing a gain of 1.0 to a camera whose Gain property
+            # could not be read reported "verified" without reading anything.
             actual = self.get_unified_gain()
+            if actual is None:
+                logger.warning(
+                    f"Unified gain verification failed (attempt {attempt}/{max_retries}): "
+                    f"wrote {clamped:.2f}, but the gain property could not be read back"
+                )
+                continue
             if abs(actual - clamped) < 0.01:
                 logger.debug(f"Set unified gain: {clamped:.2f}x (verified)")
                 return
@@ -498,22 +507,27 @@ class JAICameraProperties:
             )
 
         # Final attempt failed -- log error but continue
+        final = self.get_unified_gain()
         logger.error(
             f"Unified gain could not be verified after {max_retries} attempts: "
-            f"target {clamped:.2f}, actual {self.get_unified_gain():.2f}"
+            f"target {clamped:.2f}, actual " + ("unreadable" if final is None else f"{final:.2f}")
         )
 
-    def get_unified_gain(self) -> float:
+    def get_unified_gain(self) -> Optional[float]:
         """
         Get current unified gain value.
 
         Returns:
-            Current unified gain value (1.0-8.0)
+            Current unified gain value (1.0-8.0), or None if the property
+            could not be read. Do not substitute 1.0 -- that is the specific
+            claim "no amplification", and white-balance and noise-calibration
+            math treats it as a measured fact.
         """
         try:
             return float(self._get_property(self.GAIN_UNIFIED))
-        except Exception:
-            return 1.0
+        except Exception as e:
+            logger.warning("Could not read JAI unified gain (%s): %s", self.GAIN_UNIFIED, e)
+            return None
 
     def set_rb_analog_gains(self, red: float, blue: float) -> None:
         """
@@ -844,17 +858,22 @@ class JAICameraProperties:
     # a color temperature or white balance parameter. AWB corrections are stored
     # in an opaque internal pipeline and cannot be read via any exposed property.
 
-    def get_white_balance_mode(self) -> str:
+    def get_white_balance_mode(self) -> Optional[str]:
         """
         Get current white balance mode.
 
         Returns:
-            Current mode: 'Off', 'Continuous', 'Once', or a preset name
+            Current mode ('Off', 'Continuous', 'Once', or a preset name), or
+            None if the property could not be read. 'Off' is not a safe
+            fallback: it is the claim that the camera is applying no white
+            balance, and background-correction and calibration paths branch
+            on exactly that.
         """
         try:
             return self._get_property(self.WHITE_BALANCE)
-        except Exception:
-            return "Off"
+        except Exception as e:
+            logger.warning("Could not read JAI white balance mode (%s): %s", self.WHITE_BALANCE, e)
+            return None
 
     # NOTE: set_white_balance_mode() and run_auto_white_balance() were removed
     # because the JAI camera's hardware AWB cannot be reliably controlled

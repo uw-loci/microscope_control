@@ -55,14 +55,16 @@ class NoiseStats:
     # Number of frames used for measurement (1 for single-frame)
     num_frames: int
 
-    # Current per-channel exposure times in ms
-    exposure_ms: Dict[str, float]
+    # Current per-channel exposure times in ms. A value is None when that
+    # setting could not be read off the camera -- never silently 0.0, which
+    # would read as a real measurement in the calibration record.
+    exposure_ms: Dict[str, Optional[float]]
 
-    # Current unified gain value
-    unified_gain: float
+    # Current unified gain value, or None if it could not be read
+    unified_gain: Optional[float]
 
-    # Current R/B analog gain values
-    analog_gains: Dict[str, float]
+    # Current R/B analog gain values, None per channel if unreadable
+    analog_gains: Dict[str, Optional[float]]
 
     # Optional noise verification result (populated when verify_noise=True)
     # Contains: passes, channel_stddevs, channel_snr, thresholds, per_channel
@@ -107,12 +109,19 @@ class JAINoiseMeasurement:
     def _get_current_settings(self) -> tuple:
         """Read current camera settings for inclusion in NoiseStats.
 
+        These values are recorded into NoiseStats as the camera state the
+        noise figure was measured under, so an unreadable setting must stay
+        None rather than becoming a plausible number. A calibration record
+        that says "gain 1.0" when the gain was never read is worse than one
+        that says the gain is unknown.
+
         Returns:
-            Tuple of (exposure_ms dict, unified_gain float, analog_gains dict)
+            Tuple of (exposure_ms dict, unified_gain float or None,
+            analog_gains dict). Any value that could not be read is None.
         """
-        exposure_ms = {"red": 0.0, "green": 0.0, "blue": 0.0}
-        unified_gain = 1.0
-        analog_gains = {"red": 1.0, "blue": 1.0}
+        exposure_ms = {"red": None, "green": None, "blue": None}
+        unified_gain = None
+        analog_gains = {"red": None, "blue": None}
 
         if self.jai_props is not None:
             try:
@@ -132,11 +141,24 @@ class JAINoiseMeasurement:
             try:
                 all_gains = self.jai_props.get_analog_gains()
                 analog_gains = {
-                    "red": all_gains.get("red", 1.0),
-                    "blue": all_gains.get("blue", 1.0),
+                    "red": all_gains.get("red"),
+                    "blue": all_gains.get("blue"),
                 }
             except Exception:
                 pass
+
+        unknown = []
+        if any(v is None for v in exposure_ms.values()):
+            unknown.append("exposure")
+        if unified_gain is None:
+            unknown.append("unified_gain")
+        if any(v is None for v in analog_gains.values()):
+            unknown.append("analog_gains")
+        if unknown:
+            logger.warning(
+                "Noise measurement will record unknown camera settings for: %s",
+                ", ".join(unknown),
+            )
 
         return exposure_ms, unified_gain, analog_gains
 

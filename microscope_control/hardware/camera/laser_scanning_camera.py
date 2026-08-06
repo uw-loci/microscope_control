@@ -56,15 +56,21 @@ class LaserScanningCamera(PycromanagerCamera):
         # Valid values (configurable per hardware)
         self._valid_resolutions: List[int] = cfg.get("valid_resolutions", [256, 512, 1024, 2048])
 
-        # Base pixel size at minimum resolution -- must come from config
+        # Base pixel size at minimum resolution -- must come from config.
+        # There is no defensible default: pixel size is a property of this
+        # specific optical path, and inventing one silently corrupts every
+        # stage/image coordinate conversion downstream. The previous code
+        # substituted 1.0 um and logged a warning that called itself
+        # "obviously wrong" -- but a warning does not stop an acquisition,
+        # and the resulting images carry a wrong scale that looks measured.
+        # Refuse to construct instead.
         self._base_pixel_size_um = cfg.get("base_pixel_size_um")
         if self._base_pixel_size_um is None:
-            logger.warning(
-                "base_pixel_size_um not set in detector config for %s. "
-                "Pixel size calculations will be incorrect.",
-                self._name,
+            raise ValueError(
+                f"base_pixel_size_um is required in the detector config for {self._name}. "
+                "It is a measured property of the optical path and cannot be defaulted; "
+                "add it to the microscope YAML under this detector."
             )
-            self._base_pixel_size_um = 1.0  # safe fallback, obviously wrong
 
         # Base resolution for pixel size scaling (smallest valid resolution)
         self._base_resolution = min(self._valid_resolutions) if self._valid_resolutions else 256
@@ -101,20 +107,43 @@ class LaserScanningCamera(PycromanagerCamera):
         logger.info("LSM resolution set to %d", resolution)
 
     def _read_resolution(self) -> int:
-        """Read current resolution from device."""
+        """Read current resolution from the device.
+
+        Raises:
+            RuntimeError: if the resolution property cannot be read. The
+                resolution drives the reshape in ``snap_image``, so guessing
+                the smallest valid value would either throw a confusing
+                reshape error later or, worse, silently reinterpret the
+                pixel buffer at the wrong dimensions.
+        """
         try:
             return int(self._core.get_property(self._name, self._resolution_property))
-        except Exception:
-            return self._base_resolution
+        except Exception as e:
+            raise RuntimeError(
+                f"LSM {self._name}: could not read scan resolution from property "
+                f"'{self._resolution_property}': {e}"
+            ) from e
 
     # --- Pixel rate (dwell time) control ---
 
-    def get_pixel_rate_hz(self) -> float:
-        """Get current pixel clock rate in Hz."""
+    def get_pixel_rate_hz(self) -> Optional[float]:
+        """Get current pixel clock rate in Hz, or None if it cannot be read.
+
+        The old fallback of 250 kHz was invented, not measured. Because
+        dwell time is derived from this, a fabricated rate propagates into
+        acquisition timing and into the dwell time recorded in image
+        metadata -- a wrong number that looks like a measurement.
+        """
         try:
             return float(self._core.get_property(self._name, self._pixel_rate_property))
-        except Exception:
-            return 250000.0
+        except Exception as e:
+            logger.warning(
+                "LSM %s could not read pixel rate (%s): %s",
+                self._name,
+                self._pixel_rate_property,
+                e,
+            )
+            return None
 
     def set_pixel_rate_hz(self, rate_hz: float) -> None:
         """Set pixel clock rate.
@@ -130,12 +159,18 @@ class LaserScanningCamera(PycromanagerCamera):
         self._core.wait_for_device(self._name)
         logger.info("LSM pixel rate set to %s Hz", rate_str)
 
-    def get_dwell_time_us(self) -> float:
-        """Get pixel dwell time in microseconds (derived from pixel rate)."""
+    def get_dwell_time_us(self) -> Optional[float]:
+        """Get pixel dwell time in microseconds, or None if it is not known.
+
+        Derived from the pixel rate, so it inherits that read's outcome. A
+        rate of 0 Hz is not a dwell time of 0 us -- it is an undefined state,
+        and reporting 0.0 for it would put a fabricated number into
+        acquisition metadata.
+        """
         rate = self.get_pixel_rate_hz()
-        if rate > 0:
-            return 1e6 / rate
-        return 0.0
+        if rate is None or rate <= 0:
+            return None
+        return 1e6 / rate
 
     # --- Camera ABC overrides ---
 
@@ -178,8 +213,23 @@ class LaserScanningCamera(PycromanagerCamera):
         self.set_pixel_rate_hz(rate_hz)
 
     def get_exposure(self) -> float:
-        """Get per-pixel dwell time in milliseconds."""
-        return self.get_dwell_time_us() / 1000.0
+        """Get per-pixel dwell time in milliseconds.
+
+        Raises:
+            RuntimeError: if the pixel rate cannot be read. The Camera ABC
+                declares a plain float here and every caller assumes a real
+                measurement, so the honest failure mode is to raise rather
+                than to hand back a made-up 0.0. Callers that can tolerate
+                "unknown" should use ``get_dwell_time_us()``, which returns
+                None instead.
+        """
+        dwell_us = self.get_dwell_time_us()
+        if dwell_us is None:
+            raise RuntimeError(
+                f"LSM {self._name}: cannot report exposure because the pixel rate "
+                f"property '{self._pixel_rate_property}' could not be read"
+            )
+        return dwell_us / 1000.0
 
     def get_fov_pixels(self) -> Tuple[int, int]:
         """Return (width, height) -- always square for scanning."""
