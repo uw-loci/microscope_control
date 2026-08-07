@@ -46,7 +46,11 @@ class PycromanagerCamera(Camera):
         # Use device name from config if available; fall back to current MM active camera
         self._name = self._detector_config.get("device") or core.get_property("Core", "Camera")
 
-        # Detect camera capabilities from config or defaults
+        # Sensor properties. Both are physical facts about this detector and
+        # come only from its config block -- no default is meaningful for an
+        # arbitrary camera. bayer_pattern absent means "this detector has no
+        # Bayer filter", which is the correct answer for the JAI 3-CCD
+        # prism, the Hamamatsu, and every laser-scanning detector.
         self._bayer_pattern = self._detector_config.get("bayer_pattern", None)
         self._bit_depth = self._detector_config.get("bit_depth", None)
 
@@ -54,12 +58,40 @@ class PycromanagerCamera(Camera):
         self._flip_x = bool(self._detector_config.get("flip_x", False))
         self._flip_y = bool(self._detector_config.get("flip_y", False))
 
+        # State the debayer decision out loud at startup. It used to be made
+        # from a hardcoded device name, so whether it fired depended on what
+        # Micro-Manager happened to call the camera. Log it so the answer is
+        # visible in the session log instead of inferred from the images.
         logger.info(
-            "Initialized PycromanagerCamera: %s (flip_x=%s, flip_y=%s)",
+            "Initialized PycromanagerCamera: %s (flip_x=%s, flip_y=%s, "
+            "bayer_pattern=%s, bit_depth=%s -> debayering %s)",
             self._name,
             self._flip_x,
             self._flip_y,
+            self._bayer_pattern,
+            self._bit_depth,
+            "ON" if self._should_debayer() else "off",
         )
+        if self._should_debayer() and (self._bayer_pattern is None or self._bit_depth is None):
+            # Self-contradictory config: the detector says it needs
+            # debayering but does not say with what. Surfaced now rather
+            # than at the first snap, though the snap raises too -- we will
+            # not guess a mosaic order or a full-scale value.
+            logger.error(
+                "Detector %s declares requires_debayering but is missing %s in its "
+                "config block. Debayering will fail at the first snap until these "
+                "are added; they are physical properties of the sensor and cannot "
+                "be defaulted.",
+                self._name,
+                " and ".join(
+                    n
+                    for n, v in (
+                        ("bayer_pattern", self._bayer_pattern),
+                        ("bit_depth", self._bit_depth),
+                    )
+                    if v is None
+                ),
+            )
 
     # --- Core access (for subclasses and internal use) ---
 
@@ -527,11 +559,29 @@ class PycromanagerCamera(Camera):
     def _should_debayer(self) -> bool:
         """Whether this camera needs Bayer-pattern debayering.
 
-        Default: True if camera is MicroPublisher6 (the only known
-        Bayer camera in the current hardware fleet). Override in
-        subclasses that do NOT need debayering.
+        Decided per detector, from config only:
+
+        - ``requires_debayering`` when the detector block declares it. This
+          key already existed and is what the Java side uses to size disk
+          estimates (``AcquisitionSpaceCheck``); the Python simply was not
+          reading it.
+        - otherwise, the presence of ``bayer_pattern``.
+
+        Absent both, the answer is no -- correct for the JAI 3-CCD prism,
+        the Hamamatsu on OWS3, and every laser-scanning detector, without
+        those classes having to say so.
+
+        This used to test ``self._name == "MicroPublisher6"``, putting the
+        decision in a hardcoded device name instead of the detector block --
+        and disagreeing with that block, which declares
+        ``device: QCamera`` and ``requires_debayering: true`` for the very
+        same camera. Whether debayering happened therefore depended on what
+        Micro-Manager called the device at runtime.
         """
-        return self._name == "MicroPublisher6"
+        declared = self._detector_config.get("requires_debayering")
+        if declared is None:
+            return self._bayer_pattern is not None
+        return bool(declared)
 
     def _debayer_image(self, pixels: np.ndarray) -> np.ndarray:
         """Apply Bayer-pattern debayering to raw sensor data.
@@ -544,8 +594,25 @@ class PycromanagerCamera(Camera):
         """
         from microscope_imageprocessing.debayering import CPUDebayer
 
-        pattern = self._bayer_pattern or "GRBG"
-        bit_depth = self._bit_depth or 14
+        # Both of these are physical properties of the sensor and both must
+        # come from the detector config. The old `or "GRBG"` / `or 14`
+        # fallbacks set the R/B channel order and the full-scale value for
+        # every output pixel, on no evidence -- a wrong mosaic silently
+        # swaps red and blue, and a wrong bit depth mis-scales the whole
+        # frame. Neither produces an error, so neither is visible.
+        pattern = self._bayer_pattern
+        bit_depth = self._bit_depth
+        if pattern is None:
+            raise ValueError(
+                f"Camera {self._name}: cannot debayer without 'bayer_pattern' in the "
+                "detector config. A sensor's mosaic order cannot be guessed."
+            )
+        if bit_depth is None:
+            raise ValueError(
+                f"Camera {self._name}: 'bayer_pattern' is set to '{pattern}' but "
+                "'bit_depth' is missing from the detector config. Debayering scales "
+                "by the sensor's full-scale value, so it must be declared too."
+            )
 
         debayerx = CPUDebayer(
             pattern=pattern,
@@ -563,13 +630,34 @@ class PycromanagerCamera(Camera):
         return pixels
 
     def _set_debayer_mode_for_snap(self, color_off: bool) -> None:
-        """Toggle camera Color property for Bayer debayering.
+        """Put the camera into raw-Bayer mode before a snap, and back after.
 
-        MicroPublisher6 needs Color=OFF before snap so we get raw
-        Bayer data, then Color=ON after debayering.
+        Some Bayer cameras debayer in firmware by default and must be told
+        to hand over the raw mosaic instead (the MicroPublisher 6 does this
+        via a 'Color' property: OFF before the snap, ON after). That is a
+        per-detector quirk, so it is declared per detector rather than
+        matched on a hardcoded device name:
+
+            raw_mode:
+              property: Color
+              raw_value: 'OFF'
+              normal_value: 'ON'
+
+        Absent, this is a no-op -- correct for a camera that already
+        delivers the raw mosaic.
         """
-        if self._name == "MicroPublisher6":
-            self._core.set_property("MicroPublisher6", "Color", "OFF" if color_off else "ON")
+        cfg = self._detector_config.get("raw_mode") or {}
+        prop = cfg.get("property")
+        if not prop:
+            return
+        raw_value = cfg.get("raw_value")
+        normal_value = cfg.get("normal_value")
+        if raw_value is None or normal_value is None:
+            raise ValueError(
+                f"Camera {self._name}: detector config 'raw_mode' sets property "
+                f"'{prop}' but is missing raw_value and/or normal_value."
+            )
+        self._core.set_property(self._name, prop, raw_value if color_off else normal_value)
 
     def _reorder_channels(
         self, pixels: np.ndarray, nchannels: int, remove_alpha: bool = True

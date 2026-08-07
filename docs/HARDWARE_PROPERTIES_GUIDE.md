@@ -94,6 +94,52 @@ if was_snapped:
 - **WB ratio preserved** -- R and G are rescaled by the same factor, so R/B and G/B ratios remain constant; only absolute intensity shifts slightly
 - **Reference:** `claude-reports/2026-05-06_jai-contamination-bar-*.md`, `claude-reports/2026-07-24_jai-live-exposure-snap-gap.md`
 
+### Bayer Debayering Configuration
+
+Some cameras (e.g., Teledyne MicroPublisher 6) deliver raw Bayer-mosaic sensor data and require debayering to produce RGB images. Debayering is controlled **entirely by detector configuration** — the camera device name is no longer used to decide whether debayering occurs.
+
+To enable debayering, add one or both of these keys to the detector configuration:
+
+```yaml
+detectors:
+  MicroPublisher6_Detector:
+    device: QCamera                  # MM device name (used to read/write properties)
+    requires_debayering: true        # Explicit flag (takes precedence)
+    bayer_pattern: GRBG              # Mosaic order (required if debayering is enabled)
+    bit_depth: 14                    # Sensor bit depth (required if debayering is enabled)
+    raw_mode:                        # Optional: toggle raw-mode property before snap
+      property: Color                # MM property name to set
+      raw_value: 'OFF'               # Value for raw Bayer mode (before snap)
+      normal_value: 'ON'             # Value for normal mode (after debayering)
+```
+
+**Configuration keys:**
+
+- **`requires_debayering`** (optional boolean): Explicitly declare that this detector needs debayering. Overrides any other setting; `false` disables debayering even if `bayer_pattern` is present.
+- **`bayer_pattern`** (string, required if debayering enabled): The Bayer mosaic order. Common values: `GRBG`, `RGGB`, `BGGR`, `GBRG`. **Cannot be guessed.**
+- **`bit_depth`** (integer, required if debayering enabled): The sensor's native bit depth (e.g., 8, 10, 12, 14). Used to scale pixel values correctly during debayering. **Cannot be guessed.**
+- **`raw_mode`** (optional dict): If the camera debayers in firmware by default, configure it to return raw data before snap:
+  - `property`: Micro-Manager property name
+  - `raw_value`: Property value for raw-Bayer mode (set before snap)
+  - `normal_value`: Property value for normal mode (set after debayering)
+
+**Default behavior (when keys absent):**
+- No debayering occurs — correct for JAI 3-CCD prism, Hamamatsu, and laser-scanning detectors
+- `raw_mode` is a no-op if not configured
+
+**Errors (configuration incomplete):**
+- If `requires_debayering: true` or `bayer_pattern` is set but `bayer_pattern` or `bit_depth` is missing, debayering will raise an error on the first snap with the missing key name
+- Logged at initialization for early detection
+
+**How to discover your camera's Bayer pattern and bit depth:**
+
+1. Consult your camera's datasheet or Micro-Manager configuration
+2. Run the device properties dump to confirm the current sensor mode:
+   ```bash
+   python tools/dump_device_properties.py --output mm_device_properties.txt
+   ```
+3. For raw-mode configuration, look for properties that switch between "raw" and "processed" or "color" modes
+
 ### JAI High-Bit-Depth PixelFormat Configuration (PPM)
 
 The JAI 3-CCD camera delivers 8-bit RGB by default. For PPM (polarized light microscopy), the birefringence is computed from a normalized difference of angle images. Computing from higher-bit inputs (e.g., 12-bit) sharply reduces quantization noise in dark regions (crossed-polarizer angles).
