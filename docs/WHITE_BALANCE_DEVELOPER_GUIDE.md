@@ -368,6 +368,39 @@ When `max_ch_median >= 254`, the code halves the exposure instead (`reduction = 
 
 See `workflow.py:acquire_background_with_target_intensity()` (line ~2976) for the implementation.
 
+### Peak-Aware De-Clip (Post-Convergence Clipping Prevention)
+
+The convergence loop targets the channel **mean** intensity, and Phase 0 de-saturation only monitors the **mean**. In scenes with bright hot-spots (e.g., the near-crossed PPM +theta angle, which needs more amplification because it is optically dimmer), the mean can converge to target while the **peak is clipped at 255**. The linear flat-field divide in post-processing cannot undo a clipped peak, leaving a dark residual ring per tile.
+
+**The peak-aware de-clip feature** runs after convergence: if any channel's clipped-pixel fraction exceeds `max_saturated_pct`, the algorithm backs off exposure (preserving R:G:B white-balance ratios exactly) until the peak is unclipped, or falls back to reducing unified gain if exposures hit `min_exposure_ms`. The final calibration's mean will intentionally be below target, but the peak is unclipped and the result is correct by design.
+
+**Configuration parameters** (fields on `CalibrationConfig` in `jai/calibration.py`; on by default. These are NOT yet read from the `white_balance_calibration` YAML block or passed as WBPPM/WBCALIBR flags -- changing them currently requires a code change. Plumbing them through like `base_gain`/`gain_threshold` is a follow-up if per-scope tuning is needed):
+
+| Parameter | Default | Purpose |
+|-----------|---------|---------|
+| `enable_peak_declip` | `True` | Enable post-convergence peak monitoring and backoff |
+| `max_saturated_pct` | `0.5` | Maximum fraction of pixels at 255 before backoff engages (%) |
+| `declip_backoff` | `0.85` | Multiplier applied per de-clip step (exposure first, then gain) |
+| `max_declip_iterations` | `12` | Safety cap on de-clip iterations (exposure phase + gain fallback) |
+
+**Behavior:**
+
+1. After convergence, check if any channel has clipped-pixel fraction >= `max_saturated_pct`
+2. If yes, scale all exposures down by `declip_backoff` (step 1) while keeping unified gain unchanged
+3. Re-capture and re-analyze
+4. If still clipping and exposure cannot go lower (at `min_exposure_ms`), step unified gain down by `declip_backoff` instead
+5. Repeat until clipping is eliminated or `max_declip_iterations` is reached
+6. If successful, mark the result as converged despite mean being below target
+7. If unsuccessful (clipping remains after max iterations), log a warning: scene contrast exceeds sensor range
+
+**Why this matters:** Scenes like the PPM +theta angle (optically dimmer, requiring high gain) can have both a low mean and a bright hot-spot. Without peak-aware de-clip, the peak clips and leaves a dark ring. With it, exposure backs off slightly, mean drops below target (acceptable because it is unclipped), and the flat-field divide works correctly.
+
+**When to adjust:** Default values work for most scenes. If you see warnings about persistent clipping, consider:
+- Lowering the target intensity (gives more headroom before peak clips)
+- Reducing illumination (reduces the bright hot-spot amplitude)
+- Increasing `declip_backoff` (e.g., 0.9 backs off only 10% per step, slower but more gradual)
+- Increasing `max_declip_iterations` (e.g., 20 allows more attempts before giving up)
+
 ### ASCII-Only Policy
 
 Per project policy, all Python logging, error messages, and comments must use ASCII characters only. Do not use unicode arrows, degree symbols, or special characters. Use `->` not `-->`, `deg` not the degree symbol, `um` not the micro symbol. See CLAUDE.md for the full policy.
