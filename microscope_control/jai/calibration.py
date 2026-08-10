@@ -257,6 +257,32 @@ class CalibrationConfig:
     # 20 halvings covers 200ms -> 0.0002ms, far below any useful minimum.
     max_desaturation_iterations: int = 20
 
+    # Peak-aware de-clip (post-convergence). The main loop targets the channel
+    # MEAN, and Phase 0 only de-saturates on the MEAN (>= saturation_threshold).
+    # A scene with a bright hot-spot (e.g. the near-crossed PPM +theta angle) can
+    # therefore converge with the MEAN on target but the PEAK clipped at 255 --
+    # the linear flat-field divide cannot undo that clip, leaving a dark residual
+    # ring per tile. When enabled, after convergence this scales ALL exposures
+    # down by declip_backoff (preserving the R:G:B white-balance ratios exactly,
+    # and leaving unified gain untouched -- so gain stays HIGH and the shorter
+    # exposure is if anything faster) until the fraction of clipped pixels drops
+    # below max_saturated_pct. If exposures reach min_exposure_ms while still
+    # clipping, unified gain is stepped down as a fallback. The angle then
+    # calibrates to a slightly-below-target mean that is genuinely unclipped.
+    enable_peak_declip: bool = True
+
+    # Fraction of pixels (percent) at 255 tolerated in the final calibration
+    # before the peak-aware de-clip backoff engages. Below the 1.0% "consider
+    # lowering target" warning so we act before it is worth warning about.
+    max_saturated_pct: float = 0.5
+
+    # Multiplier applied to exposures (then, as a fallback, to unified gain) on
+    # each de-clip step. 0.85 backs off ~15% per iteration.
+    declip_backoff: float = 0.85
+
+    # Safety cap on de-clip iterations (exposure phase + gain-fallback phase).
+    max_declip_iterations: int = 12
+
     # R/B analog gain ceiling. The JAI hardware spec lists 4.0 as the safe
     # max, but the firmware accepts higher values when needed for color
     # balance under unusual illumination (e.g. PPM positive-angle scenes
@@ -965,6 +991,100 @@ class JAIWhiteBalanceCalibrator:
                     logger.warning(
                         f"WARNING: {ch.upper()} channel has {final_sat_pct[ch]:.1f}% saturated pixels! "
                         f"Consider lowering target intensity."
+                    )
+
+            # ============ Peak-aware de-clip (post-convergence safety) ============
+            # The convergence loop above targets the channel MEAN, and Phase 0 only
+            # de-saturates on the MEAN. A scene with a bright hot-spot (e.g. the
+            # near-crossed PPM +theta angle, which needs more amplification because
+            # it is optically dimmer) can converge with the mean on target but the
+            # PEAK clipped at 255. The linear flat-field divide cannot undo a clipped
+            # peak, leaving a dark residual ring per tile. Back off exposure -- which
+            # preserves the R:G:B white-balance ratios exactly and leaves unified gain
+            # HIGH (a shorter exposure is if anything faster) -- until the clipped
+            # fraction drops below max_saturated_pct. See CalibrationConfig.enable_peak_declip.
+            if config.enable_peak_declip and any(
+                final_sat_pct[ch] >= config.max_saturated_pct for ch in ["red", "green", "blue"]
+            ):
+                logger.info(
+                    "Peak de-clip: final saturation R=%.2f%% G=%.2f%% B=%.2f%% exceeds "
+                    "max_saturated_pct=%.2f%% -- backing off exposure to keep the peak "
+                    "unclipped (mean will drop below target; gain stays %.2f).",
+                    final_sat_pct["red"],
+                    final_sat_pct["green"],
+                    final_sat_pct["blue"],
+                    config.max_saturated_pct,
+                    unified_gain,
+                )
+                ug_min = JAICameraProperties.GAIN_UNIFIED_RANGE[0]
+                declip_iter = 0
+                while (
+                    any(
+                        final_sat_pct[ch] >= config.max_saturated_pct
+                        for ch in ["red", "green", "blue"]
+                    )
+                    and declip_iter < config.max_declip_iterations
+                ):
+                    declip_iter += 1
+                    # Scale all exposures by the same factor -> WB ratios unchanged.
+                    scaled = {
+                        ch: max(config.min_exposure_ms, exposures[ch] * config.declip_backoff)
+                        for ch in ["red", "green", "blue"]
+                    }
+                    at_exposure_floor = all(
+                        abs(scaled[ch] - exposures[ch]) < 1e-6 for ch in ["red", "green", "blue"]
+                    )
+                    if at_exposure_floor:
+                        # Exposure cannot go lower (min_exposure_ms). Fall back to
+                        # stepping unified gain down -- it scales all channels equally
+                        # so WB ratios are still preserved. Stop if already at minimum.
+                        if unified_gain <= ug_min + 1e-6:
+                            logger.warning(
+                                "Peak de-clip: at exposure floor and minimum unified gain but "
+                                "still clipping (R=%.2f%% G=%.2f%% B=%.2f%%). Scene contrast "
+                                "exceeds sensor range; lower the target or reduce illumination.",
+                                final_sat_pct["red"],
+                                final_sat_pct["green"],
+                                final_sat_pct["blue"],
+                            )
+                            break
+                        unified_gain = max(ug_min, unified_gain * config.declip_backoff)
+                        self.jai_props.set_unified_gain(unified_gain)
+                    else:
+                        exposures = scaled
+                        self.jai_props.set_channel_exposures(**exposures, auto_enable=False)
+                    time.sleep(0.1)
+                    final_means, final_sat_pct = self._capture_and_analyze()
+                    logger.info(
+                        "Peak de-clip iter %d: R=%.1f (%.3fms) G=%.1f (%.3fms) B=%.1f (%.3fms) "
+                        "gain=%.2f | Sat R=%.2f%% G=%.2f%% B=%.2f%%",
+                        declip_iter,
+                        final_means["red"],
+                        exposures["red"],
+                        final_means["green"],
+                        exposures["green"],
+                        final_means["blue"],
+                        exposures["blue"],
+                        unified_gain,
+                        final_sat_pct["red"],
+                        final_sat_pct["green"],
+                        final_sat_pct["blue"],
+                    )
+                # A successfully de-clipped angle is a correct calibration even though
+                # its mean is intentionally below target -- mark it converged so
+                # downstream does not retry/fail a result that is right by design.
+                if all(
+                    final_sat_pct[ch] < config.max_saturated_pct for ch in ["red", "green", "blue"]
+                ):
+                    all_converged = True
+                    logger.info(
+                        "Peak de-clip complete in %d step(s): peak unclipped; final means "
+                        "R=%.1f G=%.1f B=%.1f (below target %.0f, accepted).",
+                        declip_iter,
+                        final_means["red"],
+                        final_means["green"],
+                        final_means["blue"],
+                        target,
                     )
 
             # Measure noise at final settings if configured
