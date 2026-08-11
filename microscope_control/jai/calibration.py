@@ -2309,6 +2309,14 @@ class JAIWhiteBalanceCalibrator:
         PPM imaging where different polarization angles require different
         exposure settings.
 
+        After per-angle calibration, the positive/negative small-angle pair is
+        intensity **pair-matched**: they are the only two angles combined into the
+        normalized-difference birefringence, so the H&E stain cancels only if they
+        are at the same intensity. If the peak de-clip lowered one of them below its
+        target, the brighter one is scaled down to match (exposure only; gain and WB
+        ratios preserved). When that happens, BOTH +/- backgrounds must be recaptured
+        at the new settings. Crossed/uncrossed are independent and never re-leveled.
+
         Args:
             angle_exposures: Dictionary mapping angle names to (angle, exposure_ms) tuples.
                            Standard names are 'positive', 'negative', 'crossed', 'uncrossed'.
@@ -2434,6 +2442,61 @@ class JAIWhiteBalanceCalibrator:
                 f"B={result.exposures_ms['blue']:.2f}ms, "
                 f"converged={result.converged}"
             )
+
+        # ================= +theta/-theta intensity pair-match =================
+        # The positive and negative small angles are the ONLY two combined into a
+        # product (the normalized-difference birefringence, (I+ - I-)/(I+ + I-)).
+        # For the H&E stain -- which is the same at both angles -- to cancel to zero,
+        # the two angles must be INTENSITY-MATCHED. The per-angle peak de-clip above
+        # can lower one angle (e.g. the optically-dimmer +theta) below its target to
+        # avoid a clipped hot-spot; if so the pair is no longer matched. Bring the
+        # brighter angle DOWN to the same level by scaling its exposures (gain and
+        # R:G:B ratios preserved -- black-subtracted means are ~proportional to
+        # exposure in the linear range, so this lands on the same numbers a physical
+        # re-acquisition would). Crossed/uncrossed are independent and untouched.
+        #
+        # Only acts when an angle actually fell short of its target (de-clip / hw
+        # limit) AND the pair is mismatched -- so deliberately-different +/- targets
+        # that both converged are respected. When it acts, BOTH backgrounds must be
+        # recaptured at the new settings (both angles' exposures changed).
+        pos, neg = results.get("positive"), results.get("negative")
+        if pos is not None and neg is not None:
+
+            def _level(r):
+                m = r.final_means
+                return (m.get("red", 0.0) + m.get("green", 0.0) + m.get("blue", 0.0)) / 3.0
+
+            pos_target = (per_angle_targets or {}).get("positive", target)
+            neg_target = (per_angle_targets or {}).get("negative", target)
+            pos_level, neg_level = _level(pos), _level(neg)
+            pos_short = pos_level < pos_target - tolerance
+            neg_short = neg_level < neg_target - tolerance
+            if (pos_short or neg_short) and abs(pos_level - neg_level) > tolerance:
+                common = min(pos_level, neg_level)
+                logger.info(
+                    "PPM pair-match: +theta level %.1f vs -theta level %.1f differ and an "
+                    "angle de-clipped -- re-leveling the brighter angle to the common "
+                    "target %.1f so the biref pair stays intensity-matched. RECAPTURE BOTH "
+                    "+/- BACKGROUNDS at the new settings.",
+                    pos_level,
+                    neg_level,
+                    common,
+                )
+                for name, r, lvl in (("positive", pos, pos_level), ("negative", neg, neg_level)):
+                    if lvl > common + tolerance and lvl > 0:
+                        s = common / lvl
+                        r.exposures_ms = {c: v * s for c, v in r.exposures_ms.items()}
+                        r.final_means = {c: v * s for c, v in r.final_means.items()}
+                        logger.info(
+                            "PPM pair-match: re-leveled '%s' by x%.3f -> R=%.2fms G=%.2fms B=%.2fms "
+                            "(mean ~%.1f).",
+                            name,
+                            s,
+                            r.exposures_ms["red"],
+                            r.exposures_ms["green"],
+                            r.exposures_ms["blue"],
+                            _level(r),
+                        )
 
         # Summary
         all_converged = all(r.converged for r in results.values())

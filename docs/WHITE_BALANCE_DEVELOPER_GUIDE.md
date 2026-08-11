@@ -401,6 +401,18 @@ The convergence loop targets the channel **mean** intensity, and Phase 0 de-satu
 - Increasing `declip_backoff` (e.g., 0.9 backs off only 10% per step, slower but more gradual)
 - Increasing `max_declip_iterations` (e.g., 20 allows more attempts before giving up)
 
+### +theta/-theta Intensity Pair-Match (calibrate_ppm only)
+
+The positive and negative small angles are the **only two combined into a product** -- the normalized-difference birefringence `(I+ - I-)/(I+ + I-)`. For the H&E stain (identical at both angles) to cancel to zero, leaving only the birefringence signal, the two angles must be **intensity-matched**. Crossed (0) and uncrossed (90) are standalone outputs and are never matched or re-leveled.
+
+The peak de-clip can lower one angle (typically the optically-dimmer +theta) below its target to avoid clipping, which would leave the pair mismatched. So `calibrate_ppm` runs a **pair-match** after the per-angle loop:
+
+1. Compute each of positive/negative's achieved mean level (mean of the black-subtracted per-channel means).
+2. Act only if an angle actually fell short of its target (de-clip or hardware limit) **and** the pair levels differ by more than `tolerance` -- so deliberately-different +/- targets that both converged are respected.
+3. Bring the brighter angle **down** to the dimmer angle's level by scaling its exposures (unified gain and R:G:B ratios preserved). Black-subtracted means are ~proportional to exposure in the linear range (both angles are unclipped post-de-clip), so this analytic re-level lands on the same numbers a physical re-acquisition would, without extra calibration time.
+
+**Consequence:** when a re-level occurs, **both** +/- angles have new exposures (+theta from de-clip, -theta from the match), so **both backgrounds must be recaptured** at the new settings. In the normal no-clip case nothing changes and no recapture is needed. Watch the log for `PPM pair-match: re-leveled ...`.
+
 ### ASCII-Only Policy
 
 Per project policy, all Python logging, error messages, and comments must use ASCII characters only. Do not use unicode arrows, degree symbols, or special characters. Use `->` not `-->`, `deg` not the degree symbol, `um` not the micro symbol. See CLAUDE.md for the full policy.
