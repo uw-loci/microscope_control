@@ -465,12 +465,12 @@ class PycromanagerCamera(Camera):
                 if tw != int(width) or th != int(height):
                     if not getattr(self, "_live_dim_warn_logged", False):
                         logger.warning(
-                            "LIVE: PER-FRAME DIMENSION MISMATCH -- core says "
+                            "LIVE: per-frame dimension mismatch -- core says "
                             "%dx%d, frame tags say %dx%d (delta_rows=%d, "
-                            "delta_cols=%d). This explains the live-mode "
-                            "contamination bar: trailing rows of every popped "
-                            "frame contain stale content from prior frames. "
-                            "Logged once per session.",
+                            "delta_cols=%d). Normal while streaming autofocus "
+                            "holds its crop ROI; frames are reshaped by the tag "
+                            "geometry so no stale rows are shown. Logged once "
+                            "per camera instance.",
                             width,
                             height,
                             tw,
@@ -501,27 +501,58 @@ class PycromanagerCamera(Camera):
                     logger.debug("LIVE first-frame probe failed: %s", e)
                 self._live_first_frame_logged = True
 
-            # Validate pixel count matches current dimensions before reshape.
-            # After an ROI change the circular buffer may still hold a frame
-            # captured at the OLD dimensions while get_image_width/height
-            # already reflect the NEW ROI.  Reshaping would crash; skip the
-            # stale frame instead and let the next call pick up a good one.
-            expected = int(height) * int(width) * max(int(nchannels), 1)
+            # Reshape by the CAMERA's per-frame geometry, not MM Core's.
+            #
+            # While streaming autofocus holds its centred crop ROI, the camera
+            # delivers frames at the cropped size (JAI: a requested 1032x772
+            # rounds to 1024x772) while core.get_image_width/height can still
+            # report the full sensor. Trusting core then reshapes a full-sensor
+            # buffer whose leading rows are the new cropped frame and whose
+            # trailing rows are stale content from earlier frames -- the live
+            # contamination bar. Observed on 12 of 19 autofocus runs in the
+            # 2026-08-14 session, i.e. for the duration of most AF scans.
+            #
+            # The streaming-focus pop path already prefers tag geometry for the
+            # same reason; this brings the live path in line, which also makes
+            # it immune to any future ROI change from another caller.
+            nch = max(int(nchannels), 1)
+            core_expected = int(height) * int(width) * nch
             actual = pixels.size
+
+            use_w, use_h = int(width), int(height)
+            if tag_dims is not None and tag_dims != (int(width), int(height)):
+                tw, th = tag_dims
+                tag_expected = tw * th * nch
+                if actual == tag_expected:
+                    # Buffer is exactly the cropped frame.
+                    use_w, use_h = tw, th
+                elif actual == core_expected and tag_expected < core_expected:
+                    # Buffer is full-sensor sized but only the leading
+                    # tag-sized region was written this frame. Slice it off so
+                    # the stale remainder is never displayed.
+                    pixels = np.asarray(pixels).reshape(-1)[:tag_expected]
+                    use_w, use_h = tw, th
+                    actual = pixels.size
+                # Any other size is left to the guard below, which skips it.
+
+            # Validate pixel count matches the geometry we settled on. After an
+            # ROI change the circular buffer may still hold a frame captured at
+            # different dimensions; reshaping would crash, so skip it and let
+            # the next call pick up a good one.
+            expected = int(use_h) * int(use_w) * nch
             if actual != expected:
                 logger.debug(
                     "Skipping stale live frame: pixel count %d does not match "
-                    "current dimensions %dx%dx%d (expected %d) -- likely ROI "
-                    "transition race",
+                    "%dx%dx%d (expected %d) -- likely ROI transition race",
                     actual,
-                    width,
-                    height,
-                    nchannels,
+                    use_w,
+                    use_h,
+                    nch,
                     expected,
                 )
                 return None, None
 
-            processed = self._process_raw_image(pixels, width, height, nchannels)
+            processed = self._process_raw_image(pixels, use_w, use_h, nch)
 
             meta = {
                 "width": processed.shape[1],
