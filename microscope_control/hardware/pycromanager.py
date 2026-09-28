@@ -21,6 +21,7 @@ from microscope_control.hardware.base import (
 from microscope_control.autofocus.core import AutofocusUtils
 from microscope_imageprocessing.focus import (
     resolve_metric,
+    to_gray,
 )
 
 import numpy as np
@@ -1252,6 +1253,50 @@ class PycromanagerHardware(MicroscopeHardware):
     # are now delegated through MicroscopeHardware -> self._camera.
     # See camera/base.py, camera/pycromanager_camera.py, camera/jai_camera.py
 
+    #: One-shot latch so the reduction is named once per hardware instance rather
+    #: than once per Z step. Class attribute: no __init__ change needed, and the first
+    #: instance write shadows it per object.
+    _focus_reduction_logged = False
+
+    def _reduce_for_focus(self, img, channel_reduction=None):
+        """Reduce a frame to the 2D array the focus metric scores.
+
+        Default (``channel_reduction`` None or "equal_mean") keeps the camera's own
+        ``extract_green_channel``, which is NOT one behaviour across cameras and must
+        not be collapsed into one:
+
+          - Bayer (``PycromanagerCamera``) really does take green -- the two green
+            sub-pixels of the mosaic, or the G plane of a debayered frame.
+          - LSM is already monochrome and passes through.
+          - JAI 3-CCD returns ``np.mean(img, axis=2)``, an EQUAL-WEIGHTED MEAN, despite
+            the method name. That is the reduction standard AF has always used on PPM.
+
+        An explicit ``channel_reduction`` from autofocus_<scope>.yml overrides that and
+        routes through ``to_gray``, the same reduction streaming AF resolves, so one
+        config key now controls both scan paths instead of only the streaming one.
+
+        Why this is opt-in rather than a fix to the JAI method: equal-mean is what the
+        other objectives were characterised against, and ``channel_reduction: green`` is
+        deliberately scoped to the 20x POL entry. Changing the camera method would move
+        every JAI modality at once.
+
+        The measurement behind "green" (PPM 20x, four traverses, 2026-09-04) is in
+        ``to_gray``'s docstring: on a field holding both, achromatic debris outranks
+        stained tissue under equal-mean, because a fibre or dust speck carries its
+        contrast in all three channels while tissue concentrates it where the stain
+        absorbs. That is how a 2026-09-24 run focused on dust.
+        """
+        if channel_reduction and channel_reduction != "equal_mean":
+            if not self._focus_reduction_logged:
+                logger.info(
+                    "Standard AF scoring with channel_reduction=%r (from the autofocus YAML) "
+                    "instead of the camera's extract_green_channel",
+                    channel_reduction,
+                )
+                self._focus_reduction_logged = True
+            return to_gray(img, channel_reduction)
+        return self.camera.extract_green_channel(img)
+
     def autofocus(
         self,
         n_steps=4000000,
@@ -1266,6 +1311,7 @@ class PycromanagerHardware(MicroscopeHardware):
         position_index=None,
         edge_retries=0,
         edge_widen_factor=2.0,
+        channel_reduction=None,
     ):
         """
         Perform autofocus using specified score metric.
@@ -1381,9 +1427,7 @@ class PycromanagerHardware(MicroscopeHardware):
 
                     img, tags = self.snap_image()
 
-                    # Extract green/grayscale channel for focus calculation
-                    # (camera-specific: JAI uses mean across RGB, Bayer extracts green pixels)
-                    img_gray = self.camera.extract_green_channel(img)
+                    img_gray = self._reduce_for_focus(img, channel_reduction)
 
                     score = score_metric(img_gray)
                     if hasattr(score, "ndim") and score.ndim == 2:
