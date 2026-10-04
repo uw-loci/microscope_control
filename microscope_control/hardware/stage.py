@@ -11,6 +11,8 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Tuple
 
+from microscope_control.hardware import xy_motion
+
 logger = logging.getLogger(__name__)
 
 
@@ -184,6 +186,22 @@ class PycromanagerStage(Stage):
         # calls move_z_no_wait + wait_z) can hold the lock at the top level
         # and have the inner calls re-enter it cheaply.
         self._lock = threading.RLock()
+
+        # XY motion profile (speed/acceleration cap) and the origin-change
+        # detection that rides on it. See hardware/xy_motion.py for why a
+        # cross-time comparison is the only check that can see this failure.
+        self._xy_profile = xy_motion.resolve_profile(settings)
+        self._xy_profile_applied = False
+        self._last_commanded_xy: Optional[Tuple[float, float]] = None
+        self._xy_frame_suspect: Optional[str] = None
+        # The drift check is disarmed by default because a physical joystick
+        # nudge between runs legitimately moves the stage away from the last
+        # commanded position, and flagging that would be a false alarm. The
+        # acquisition workflow arms it for the duration of an acquisition --
+        # exactly the window where no one should be touching the stage and
+        # where an undetected origin change costs the whole run.
+        self._xy_frame_check_armed = False
+
         logger.info("Initialized PycromanagerStage")
 
     @property
@@ -353,17 +371,119 @@ class PycromanagerStage(Stage):
             except Exception as e:
                 logger.debug("wait_z arrival check skipped (read failed): %s", e)
 
+    # --- XY motion profile and origin-change detection ---
+
+    @property
+    def xy_frame_suspect(self) -> Optional[str]:
+        """Why the XY coordinate frame stopped being trustworthy, or None.
+
+        Sticky. An origin change is not something the controller recovers from
+        on its own, so this stays set until the frame is re-established at the
+        calibration fiducial and the server restarted. Callers treat a non-None
+        value as "stop", not "retry": every coordinate they hold describes a
+        place the sample no longer is.
+        """
+        return self._xy_frame_suspect
+
+    def set_frame_check_armed(self, armed: bool) -> None:
+        """Arm or disarm the commanded-vs-reported drift check.
+
+        Armed for the length of an acquisition, when nothing should be moving
+        the stage except us. Disarmed otherwise, so a joystick nudge during
+        setup is not reported as an origin change.
+        """
+        self._xy_frame_check_armed = bool(armed)
+
+    def ensure_xy_motion_profile(self, force: bool = False) -> None:
+        """Apply the configured speed/acceleration cap, once per session."""
+        if self._xy_profile is None or (self._xy_profile_applied and not force):
+            return
+        device = self._xy_device()
+        if device is None:
+            return
+        with self._lock:
+            xy_motion.apply_profile(self._core, device, self._xy_profile)
+        self._xy_profile_applied = True
+
+    def _xy_device(self) -> Optional[str]:
+        try:
+            return str(self._core.get_xy_stage_device())
+        except Exception as e:
+            logger.debug("Could not resolve the XY stage device: %s", e)
+            return None
+
+    def _xy_busy(self) -> bool:
+        device = self._xy_device()
+        if device is None:
+            return False
+        try:
+            return bool(self._core.device_busy(device))
+        except Exception:
+            return False
+
+    def _note_frame_suspect(self, message: str) -> None:
+        if self._xy_frame_suspect:
+            return
+        self._xy_frame_suspect = message
+        logger.error("STAGE FRAME SUSPECT: %s", message)
+
+    def _before_xy_move(self, x: float, y: float) -> float:
+        """Verify the frame still holds; return the distance about to be moved.
+
+        Returns 0.0 whenever the distance cannot be established honestly, which
+        costs only a skipped profile readback on that move.
+        """
+        self.ensure_xy_motion_profile()
+        profile = self._xy_profile
+        if profile is None:
+            return 0.0
+        if self._xy_busy():
+            # A previous non-blocking move is still running, so a position read
+            # is a point along the way rather than an arrival. Nothing to
+            # compare, and comparing anyway would report motion as drift.
+            return 0.0
+        try:
+            reported = (self._core.get_x_position(), self._core.get_y_position())
+        except Exception as e:
+            logger.debug("Could not read the XY position before a move: %s", e)
+            return 0.0
+        if self._xy_frame_check_armed:
+            drift = xy_motion.describe_drift(
+                reported, self._last_commanded_xy, profile.drift_tolerance_um
+            )
+            if drift:
+                self._note_frame_suspect(drift)
+        dx = x - reported[0]
+        dy = y - reported[1]
+        return (dx * dx + dy * dy) ** 0.5
+
+    def _after_xy_move(self, x: float, y: float, distance_um: float) -> None:
+        self._last_commanded_xy = (x, y)
+        profile = self._xy_profile
+        if profile is None or distance_um < profile.verify_after_move_um:
+            return
+        device = self._xy_device()
+        if device is None:
+            return
+        mismatch = xy_motion.describe_profile_mismatch(self._core, device, profile)
+        if mismatch:
+            self._note_frame_suspect(mismatch)
+
     # --- XY operations ---
 
     def move_xy(self, x: float, y: float) -> None:
         with self._lock:
+            distance = self._before_xy_move(x, y)
             self._core.set_xy_position(x, y)
             self._core.wait_for_device(self._core.get_xy_stage_device())
+            self._after_xy_move(x, y, distance)
             logger.debug("move_xy: X=%.2f, Y=%.2f", x, y)
 
     def move_xy_no_wait(self, x: float, y: float) -> None:
         with self._lock:
+            distance = self._before_xy_move(x, y)
             self._core.set_xy_position(x, y)
+            self._after_xy_move(x, y, distance)
             logger.debug("move_xy_no_wait: target X=%.2f, Y=%.2f", x, y)
 
     def get_xy(self) -> Tuple[float, float]:
