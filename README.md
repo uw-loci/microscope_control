@@ -10,7 +10,7 @@ Hardware control library for microscopes via Pycromanager (Micro-Manager).
 - **Hardware Abstraction**: Platform-independent microscope control interface
 - **Pycromanager Integration**: Full Micro-Manager hardware support
 - **Autofocus**: Multiple autofocus algorithms and metrics
-- **Stage Control**: XYZ stage positioning and movement
+- **Stage Control**: XYZ stage positioning and movement, with XY motion profile capping and origin-change detection
 - **Configuration Management**: YAML-based microscope configuration
 - **JAI Camera Support**: Per-channel exposure, gain, and black level control for JAI 3-CCD prism cameras; optional high-bit-depth PixelFormat mode for PPM
 - **White Balance Calibration**: Iterative per-channel calibration with automatic gain/exposure adaptation for low-light conditions

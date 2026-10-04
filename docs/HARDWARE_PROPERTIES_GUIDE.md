@@ -54,6 +54,90 @@ The Prior ProScan controller exposes speed as a percentage (1-100) of maximum ve
 
 **Important:** The property name and device name vary by MM adapter version. Always check the dump file for your specific configuration rather than hardcoding names.
 
+### XY Motion Profile (Speed/Acceleration Capping and Origin-Change Detection)
+
+A Prior ProScan controller has no absolute reference and nothing to home to, so a controller that restarts resumes with position 0,0 wherever it is standing. Every coordinate afterwards is silently offset: the holder calibration and the per-slide alignments are expressed in the old frame, and so are the stage coordinates recorded alongside data already acquired.
+
+This was built after a 4-slide PPM run (2026-10-02) in which the first slide, acquired seconds after its alignment was measured, was correct, and the three acquired 9, 12 and 30 hours later were progressively offset in Y -- the last badly enough to image the slide label. The alignments themselves had been verified to within 20 um at setup and were reloaded unchanged, no software re-zeroes the stage, no move left the configured limits, and no serial fault was logged. A controller restart is the **suspected** mechanism and the full-rate slot traverse the **suspected** trigger; neither has been measured, which is part of why these checks report rather than correct.
+
+The XY motion profile feature provides two protections:
+
+1. **Speed/Acceleration Capping**: Limits the stage driver properties (e.g., `MaxSpeed`, `Acceleration`) to safer values for the entire session.
+2. **Origin-Change Detection**: Monitors for controller restarts by checking if motion profile properties revert to their defaults, and detects coordinate drift via cross-time comparison (last commanded position vs. current reported position).
+
+#### Configuration
+
+Add a `stage.xy_motion` block to your microscope YAML configuration:
+
+```yaml
+stage:
+  xy_motion:
+    properties:
+      MaxSpeed: "50"           # Reduce from default 100 to 50%
+      Acceleration: "50"       # Reduce from default 100 to 50%
+    verify_after_move_um: 5000  # Read profile back only on long moves (>5mm)
+    drift_tolerance_um: 100     # Allow up to 100 um before flagging as suspect
+```
+
+**Configuration keys:**
+
+- **`properties`** (dict, required): A mapping of MM device property names to the values you want to hold for the entire session. Property names differ by adapter; use the `dump_device_properties.py` tool to discover them. Common examples on Prior adapter: `MaxSpeed`, `Acceleration`. The feature applies these values once at first move, then verifies they hold steady.
+  
+- **`verify_after_move_um`** (float, optional, default=5000): Only read profile properties back after moves longer than this distance. Short tile-step moves (tens of thousands per slide) do not need verification; a controller restart becomes visible on the first long move after it occurs. Set to 0 to verify every move (costs a serial round trip per tile).
+
+- **`drift_tolerance_um`** (float, optional, default=100): Maximum distance (in micrometers) the reported position may sit from the last commanded position before it counts as evidence of a stage origin change. A Prior step is 1 um and the controller reports whole steps, so single-micron variations are measurement granularity; 100 um is over a third of a 20x field and cannot be measurement noise. Set to 0 to flag any disagreement.
+
+#### When Origin-Change Detection Triggers
+
+The origin-change detection has two independent sensors:
+
+1. **Profile Readback** (always armed): After moves longer than `verify_after_move_um`, the stage reads back the motion profile properties and checks if they still hold their set values. If any property reverts to the adapter's default (e.g., `MaxSpeed` back to 100), the controller has restarted and the stage sets `xy_frame_suspect` with an error message.
+
+2. **Drift Check** (armed during acquisition only): When `set_frame_check_armed(True)` is called (which the acquisition workflow does for the duration of a run), the stage also compares the position it reads before each move against the position it last commanded. If the disagreement exceeds `drift_tolerance_um` and nothing moved in between, either the stage drifted on its own or its 0,0 moved underneath it. The stage sets `xy_frame_suspect` with an error message.
+
+Between acquisitions (during setup), the drift check is disarmed so a joystick nudge does not report as an origin change. The profile readback is always active.
+
+#### Acquiring with Origin-Change Detection
+
+When `xy_frame_suspect` is non-None, the coordinate frame is no longer trustworthy and the acquisition should stop immediately. Every coordinate in use describes a place the sample no longer is. The frame does not heal on its own; it must be re-established at the calibration fiducial and the server restarted.
+
+`microscope_command_server` already does this in `acquisition/frame_guard.py`; the shape is:
+
+```python
+stage = hardware.stage  # PycromanagerStage instance
+stage.set_frame_check_armed(True)  # Arm the drift check
+stage.ensure_xy_motion_profile()   # Apply the profile at start
+
+try:
+    # Check once per TILE, not once per region: on the run above, slot 3 was
+    # still finding tissue thirty seconds before slot 4 came up blank, so a
+    # per-region check would have passed both.
+    for tile in tiles:
+        if stage.xy_frame_suspect:
+            raise RuntimeError(f"Stage origin is no longer trustworthy. {stage.xy_frame_suspect}")
+        # ... acquire tile ...
+finally:
+    stage.set_frame_check_armed(False)  # Disarm when done
+```
+
+#### Disabling XY Motion Profile
+
+To disable the feature entirely, omit the `stage.xy_motion` block from your YAML configuration. The stage will then:
+- Run at the adapter's default speed/acceleration (typically very high)
+- Not perform any origin-change detection
+- Not set `xy_frame_suspect`
+
+#### Troubleshooting
+
+**"Could not read the XY position before a move"** (debug log):
+- The stage position could not be read before a move. Drift detection is skipped for that move, but profile readback may still catch a restart later.
+
+**"Could not resolve the XY stage device"** (debug log):
+- The MM core could not resolve the XY stage device name. Motion continues, but the profile is not applied and origin-change detection is disabled.
+
+**"Could not set XYStage.MaxSpeed=50"** (warning log):
+- A property the configuration requested could not be written. The stage runs at the adapter's default for that property. This is not fatal; check the dump file to confirm the property exists and the value is allowed.
+
 ### Camera Properties
 
 | Device | Property | Example Values | Notes |
