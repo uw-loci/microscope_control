@@ -58,6 +58,7 @@ default below is the Prior factory setting, not a guess at your rig.
 """
 
 import argparse
+import contextlib
 import statistics
 import sys
 import time
@@ -94,10 +95,8 @@ class Prior:
         self.ser.reset_input_buffer()
 
     def close(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self.ser.close()
-        except Exception:
-            pass
 
     def command(self, text: str) -> str:
         """Send one command and return its reply, stripped."""
