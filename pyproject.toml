@@ -32,8 +32,8 @@ dev = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/your-org/microscope-control"
-"Bug Tracker" = "https://github.com/your-org/microscope-control/issues"
+"Homepage" = "https://github.com/uw-loci/microscope_control"
+"Bug Tracker" = "https://github.com/uw-loci/microscope_control/issues"
 
 [build-system]
 requires = ["hatchling"]
