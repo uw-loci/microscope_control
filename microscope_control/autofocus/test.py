@@ -482,6 +482,7 @@ def test_autofocus_validation(
     yaml_file_path: str,
     objective: str,
     logger: Optional[logging.Logger] = None,
+    should_abort: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Two-phase autofocus validation test.
 
@@ -503,10 +504,13 @@ def test_autofocus_validation(
         yaml_file_path: Path to microscope config YAML
         objective: Objective identifier (e.g. "20x")
         logger: Optional logger instance
+        should_abort: Optional callable polled during both phases (the client's
+            Cancel, sent as ABORTAF). A cancel returns ``cancelled: True``; the
+            stage still goes back to ground truth Z.
 
     Returns:
         Dict with validation results for both phases, including:
-            success, ground_truth_z, sweep_z, sweep_delta_um,
+            success, cancelled, ground_truth_z, sweep_z, sweep_delta_um,
             defocus_distance_um, recovery_z, recovery_delta_um,
             message, test_type
     """
@@ -534,6 +538,7 @@ def test_autofocus_validation(
         "recovery_delta_um": "N/A",
         "message": "",
         "test_type": "validation",
+        "cancelled": False,
     }
 
     try:
@@ -552,6 +557,7 @@ def test_autofocus_validation(
             range_um=sweep_range,
             n_steps=sweep_n_steps,
             score_metric=score_metric_name,
+            should_abort=should_abort,
         )
         sweep_delta = abs(sweep_z - ground_truth_z)
 
@@ -561,6 +567,8 @@ def test_autofocus_validation(
         logger.info(f"  Sweep result: Z={sweep_z:.2f}, delta={sweep_delta:.2f} um")
 
         # === PHASE 2: Recovery from defocus ===
+        if should_abort is not None and should_abort():
+            raise AutofocusAborted()
         logger.info("--- Phase 2: Full autofocus recovery from defocus ---")
 
         search_range = af_settings.get("search_range", 50.0)
@@ -586,6 +594,7 @@ def test_autofocus_validation(
             pop_a_plot=False,
             move_stage_to_estimate=True,
             raise_on_invalid_peak=False,  # Don't raise -- we want to report the result
+            should_abort=should_abort,
         )
 
         if isinstance(recovery_result, dict):
@@ -611,6 +620,11 @@ def test_autofocus_validation(
         logger.info("=== AUTOFOCUS VALIDATION TEST COMPLETED ===")
         logger.info(f"  Phase 1 (sweep drift): delta = {result['sweep_delta_um']} um")
         logger.info(f"  Phase 2 (recovery):    delta = {result['recovery_delta_um']} um")
+
+    except AutofocusAborted:
+        logger.warning("Autofocus validation test cancelled by the client")
+        result["cancelled"] = True
+        result["message"] = "Autofocus validation cancelled; Z returned to where it started"
 
     except Exception as e:
         logger.error(f"Autofocus validation test failed: {e}", exc_info=True)

@@ -1312,6 +1312,7 @@ class PycromanagerHardware(MicroscopeHardware):
         edge_retries=0,
         edge_widen_factor=2.0,
         channel_reduction=None,
+        should_abort: Optional[Callable[[], bool]] = None,
     ):
         """
         Perform autofocus using specified score metric.
@@ -1341,6 +1342,9 @@ class PycromanagerHardware(MicroscopeHardware):
                           stage Z limits; if clamping leaves no new ground
                           to search, the retry is skipped.
             edge_widen_factor: Multiplier applied to search_range on each edge retry.
+            should_abort: Optional callable polled before each Z step. When it returns
+                True the stage goes back to the starting position and
+                ``AutofocusAborted`` is raised, as in ``autofocus_sweep_drift_check``.
 
         Returns:
             float: Best focus Z position (in micrometers) on success
@@ -1422,6 +1426,8 @@ class PycromanagerHardware(MicroscopeHardware):
                     new_targets = [float(z) for z in z_targets]
 
                 for z_target in sorted(new_targets):
+                    if should_abort is not None and should_abort():
+                        raise AutofocusAborted()
                     new_pos = Position(current_pos.x, current_pos.y, z_target)
                     self.move_to_position(new_pos)
 
@@ -1645,6 +1651,10 @@ class PycromanagerHardware(MicroscopeHardware):
 
                 return new_z
 
+        except AutofocusAborted:
+            logger.warning("Autofocus: abort requested; restoring Z to %.2f", starting_pos.z)
+            self.move_to_position(starting_pos)
+            raise
         except Exception as e:
             logger.error(f"Autofocus failed: {e}")
             self.move_to_position(starting_pos)
