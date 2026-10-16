@@ -13,6 +13,27 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def merge_id_section(name: str, resources: Any, config: Any) -> Any:
+    """Merge one id_* section: resources entries, then the config's own on top.
+
+    Entry level, not deep: a config entry replaces the resources entry with the same ID
+    whole, as in QPSC. Returns the resources section unchanged when the config has none.
+    """
+    if not isinstance(config, dict) or not config:
+        return resources
+    if not isinstance(resources, dict):
+        logger.info("Section %s comes from the config only (resources has no map)", name)
+        return dict(config)
+    merged = dict(resources)
+    for entry_id, entry in config.items():
+        if entry_id in resources and resources[entry_id] != entry:
+            logger.info(
+                "%s.%s: the config's own entry overrides the resources entry", name, entry_id
+            )
+        merged[entry_id] = entry
+    return merged
+
+
 class ConfigManager:
     """
     Manages microscope configurations and acquisition profiles.
@@ -63,6 +84,13 @@ class ConfigManager:
         specifications (id_detector, id_stage, id_objective_lens, etc.) that
         are referenced by LOCI IDs in the main config.
 
+        Each id_* section is merged entry by entry, and an entry the config defines
+        itself wins over the resources entry with the same ID. This is the rule QPSC
+        applies (MicroscopeConfigManager.getMergedDetectorSection). The loader used to
+        replace the whole section with the resources copy, so a detector the setup
+        wizard wrote into the config -- config_OWS3.yml's HAMAMATSU_DCAM_01, for one --
+        never reached the server, while QPSC used it.
+
         Args:
             config_path: Path to YAML configuration file
 
@@ -82,11 +110,9 @@ class ConfigManager:
                     resources_data = yaml.safe_load(file)
 
                 if resources_data:
-                    # Merge resource sections (id_detector, id_stage, etc.) into config
                     for key, value in resources_data.items():
                         if key.startswith("id_") or key.startswith("ID_"):
-                            data[key] = value
-                            logger.debug(f"Merged resource section: {key}")
+                            data[key] = merge_id_section(key, value, data.get(key))
 
                     logger.info(f"Loaded resources from: {resources_path}")
             except Exception as e:

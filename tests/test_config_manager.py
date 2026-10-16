@@ -261,13 +261,53 @@ class TestConfigManagerAutofocusSettings:
 
 
 class TestConfigManagerResources:
-    """Test LOCI resource resolution if implemented."""
+    """id_* sections merge entry by entry, the config's own entries winning (as in QPSC)."""
 
-    def test_resource_resolution(self):
-        """Test that LOCI resource references are resolved."""
-        # This is a QPSC-specific feature where config can reference
-        # shared resources like LOCI hardware components
-        pytest.skip("Resource resolution testing requires LOCI setup")
+    @staticmethod
+    def _write(tmp_path, config, resources):
+        (tmp_path / "resources").mkdir()
+        with open(tmp_path / "resources" / "resources_LOCI.yml", "w") as f:
+            yaml.safe_dump(resources, f)
+        path = tmp_path / "config_Test.yml"
+        with open(path, "w") as f:
+            yaml.safe_dump(config, f)
+        return ConfigManager(str(tmp_path)).load_config_file(str(path))
+
+    RESOURCES = {
+        "id_detector": {
+            "LOCI_DETECTOR_JAI_001": {"device": "JAICamera", "camera_type": "jai"},
+            "SHARED_CAM": {"device": "Shared", "flip_x": False},
+        },
+        "id_stage": {"LOCI_STAGE_001": {"name": "Prior"}},
+        "other_section": {"x": 1},
+    }
+
+    def test_a_detector_only_the_config_defines_reaches_the_server(self, tmp_path):
+        # config_OWS3.yml's HAMAMATSU_DCAM_01 is in no resources file; the old loader dropped it.
+        config = {"id_detector": {"HAMAMATSU_DCAM_01": {"device": "HamamatsuHam_DCAM"}}}
+        data = self._write(tmp_path, config, self.RESOURCES)
+        assert data["id_detector"]["HAMAMATSU_DCAM_01"] == {"device": "HamamatsuHam_DCAM"}
+        assert "LOCI_DETECTOR_JAI_001" in data["id_detector"]
+
+    def test_the_configs_own_entry_wins_over_the_resources_entry(self, tmp_path):
+        config = {"id_detector": {"SHARED_CAM": {"device": "Shared", "flip_x": True}}}
+        data = self._write(tmp_path, config, self.RESOURCES)
+        assert data["id_detector"]["SHARED_CAM"] == {"device": "Shared", "flip_x": True}
+
+    def test_without_inline_sections_the_resources_sections_are_used(self, tmp_path):
+        data = self._write(tmp_path, {"microscope": {"name": "T"}}, self.RESOURCES)
+        assert data["id_detector"] == self.RESOURCES["id_detector"]
+        assert data["id_stage"] == self.RESOURCES["id_stage"]
+        # Only id_* sections come from the resources file.
+        assert "other_section" not in data
+
+    def test_merging_does_not_change_the_resources_mapping(self):
+        from microscope_control.config.manager import merge_id_section
+
+        resources = {"A": {"v": 1}}
+        merged = merge_id_section("id_detector", resources, {"B": {"v": 2}})
+        assert merged == {"A": {"v": 1}, "B": {"v": 2}}
+        assert resources == {"A": {"v": 1}}
 
 
 class TestGetModalityFromScanType:
