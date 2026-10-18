@@ -100,6 +100,49 @@ def init_pycromanager(timeout_seconds: float = 30.0):
         raise MicroManagerConnectionError(error_msg) from e
 
 
+def edge_retry_guide(primary_validation, fallback_validation):
+    """Which metric, if any, says where to widen the autofocus search.
+
+    The primary metric wins when it has a one-sided trend. When it has no direction at
+    all -- typically a flat curve, because the window is far from focus -- a one-sided
+    p98_p2 trend from the same frames is followed instead. On slide 4 of 2026-10-04
+    (``claude-reports/2026-10-06_slide4-autofocus-stale-seed-z.md``) the primary metric
+    read flat 157 times while p98_p2 pointed "low", correctly, every time, and nothing
+    acted on it. Either way the result is only accepted later if a metric brackets a
+    peak, so following the trend cannot commit an unverified edge.
+
+    Returns ``(validation, source)``: the validation dict whose
+    ``should_extend_direction`` to follow and ``"primary"`` or ``"p98_p2"``, or
+    ``(None, None)`` when neither gives a direction.
+    """
+    if primary_validation.get("should_extend_direction") is not None:
+        return primary_validation, "primary"
+    if (
+        not primary_validation.get("is_valid", False)
+        and fallback_validation is not None
+        and fallback_validation.get("should_extend_direction") is not None
+    ):
+        return fallback_validation, "p98_p2"
+    return None, None
+
+
+def describe_fallback_refusal(fallback_validation):
+    """Why the p98_p2 fallback was not used, in words that match the decision.
+
+    A fallback with a peak can still be refused: if the peak sits at the window edge and
+    the trend continues past it, focus was never bracketed. The old message printed the
+    validator's success text after "also invalid", which read as a logic inversion.
+    """
+    direction = fallback_validation.get("should_extend_direction")
+    if fallback_validation.get("is_valid") and direction is not None:
+        return (
+            f"p98_p2 fallback refused: its peak is at the {direction}-Z edge of the "
+            f"searched window and the trend continues toward {direction} Z, so focus "
+            "was never bracketed"
+        )
+    return f"p98_p2 fallback also invalid: {fallback_validation.get('message', 'no peak')}"
+
+
 class PycromanagerHardware(MicroscopeHardware):
     """Implementation for Pycromanager-based microscopes.
 
@@ -1491,13 +1534,20 @@ class PycromanagerHardware(MicroscopeHardware):
                 #     AND
                 #   - the stage Z limits leave room to extend.
                 af_elapsed_s = time.perf_counter() - t_af_start
+                # p98_p2 is computed from the same frames, so it costs nothing to look at.
+                fallback_validation = (
+                    AutofocusUtils.validate_focus_peak(z_steps, np.array(fallback_scores))
+                    if fallback_scores
+                    else None
+                )
+                retry_validation, retry_source = edge_retry_guide(validation, fallback_validation)
                 if (
                     edge_retries_used < edge_retries
-                    and validation.get("should_extend_direction") is not None
+                    and retry_validation is not None
                     and af_elapsed_s < af_deadline_s
                 ):
                     retry_center, retry_range = self._compute_edge_retry_window(
-                        validation=validation,
+                        validation=retry_validation,
                         cur_center=attempt_center,
                         cur_range=attempt_range,
                         widen_factor=float(edge_widen_factor),
@@ -1509,12 +1559,13 @@ class PycromanagerHardware(MicroscopeHardware):
                     if retry_center is not None:
                         edge_retries_used += 1
                         logger.info(
-                            "  Edge retry %d/%d: one-sided trend (extend %s); "
+                            "  Edge retry %d/%d: one-sided %s trend (extend %s); "
                             "center %.2f -> %.2f um, range %.1f -> %.1f um "
                             "(window [%.2f, %.2f])",
                             edge_retries_used,
                             edge_retries,
-                            validation["should_extend_direction"],
+                            retry_source,
+                            retry_validation["should_extend_direction"],
                             attempt_center,
                             retry_center,
                             attempt_range,
@@ -1576,11 +1627,7 @@ class PycromanagerHardware(MicroscopeHardware):
                     # Only reached when the primary metric has no usable peak
                     # at all -- not when the peak is good but at the edge,
                     # which is handled above via edge-retry on the primary.
-                    if fallback_scores:
-                        fallback_array = np.array(fallback_scores)
-                        fallback_validation = AutofocusUtils.validate_focus_peak(
-                            z_steps, fallback_array
-                        )
+                    if fallback_validation is not None:
                         # Require the fallback to BRACKET focus, not merely be
                         # "valid". A fallback whose own peak sits at the window
                         # edge with a one-sided trend (should_extend_direction
@@ -1606,9 +1653,7 @@ class PycromanagerHardware(MicroscopeHardware):
                             new_z = fallback_z
                             validation = fallback_validation
                         else:
-                            logger.warning(
-                                f"  p98_p2 fallback also invalid: {fallback_validation['message']}"
-                            )
+                            logger.warning("  %s", describe_fallback_refusal(fallback_validation))
 
                     if not validation["is_valid"] and raise_on_invalid_peak:
                         # Return failure dict for manual focus fallback loop
