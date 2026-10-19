@@ -194,6 +194,7 @@ class PycromanagerStage(Stage):
         self._xy_profile_applied = False
         self._last_commanded_xy: Optional[Tuple[float, float]] = None
         self._xy_frame_suspect: Optional[str] = None
+        self._xy_frame_suspect_since: Optional[float] = None
         # The drift check is disarmed by default because a physical joystick
         # nudge between runs legitimately moves the stage away from the last
         # commanded position, and flagging that would be a false alarm. The
@@ -386,6 +387,15 @@ class PycromanagerStage(Stage):
         return self._xy_frame_suspect
 
     @property
+    def xy_frame_suspect_since(self) -> Optional[float]:
+        """When the frame was first called suspect (``time.time()``), or None.
+
+        The flag is sticky, so a run started an hour later fails with the same numbers; this
+        is what lets the message say the fault is old rather than read as a new one.
+        """
+        return self._xy_frame_suspect_since
+
+    @property
     def frame_check_armed(self) -> bool:
         """Whether the commanded-vs-reported drift check is currently armed."""
         return self._xy_frame_check_armed
@@ -464,6 +474,7 @@ class PycromanagerStage(Stage):
         if self._xy_frame_suspect:
             return
         self._xy_frame_suspect = message
+        self._xy_frame_suspect_since = time.time()
         logger.error("STAGE FRAME SUSPECT: %s", message)
 
     def _before_xy_move(self, x: float, y: float) -> float:

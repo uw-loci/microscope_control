@@ -272,3 +272,16 @@ def test_arming_before_the_first_move_is_not_a_restart(stage, core):
     stage.set_frame_check_armed(True)
     assert stage.xy_frame_suspect is None
     assert stage.frame_check_armed is True
+
+
+def test_the_first_detection_time_is_kept(stage, core):
+    stage.set_frame_check_armed(True)
+    stage.move_xy(-41453.0, -7012.0)
+    assert stage.xy_frame_suspect_since is None
+    core.restart()
+    stage.move_xy(-41153.0, -7012.0)
+    first = stage.xy_frame_suspect_since
+    assert first is not None
+    core.restart()
+    stage.move_xy(-41000.0, -7012.0)
+    assert stage.xy_frame_suspect_since == first
