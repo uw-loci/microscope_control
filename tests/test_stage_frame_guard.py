@@ -223,3 +223,52 @@ def test_suspect_is_sticky(stage, core):
     stage.move_xy(-41000.0, -7012.0)
     stage.move_xy(-40800.0, -7012.0)
     assert stage.xy_frame_suspect == first
+
+
+def test_a_move_by_hand_before_arming_is_not_reported(stage, core):
+    # 2026-10-19: the operator moved the stage by hand between our last move
+    # and the start of the next acquisition. Arming must measure from where the
+    # stage stands, not from where we last sent it.
+    stage.move_xy(2318.5, -1507.9)
+    core.nudge(3628.0, 1636.0)
+    stage.set_frame_check_armed(True)
+    stage.move_xy(3928.0, 1636.0)
+    assert stage.xy_frame_suspect is None
+
+
+def test_a_move_by_hand_during_a_pause_is_not_reported(stage, core):
+    # Manual focus: the run disarms, the operator finds tissue with the
+    # joystick, the run re-arms and moves the stage back.
+    stage.set_frame_check_armed(True)
+    stage.move_xy(2318.5, -1507.9)
+    stage.set_frame_check_armed(False)
+    core.nudge(3628.0, 1636.0)
+    stage.set_frame_check_armed(True)
+    stage.move_xy(2318.5, -1507.9)
+    assert stage.xy_frame_suspect is None
+
+
+def test_drift_after_re_arming_is_still_reported(stage, core):
+    stage.move_xy(1000.0, 0.0)
+    stage.set_frame_check_armed(True)
+    core.nudge(3000.0, 0.0)
+    stage.move_xy(1300.0, 0.0)
+    assert stage.xy_frame_suspect is not None
+
+
+def test_a_restart_during_a_pause_is_caught_on_re_arming(stage, core):
+    # Re-baselining would hide the position jump, so arming reads the profile
+    # back: a restarted controller has its own defaults in place.
+    stage.set_frame_check_armed(True)
+    stage.move_xy(-41453.0, -7012.0)
+    stage.set_frame_check_armed(False)
+    core.restart()
+    stage.set_frame_check_armed(True)
+    assert "MaxSpeed=100 (expected 50)" in (stage.xy_frame_suspect or "")
+
+
+def test_arming_before_the_first_move_is_not_a_restart(stage, core):
+    # The profile has not been written yet, so the defaults are expected.
+    stage.set_frame_check_armed(True)
+    assert stage.xy_frame_suspect is None
+    assert stage.frame_check_armed is True

@@ -95,7 +95,9 @@ The origin-change detection has two independent sensors:
 
 2. **Drift Check** (armed during acquisition only): When `set_frame_check_armed(True)` is called (which the acquisition workflow does for the duration of a run), the stage also compares the position it reads before each move against the position it last commanded. If the disagreement exceeds `drift_tolerance_um` and nothing moved in between, either the stage drifted on its own or its 0,0 moved underneath it. The stage sets `xy_frame_suspect` with an error message.
 
-Between acquisitions (during setup), the drift check is disarmed so a joystick nudge does not report as an origin change. The profile readback is always active.
+Between acquisitions (during setup), the drift check is disarmed so a joystick nudge does not report as an origin change. The acquisition also disarms it while a dialog waits on the operator (manual focus, hardware-error recovery, the saturation decision), because the manual focus dialog invites them to find tissue with the joystick. The profile readback is always active.
+
+Arming takes the stage's current position as the last commanded one, so a move made by hand while the check was disarmed is not compared against a position from before it. Arming also reads the motion profile back once, whatever the distance of the next move, so a controller that restarted while the check was disarmed is still caught.
 
 #### Acquiring with Origin-Change Detection
 

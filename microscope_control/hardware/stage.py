@@ -385,14 +385,53 @@ class PycromanagerStage(Stage):
         """
         return self._xy_frame_suspect
 
+    @property
+    def frame_check_armed(self) -> bool:
+        """Whether the commanded-vs-reported drift check is currently armed."""
+        return self._xy_frame_check_armed
+
     def set_frame_check_armed(self, armed: bool) -> None:
         """Arm or disarm the commanded-vs-reported drift check.
 
         Armed for the length of an acquisition, when nothing should be moving
         the stage except us. Disarmed otherwise, so a joystick nudge during
         setup is not reported as an origin change.
+
+        Arming takes the stage's current position as the one we last commanded.
+        Moves made by hand while disarmed (the joystick, Micro-Manager's own
+        controls) never pass through here, so the position we sent last may be
+        far from where the stage now stands, and comparing against it would
+        report the operator's move as a frame change. 2026-10-19: a liver run
+        stopped 3.4 mm "off" this way. A controller restart while disarmed is
+        still caught: arming reads the motion profile back, and a restarted
+        controller has its own defaults in place.
         """
-        self._xy_frame_check_armed = bool(armed)
+        with self._lock:
+            if armed:
+                self._rebaseline_frame_check()
+            self._xy_frame_check_armed = bool(armed)
+
+    def _rebaseline_frame_check(self) -> None:
+        if self._xy_profile is None:
+            return
+        if self._xy_busy():
+            # A move of ours is still running; its target is already the
+            # commanded position, and the next move skips the comparison anyway.
+            return
+        try:
+            self._last_commanded_xy = (self._core.get_x_position(), self._core.get_y_position())
+        except Exception as e:
+            logger.debug("Could not read the XY position when arming the frame check: %s", e)
+            self._last_commanded_xy = None
+        if not self._xy_profile_applied:
+            # Nothing written yet, so the controller's defaults are expected.
+            return
+        device = self._xy_device()
+        if device is None:
+            return
+        mismatch = xy_motion.describe_profile_mismatch(self._core, device, self._xy_profile)
+        if mismatch:
+            self._note_frame_suspect(mismatch)
 
     def ensure_xy_motion_profile(self, force: bool = False) -> None:
         """Apply the configured speed/acceleration cap, once per session."""
