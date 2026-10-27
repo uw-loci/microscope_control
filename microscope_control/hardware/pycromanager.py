@@ -1435,9 +1435,19 @@ class PycromanagerHardware(MicroscopeHardware):
         # acquisition client's ~300 s no-progress watchdog and wedges the run. Once
         # this budget is spent, stop launching new edge-retry sweeps and defer to the
         # hint Z (the exhausted-retries branch below), so acquisition proceeds and the
-        # per-tile drift check can correct the residual. Sized to keep total autofocus
-        # comfortably under the client watchdog even for a slow first sweep.
-        af_deadline_s = 90.0
+        # per-tile drift check can correct the residual.
+        #
+        # The ceiling is on the PROJECTED finish, not on time already spent. It used to
+        # be "no new retry after 90 s elapsed", which a slow stage spends on its first
+        # sweep alone: OWS3's ZDrive took 132 s for 100 stop-and-snap steps, so focus
+        # 80 um below the window was never searched for and the run deferred to the
+        # hint (2026-10-27). A retry is now started when this run's measured time per
+        # sample times the samples the retry would image still finishes under the
+        # ceiling. QPSC cancels an acquisition after 300 s without progress
+        # (AcquisitionManager.ACQUISITION_TIMEOUT_MS); 270 s leaves room for the peak
+        # fit and the final move, and admits OWS3's case (132 s + ~90 new samples at
+        # 1.32 s, ~250 s).
+        af_deadline_s = 270.0
         t_af_start = time.perf_counter()
 
         try:
@@ -1541,11 +1551,7 @@ class PycromanagerHardware(MicroscopeHardware):
                     else None
                 )
                 retry_validation, retry_source = edge_retry_guide(validation, fallback_validation)
-                if (
-                    edge_retries_used < edge_retries
-                    and retry_validation is not None
-                    and af_elapsed_s < af_deadline_s
-                ):
+                if edge_retries_used < edge_retries and retry_validation is not None:
                     retry_center, retry_range = self._compute_edge_retry_window(
                         validation=retry_validation,
                         cur_center=attempt_center,
@@ -1556,6 +1562,30 @@ class PycromanagerHardware(MicroscopeHardware):
                         covered_low=float(z_steps[0]),
                         covered_high=float(z_steps[-1]),
                     )
+                    if retry_center is not None:
+                        # Samples the retry would image: its targets outside the band
+                        # already covered (the same rule the loop applies).
+                        retry_targets = (
+                            np.linspace(0, retry_range, n_steps) - retry_range / 2.0
+                        ) + retry_center
+                        n_new = int(
+                            np.sum(
+                                (retry_targets < float(z_steps[0]))
+                                | (retry_targets > float(z_steps[-1]))
+                            )
+                        )
+                        per_sample_s = af_elapsed_s / max(len(z_steps), 1)
+                        projected_s = af_elapsed_s + n_new * per_sample_s
+                        if projected_s > af_deadline_s:
+                            logger.warning(
+                                "  Edge retry skipped: %d new samples at %.2f s each would "
+                                "finish at %.0f s, over the %.0f s ceiling",
+                                n_new,
+                                per_sample_s,
+                                projected_s,
+                                af_deadline_s,
+                            )
+                            retry_center = None
                     if retry_center is not None:
                         edge_retries_used += 1
                         logger.info(
@@ -1592,7 +1622,7 @@ class PycromanagerHardware(MicroscopeHardware):
                 if validation.get("should_extend_direction") is not None:
                     logger.warning(
                         "  Edge-retry search stopped with peak still at the %s "
-                        "boundary after %d retr%s (%.0f s elapsed, budget %.0f s) -- "
+                        "boundary after %d retr%s (%.0f s elapsed, ceiling %.0f s) -- "
                         "focus never bracketed; refusing unbracketed edge peak Z=%.2f "
                         "and deferring to hint Z",
                         validation["should_extend_direction"],

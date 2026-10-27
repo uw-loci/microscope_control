@@ -167,3 +167,62 @@ def test_autofocus_without_retry_is_unchanged():
     )
     assert len(snapped) == 9
     assert abs(result) <= 4.0
+
+
+# ---------------------------------------------------------------------------
+# The time ceiling is on the projected finish, not on time already spent.
+# ---------------------------------------------------------------------------
+
+
+def _slow_stage(monkeypatch, hw, snapped, seconds_per_snap):
+    """Advance a fake clock by ``seconds_per_snap`` on every snap."""
+    import microscope_control.hardware.pycromanager as pm
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(pm.time, "perf_counter", lambda: clock["t"])
+    inner = hw.snap_image
+
+    def _snap():
+        clock["t"] += seconds_per_snap
+        return inner()
+
+    hw.snap_image = _snap
+
+
+def test_slow_first_sweep_still_gets_its_edge_retry(monkeypatch):
+    # OWS3 2026-10-27 in proportion: a 132 s first sweep (21 samples standing in for
+    # 100 at 1.32 s). The old rule (no retry after 90 s elapsed) refused the retry,
+    # so focus outside the first window was never searched for.
+    def score_fn(z):
+        return 1000.0 * np.exp(-0.5 * ((z - 40.0) / 8.0) ** 2) + 10.0
+
+    hw, snapped = _make_dense_hardware(score_fn)
+    _slow_stage(monkeypatch, hw, snapped, 132.0 / 21)
+    result = hw.autofocus(
+        n_steps=21,
+        search_range=30.0,
+        score_metric=lambda img: float(np.mean(img)),
+        move_stage_to_estimate=False,
+        edge_retries=2,
+    )
+    assert len(snapped) > 21, "the retry never ran"
+    assert isinstance(result, float)
+    assert 30.0 <= result <= 50.0
+
+
+def test_edge_retry_that_would_finish_past_the_ceiling_is_skipped(monkeypatch):
+    # 60 s per sample: the first sweep alone is 420 s, so any retry projects past
+    # the 270 s ceiling and must not start.
+    def score_fn(z):
+        return 1000.0 * np.exp(-0.5 * ((z - 40.0) / 8.0) ** 2) + 10.0
+
+    hw, snapped = _make_dense_hardware(score_fn)
+    _slow_stage(monkeypatch, hw, snapped, 60.0)
+    hw.autofocus(
+        n_steps=7,
+        search_range=30.0,
+        score_metric=lambda img: float(np.mean(img)),
+        move_stage_to_estimate=False,
+        edge_retries=2,
+    )
+    assert len(snapped) == 7

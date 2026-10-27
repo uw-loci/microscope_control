@@ -572,7 +572,13 @@ def test_autofocus_validation(
         logger.info("--- Phase 2: Full autofocus recovery from defocus ---")
 
         search_range = af_settings.get("search_range", 50.0)
-        defocus_distance = search_range * 0.8
+        # The scan covers search_range CENTRED on the start, so focus is reachable
+        # without an edge retry only within search_range / 2. Defocusing by 0.8 of
+        # the full range put focus outside the window by construction (OWS3,
+        # 2026-10-27: range 100 um, defocus 80 um, window +/-50 um), so the test
+        # measured the edge-retry path instead of recovery. 0.8 of the half range
+        # keeps focus inside the window with a margin.
+        defocus_distance = (search_range / 2.0) * 0.8
 
         result["defocus_distance_um"] = f"{defocus_distance:.1f}"
 
