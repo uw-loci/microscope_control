@@ -17,6 +17,8 @@ from microscope_control.hardware.base import (
     is_coordinate_in_range,
     Position,
     AutofocusAborted,
+    notify_af_sample,
+    reports_autofocus,
 )
 from microscope_control.autofocus.core import AutofocusUtils
 from microscope_imageprocessing.focus import (
@@ -169,6 +171,11 @@ class PycromanagerHardware(MicroscopeHardware):
         # MM config uses a different Invert-X setting than the modality
         # originally expected. Acquisition/coordinate code checks this.
         self.stage_invert_x_correction = False
+
+        # Sees every autofocus search (start, each scored Z, finish); see
+        # base.AutofocusListener. The microscope server sets it to show the
+        # focus curve to the operator while a search runs.
+        self.autofocus_listener = None
 
         # Log microscope info
         microscope_info = settings.get("microscope", {})
@@ -1340,6 +1347,7 @@ class PycromanagerHardware(MicroscopeHardware):
             return to_gray(img, channel_reduction)
         return self.camera.extract_green_channel(img)
 
+    @reports_autofocus("sweep")
     def autofocus(
         self,
         n_steps=4000000,
@@ -1495,6 +1503,7 @@ class PycromanagerHardware(MicroscopeHardware):
                     # Always compute p98_p2 as fallback (negligible cost, no extra acquisition)
                     p98_p2 = float(np.percentile(img_gray, 98) - np.percentile(img_gray, 2))
                     retained.append((z_target, float(score), p98_p2))
+                    notify_af_sample(self, z_target, score, p98_p2)
 
                 retained.sort(key=lambda s: s[0])
                 z_steps = np.array([s[0] for s in retained])
@@ -1976,6 +1985,7 @@ class PycromanagerHardware(MicroscopeHardware):
 
         return score, ch_mean
 
+    @reports_autofocus("drift_check")
     def autofocus_sweep_drift_check(
         self,
         range_um=10.0,
@@ -2147,6 +2157,7 @@ class PycromanagerHardware(MicroscopeHardware):
                         if i < len(z_positions_list) - 1:
                             self.core.wait_for_device(z_dev)
                         result.append((actual_z, sc))
+                        notify_af_sample(self, actual_z, sc)
                     if arrival_misses > 0:
                         logger.warning(
                             f"Sweep drift: {arrival_misses}/"

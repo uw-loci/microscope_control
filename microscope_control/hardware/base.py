@@ -1,6 +1,8 @@
 """Hardware abstraction layer for microscope control."""
 
 from abc import ABC, abstractmethod
+import functools
+import inspect
 from typing import Optional, Dict, Any, Set, Tuple, TYPE_CHECKING
 import warnings
 import logging
@@ -23,6 +25,112 @@ class AutofocusAborted(Exception):
     sweep after restoring the stage to its pre-sweep Z. Callers distinguish a
     user cancel from a genuine failure by catching this type explicitly.
     """
+
+
+class AutofocusListener:
+    """Receives the progress of every autofocus search a hardware object runs.
+
+    Set an instance on ``hardware.autofocus_listener`` and every caller of the
+    searches decorated with :func:`reports_autofocus` is covered without passing
+    anything per call. The microscope server uses it to show the operator the
+    focus curve while a search runs. A listener must be quick and must not raise;
+    exceptions it does raise are logged and ignored, never allowed to stop a
+    search.
+    """
+
+    def af_started(self, method: str, params: Dict[str, Any]) -> None:
+        """A search began. ``params`` holds its start Z, range, steps and metric."""
+
+    def af_sample(self, z: float, score: float, spread: Optional[float]) -> None:
+        """One Z step was scored. ``spread`` is P98 - P2 of the frame, when known."""
+
+    def af_finished(self, status: str, z: Optional[float], details: Dict[str, Any]) -> None:
+        """The search ended: ``ok`` (``z`` is the focus), ``failed``, ``aborted`` or ``error``."""
+
+
+def _call_listener(listener, name: str, *args) -> None:
+    try:
+        getattr(listener, name)(*args)
+    except Exception as e:  # a display hook must never stop a search
+        logger.debug("Autofocus listener %s failed: %s", name, e)
+
+
+def notify_af_sample(hardware, z: float, score: float, spread: Optional[float] = None) -> None:
+    """Passes one scored Z step to ``hardware.autofocus_listener``, if one is set."""
+    listener = getattr(hardware, "autofocus_listener", None)
+    if listener is not None:
+        _call_listener(
+            listener, "af_sample", float(z), float(score), None if spread is None else float(spread)
+        )
+
+
+_AF_PARAM_KEYS = (
+    "search_range",
+    "range_um",
+    "n_steps",
+    "score_metric",
+    "max_retries",
+    "edge_retries",
+)
+
+
+def reports_autofocus(method: str):
+    """Decorates a hardware autofocus search so its listener sees start and finish.
+
+    The search returns its focus Z on success; ``autofocus`` returns a failure
+    dict instead, and both raise :class:`AutofocusAborted` on a client cancel.
+    Those map to ``ok``, ``failed`` and ``aborted``; any other exception is
+    ``error`` and is re-raised unchanged.
+    """
+
+    def decorate(fn):
+        signature = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            listener = getattr(self, "autofocus_listener", None)
+            if listener is None:
+                return fn(self, *args, **kwargs)
+            params: Dict[str, Any] = {}
+            try:
+                bound = signature.bind(self, *args, **kwargs)
+                bound.apply_defaults()
+                for key in _AF_PARAM_KEYS:
+                    if key in bound.arguments:
+                        value = bound.arguments[key]
+                        params[key] = (
+                            getattr(value, "__name__", value) if callable(value) else value
+                        )
+                params["z0"] = float(self.get_current_position().z)
+            except Exception as e:
+                logger.debug("Autofocus listener: could not describe the search: %s", e)
+            _call_listener(listener, "af_started", method, params)
+            try:
+                result = fn(self, *args, **kwargs)
+            except AutofocusAborted:
+                _call_listener(listener, "af_finished", "aborted", None, {})
+                raise
+            except Exception as e:
+                _call_listener(listener, "af_finished", "error", None, {"reason": str(e)})
+                raise
+            if isinstance(result, dict):
+                attempted = result.get("attempted_z")
+                _call_listener(
+                    listener,
+                    "af_finished",
+                    "failed",
+                    None if attempted is None else float(attempted),
+                    {"reason": str(result.get("message", ""))},
+                )
+            else:
+                _call_listener(
+                    listener, "af_finished", "ok", None if result is None else float(result), {}
+                )
+            return result
+
+        return wrapper
+
+    return decorate
 
 
 class Position:
