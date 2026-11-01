@@ -300,7 +300,7 @@ if was_snapped:
 
 The method snaps blue to the nearer safe boundary (4.0 or 5.6 ms) and rescales R/G by the same factor to preserve the white-balance ratio. **Do not snap in snap-mode paths** -- snap-mode is unaffected by the bug and needs exact exposures.
 
-**Reference:** `claude-reports/2026-05-06_jai-contamination-bar-*.md` and `claude-reports/2026-07-24_jai-live-exposure-snap-gap.md`.
+**Reference:** `claude-reports/archive/2026-05/2026-05-06_jai-contamination-bar-*.md` and `claude-reports/archive/2026-07/2026-07-24_jai-live-exposure-snap-gap.md`.
 
 ### Frame Rate vs Exposure
 

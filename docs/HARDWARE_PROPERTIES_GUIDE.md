@@ -178,7 +178,7 @@ if was_snapped:
 - **Snap-mode acquisition is unaffected** -- do not snap in snap-mode paths (they need exact exposures)
 - **Live/continuous paths must snap** -- snapping is required only for continuous-mode individual exposures
 - **WB ratio preserved** -- R and G are rescaled by the same factor, so R/B and G/B ratios remain constant; only absolute intensity shifts slightly
-- **Reference:** `claude-reports/2026-05-06_jai-contamination-bar-*.md`, `claude-reports/2026-07-24_jai-live-exposure-snap-gap.md`
+- **Reference:** `claude-reports/2026-05-06_jai-contamination-bar-*.md`, `claude-reports/archive/2026-07/2026-07-24_jai-live-exposure-snap-gap.md`
 
 ### Bayer Debayering Configuration
 
