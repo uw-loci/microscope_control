@@ -162,15 +162,6 @@ class AutofocusBenchmark:
     to prevent objective-sample collision on this upright microscope.
     """
 
-    # Score metric mapping
-    SCORE_METRICS = {
-        "laplacian_variance": AutofocusUtils.autofocus_profile_laplacian_variance,
-        "sobel": AutofocusUtils.autofocus_profile_sobel,
-        "brenner_gradient": AutofocusUtils.autofocus_profile_brenner_gradient,
-        "robust_sharpness": AutofocusUtils.autofocus_profile_robust_sharpness_metric,
-        "hybrid_sharpness": AutofocusUtils.autofocus_profile_hybrid_sharpness_metric,
-    }
-
     def _get_safety_limit_for_objective(self, objective: Optional[str] = None) -> float:
         """
         Get the Z safety limit for the specified objective.
@@ -744,9 +735,7 @@ class AutofocusBenchmark:
         time.sleep(0.1)  # Brief settle time
 
         # Get score metric function
-        score_metric = self.SCORE_METRICS.get(
-            metric_name, AutofocusUtils.autofocus_profile_laplacian_variance
-        )
+        score_metric = AutofocusUtils.score_metric(metric_name)
 
         # Run autofocus with timing
         start_time = time.perf_counter()
@@ -909,9 +898,7 @@ class AutofocusBenchmark:
         time.sleep(0.1)  # Brief settle time
 
         # Get score metric function
-        score_metric = self.SCORE_METRICS.get(
-            metric_name, AutofocusUtils.autofocus_profile_laplacian_variance
-        )
+        score_metric = AutofocusUtils.score_metric(metric_name)
 
         # Run sweep drift check with timing
         start_time = time.perf_counter()

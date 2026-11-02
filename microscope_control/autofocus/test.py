@@ -1237,20 +1237,8 @@ def _load_autofocus_settings(yaml_file_path: str, objective: str, logger) -> Dic
     else:
         logger.warning(f"Autofocus config file not found: {autofocus_file}, using defaults")
 
-    # Map score metric name to function (used by standard autofocus test)
-    score_metric_map = {
-        "normalized_variance": AutofocusUtils.autofocus_profile_laplacian_variance,  # fallback for standard AF
-        "laplacian_variance": AutofocusUtils.autofocus_profile_laplacian_variance,
-        "sobel": AutofocusUtils.autofocus_profile_sobel,
-        "brenner_gradient": AutofocusUtils.autofocus_profile_brenner_gradient,
-        "robust_sharpness": AutofocusUtils.autofocus_profile_robust_sharpness_metric,
-        "hybrid_sharpness": AutofocusUtils.autofocus_profile_hybrid_sharpness_metric,
-        "p98_p2": AutofocusUtils.autofocus_profile_laplacian_variance,  # fallback for standard AF
-    }
-
-    settings["score_metric"] = score_metric_map.get(
-        settings["score_metric_name"], AutofocusUtils.autofocus_profile_laplacian_variance
-    )
+    # The same table the acquisition workflow's per-tile autofocus uses.
+    settings["score_metric"] = AutofocusUtils.score_metric(settings["score_metric_name"])
 
     return settings
 

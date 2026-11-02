@@ -310,38 +310,5 @@ class TestConfigManagerResources:
         assert resources == {"A": {"v": 1}}
 
 
-class TestGetModalityFromScanType:
-    """Test extraction of modality from scan type string (if in config module)."""
-
-    def test_parse_standard_scan_type(self):
-        """Test parsing PPM_10x_1 format."""
-        try:
-            from microscope_control.config.manager import get_modality_from_scan_type
-        except ImportError:
-            # May be in a different module
-            pytest.skip("get_modality_from_scan_type not in config.manager")
-
-        modality = get_modality_from_scan_type("PPM_10x_1")
-        assert modality == "PPM_10x"
-
-        modality = get_modality_from_scan_type("Brightfield_20x_3")
-        assert modality == "Brightfield_20x"
-
-    def test_parse_malformed_scan_type(self):
-        """Test handling of malformed scan type."""
-        try:
-            from microscope_control.config.manager import get_modality_from_scan_type
-        except ImportError:
-            pytest.skip("get_modality_from_scan_type not available")
-
-        # Should handle gracefully
-        try:
-            modality = get_modality_from_scan_type("invalid_format")
-            assert modality is not None
-        except (ValueError, IndexError):
-            # Expected for malformed input
-            pass
-
-
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

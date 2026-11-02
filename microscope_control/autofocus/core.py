@@ -17,6 +17,8 @@ import skimage.morphology
 import skimage.filters
 import logging
 
+from microscope_imageprocessing.focus import resolve_metric
+
 logger = logging.getLogger(__name__)
 
 
@@ -225,9 +227,9 @@ class AutofocusUtils:
 
     @staticmethod
     def autofocus_profile_brenner_gradient(image: np.ndarray) -> float:
-        """Fastest option - ~3ms for 2500x1900."""
-        gy, gx = np.gradient(image.astype(np.float32))
-        return float(np.mean(gx**2 + gy**2))
+        """Brenner gradient: microscope_imageprocessing's lag-2 horizontal form, the one the
+        streaming autofocus uses, so both autofocus paths score focus the same way."""
+        return float(resolve_metric("brenner_gradient")(image))
 
     @staticmethod
     def autofocus_profile_robust_sharpness_metric(image: np.ndarray) -> float:
@@ -246,19 +248,9 @@ class AutofocusUtils:
 
     @staticmethod
     def autofocus_profile_hybrid_sharpness_metric(image: np.ndarray) -> float:
-        """Compromise: Fast with some particle resistance - ~8ms."""
-        # Gaussian blur to reduce particle influence (faster than median)
-        smoothed = skimage.filters.gaussian(image, sigma=1.5)
-
-        # Use Brenner gradient on smoothed image
-        gy, gx = np.gradient(smoothed.astype(np.float32))
-        gradient_magnitude = gx**2 + gy**2
-
-        # Soft masking: reduce weight of very dark/bright regions
-        normalized = (image - image.min()) / (image.max() - image.min() + 1e-10)
-        weight_mask = 1 - np.abs(normalized - 0.5) * 2  # Peak at mid-gray
-
-        return float(np.mean(gradient_magnitude * weight_mask))
+        """Soft-masked Brenner gradient on a smoothed image: microscope_imageprocessing's
+        hybrid_sharpness_metric, built on the same Brenner term."""
+        return float(resolve_metric("hybrid_sharpness_metric")(image))
 
     @staticmethod
     def autofocus_profile_p98_p2(image: np.ndarray) -> float:
@@ -276,6 +268,35 @@ class AutofocusUtils:
         acquisition sweep (not just the streaming/drift check).
         """
         return float(np.percentile(image, 98) - np.percentile(image, 2))
+
+    @staticmethod
+    def score_metric(name: str):
+        """The function standard autofocus scores a frame with, for a ``score_metric`` name.
+
+        The one table for the acquisition workflow's per-tile autofocus, the autofocus test
+        and the benchmark, which each kept their own and had drifted: the test sent
+        ``p98_p2`` to laplacian variance. An unmapped name is logged and falls back to
+        laplacian variance, which reads flat on bright PPM backgrounds, so map a metric
+        rather than relying on the fallback.
+        """
+        metrics = {
+            "laplacian_variance": AutofocusUtils.autofocus_profile_laplacian_variance,
+            "sobel": AutofocusUtils.autofocus_profile_sobel,
+            "brenner_gradient": AutofocusUtils.autofocus_profile_brenner_gradient,
+            "robust_sharpness": AutofocusUtils.autofocus_profile_robust_sharpness_metric,
+            "hybrid_sharpness": AutofocusUtils.autofocus_profile_hybrid_sharpness_metric,
+            "p98_p2": AutofocusUtils.autofocus_profile_p98_p2,
+        }
+        fn = metrics.get(name)
+        if fn is None:
+            logger.warning(
+                "Autofocus score_metric '%s' is not mapped for standard autofocus; using "
+                "laplacian_variance (mapped: %s)",
+                name,
+                ", ".join(sorted(metrics)),
+            )
+            fn = AutofocusUtils.autofocus_profile_laplacian_variance
+        return fn
 
     @staticmethod
     def has_sufficient_signal(

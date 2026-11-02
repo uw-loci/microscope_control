@@ -52,7 +52,6 @@ from microscope_control.hardware.stage import Stage
 from microscope_control.hardware.rotation import RotationStage
 from microscope_control.hardware.pycromanager import PycromanagerHardware, init_pycromanager
 from microscope_control.autofocus.core import AutofocusUtils
-from microscope_control.autofocus.metrics import AutofocusMetrics
 from microscope_control.autofocus.tissue_detection import EmptyRegionDetector
 from microscope_control.config.manager import ConfigManager
 
@@ -67,7 +66,6 @@ __all__ = [
     "is_mm_running",
     "is_coordinate_in_range",
     "AutofocusUtils",
-    "AutofocusMetrics",
     "EmptyRegionDetector",
     "ConfigManager",
 ]
