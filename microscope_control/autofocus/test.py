@@ -258,12 +258,14 @@ def test_adaptive_autofocus_at_current_position(
         logger.info("  Calling hardware.autofocus_sweep_drift_check()...")
 
         sweep_samples: list = []
+        sweep_outcome: dict = {}
         final_z = hardware.autofocus_sweep_drift_check(
             range_um=sweep_range,
             n_steps=sweep_n_steps,
             score_metric=score_metric,
             samples_out=sweep_samples,
             should_abort=should_abort,
+            outcome_out=sweep_outcome,
         )
 
         result["final_z"] = final_z
@@ -301,8 +303,16 @@ def test_adaptive_autofocus_at_current_position(
             result["plot_path"] = None
             logger.warning("Sweep produced no samples; no diagnostic files written")
 
-        result["message"] = f"Sweep drift check completed. Z shift: {result['z_shift']:.2f} um."
-        result["success"] = True
+        # A sweep that gave up returns the start Z, which reads exactly like focus found
+        # there. Reporting that as a success left a slide out of focus with Ready on
+        # screen and the unmeasured Z saved as this slide's focus (2026-11-01).
+        held = sweep_outcome.get("held")
+        if held:
+            result["message"] = f"No focus found, Z left at {final_z:.2f} um: {held}"
+            logger.warning(f"  {result['message']}")
+        else:
+            result["message"] = f"Sweep drift check completed. Z shift: {result['z_shift']:.2f} um."
+            result["success"] = True
 
         logger.info("=== ADAPTIVE AUTOFOCUS TEST COMPLETED ===")
 
@@ -333,6 +343,104 @@ def test_adaptive_autofocus_at_current_position(
             except Exception as e:
                 logger.warning("Failed to return to initial position: %s", e)
 
+    return result
+
+
+def focus_search_at_current_position(
+    hardware,
+    yaml_file_path: str,
+    output_folder_path: str,
+    objective: str,
+    logger: Optional[logging.Logger] = None,
+    should_abort: Optional[Callable[[], bool]] = None,
+) -> Dict[str, Any]:
+    """Find focus when the current Z may be far from it, such as on a new slide.
+
+    This is the wide search an acquisition runs at its first tissue tile:
+    ``search_range_um`` around the current Z, widening toward the peak by
+    ``edge_retries`` when the peak is at the edge. A drift check cannot do this
+    job, since it is capped at one ``sweep_range_um`` from where it started.
+
+    Args:
+        hardware: PycromanagerHardware instance
+        yaml_file_path: Path to microscope config YAML
+        output_folder_path: Where to save the diagnostic CSV
+        objective: Objective identifier
+        logger: Optional logger instance
+        should_abort: Optional callable polled between Z steps
+
+    Returns:
+        Dict with ``success``, ``initial_z``, ``final_z``, ``z_shift``, ``message``,
+        ``plot_path`` and, after an abort, ``cancelled``. When no focus is found
+        the stage is back at the starting Z and ``success`` is False.
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    output_path = Path(output_folder_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    initial_pos = hardware.get_current_position()
+    result = {
+        "success": False,
+        "initial_z": initial_pos.z,
+        "final_z": None,
+        "z_shift": None,
+        "plot_path": None,
+        "message": "",
+        "test_type": "search",
+        "cancelled": False,
+    }
+
+    af_settings = _load_autofocus_settings(yaml_file_path, objective, logger)
+    logger.info(
+        f"Focus search from Z={initial_pos.z:.2f}: {af_settings['search_range']} um in "
+        f"{af_settings['n_steps']} steps, up to {af_settings['edge_retries']} edge retries, "
+        f"metric {af_settings['score_metric_name']}"
+    )
+
+    try:
+        found = hardware.autofocus(
+            n_steps=af_settings["n_steps"],
+            search_range=af_settings["search_range"],
+            interp_strength=af_settings["interp_strength"],
+            interp_kind=af_settings["interp_kind"],
+            score_metric=af_settings["score_metric"],
+            move_stage_to_estimate=True,
+            diagnostic_output_path=str(output_path),
+            edge_retries=af_settings["edge_retries"],
+            should_abort=should_abort,
+            # Blank-field noise reached 4% on 256 px frames and 1% at 1024 px. Tissue
+            # covering 1% of a field at low contrast still varied by over 90%.
+            min_relative_range=0.05,
+        )
+    except AutofocusAborted:
+        logger.info("Focus search cancelled by client request")
+        result["cancelled"] = True
+        result["final_z"] = initial_pos.z
+        result["z_shift"] = 0.0
+        result["message"] = "Focus search cancelled; Z restored to start"
+        return result
+    except Exception as e:
+        logger.error(f"Focus search failed: {e}", exc_info=True)
+        result["message"] = f"Focus search failed: {e}"
+        return result
+
+    if not isinstance(found, float):
+        # autofocus() leaves the stage at its best guess for the manual-focus path.
+        # There is no measurement behind that Z, so this search does not keep it.
+        hardware.move_to_position(Position(initial_pos.x, initial_pos.y, initial_pos.z))
+        result["message"] = (
+            f"No focus found, Z left at {initial_pos.z:.2f} um: {found.get('message', 'no peak')}"
+        )
+        logger.warning(result["message"])
+        return result
+
+    result["final_z"] = found
+    result["z_shift"] = found - initial_pos.z
+    result["message"] = f"Focus search completed. Z shift: {result['z_shift']:.2f} um."
+    result["success"] = True
+    logger.info(result["message"])
     return result
 
 
@@ -1086,6 +1194,7 @@ def _load_autofocus_settings(yaml_file_path: str, objective: str, logger) -> Dic
         "score_metric_name": "normalized_variance",
         "sweep_range_um": 10.0,
         "sweep_n_steps": 6,
+        "edge_retries": 2,
     }
 
     if autofocus_file.exists():
@@ -1112,6 +1221,9 @@ def _load_autofocus_settings(yaml_file_path: str, objective: str, logger) -> Dic
                     )
                     settings["sweep_n_steps"] = af_setting.get(
                         "sweep_n_steps", settings["sweep_n_steps"]
+                    )
+                    settings["edge_retries"] = af_setting.get(
+                        "edge_retries", settings["edge_retries"]
                     )
                     # Legacy support: old adaptive_initial_step_um -> sweep_range_um
                     if (

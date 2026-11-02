@@ -1364,6 +1364,7 @@ class PycromanagerHardware(MicroscopeHardware):
         edge_widen_factor=2.0,
         channel_reduction=None,
         should_abort: Optional[Callable[[], bool]] = None,
+        min_relative_range: float = 0.0,
     ):
         """
         Perform autofocus using specified score metric.
@@ -1381,6 +1382,15 @@ class PycromanagerHardware(MicroscopeHardware):
                                   (use for diagnostic tests where plots must always be generated).
             diagnostic_output_path: Optional path to save autofocus diagnostic CSV (for standard autofocus during acquisition)
             position_index: Optional position index to include in CSV filename
+            min_relative_range: When > 0, refuse a result unless the primary
+                          metric varied by this fraction of its mean across
+                          every sample taken, which means the field has
+                          nothing to focus on. It is checked last and on the
+                          primary metric alone: p98_p2 may steer the retries
+                          toward a real peak the primary then confirms, but on
+                          a blank field its noise reads as a trend and the
+                          retries follow it tens of um. Off by default: an
+                          acquisition gates tissue before it searches.
             edge_retries: When > 0 and the validated peak lands at an edge of
                           the swept range with a directional trend
                           (asc XOR desc), place a widened window
@@ -1720,6 +1730,30 @@ class PycromanagerHardware(MicroscopeHardware):
                         f"prominence: {validation['peak_prominence']:.2f}"
                     )
 
+                if min_relative_range > 0:
+                    variation = np.ptp(scores_array) / max(float(np.mean(scores_array)), 1.0)
+                    if variation < min_relative_range:
+                        logger.warning(
+                            "  Autofocus: the focus score varied by only %.2f%% across %d "
+                            "samples (need %.1f%%); not committing Z=%.2f",
+                            variation * 100,
+                            n_samples,
+                            min_relative_range * 100,
+                            new_z,
+                        )
+                        return {
+                            "success": False,
+                            "message": (
+                                f"the focus score only varied by {variation * 100:.1f}%, "
+                                f"so this field may have no tissue"
+                            ),
+                            "quality_score": validation["quality_score"],
+                            "peak_prominence": validation["peak_prominence"],
+                            "attempted_z": new_z,
+                            "original_z": starting_pos.z,
+                            "validation": validation,
+                        }
+
                 if pop_a_plot:
                     plt.figure()
                     plt.bar(z_steps, scores)
@@ -1995,6 +2029,7 @@ class PycromanagerHardware(MicroscopeHardware):
         samples_out: Optional[list] = None,
         max_total_drift_um: Optional[float] = None,
         should_abort: Optional[Callable[[], bool]] = None,
+        outcome_out: Optional[dict] = None,
     ) -> float:
         """Drift check using stepped Z sweep with blocking moves and snaps.
 
@@ -2047,6 +2082,11 @@ class PycromanagerHardware(MicroscopeHardware):
                 and raises ``AutofocusAborted`` so the caller can report a
                 user cancellation (distinct from a failure). Pass None
                 (default) for the non-cancellable acquisition path.
+            outcome_out: Optional dict that receives ``held`` (a reason string)
+                when the sweep gave up and returned the starting Z. A returned
+                start Z is otherwise indistinguishable from a sweep that found
+                focus exactly there, so a caller that treats the result as a
+                measured focus must check this. Absent when focus was found.
 
         Returns:
             The best-focus Z position (or current Z if sweep failed).
@@ -2086,6 +2126,14 @@ class PycromanagerHardware(MicroscopeHardware):
         if z_stage_device and self.core.get_focus_device() != z_stage_device:
             self.core.set_focus_device(z_stage_device)
         z_dev = z_stage_device or self.core.get_focus_device()
+
+        def _hold_at_start(reason):
+            """Give up: put the stage back and say why, for callers that ask."""
+            if outcome_out is not None:
+                outcome_out["held"] = reason
+            self.core.set_position(initial_z)
+            self.core.wait_for_device(z_dev)
+            return initial_z
 
         img_w = self.core.get_image_width()
         img_h = self.core.get_image_height()
@@ -2191,7 +2239,7 @@ class PycromanagerHardware(MicroscopeHardware):
         z_positions = _make_z_positions(current_center)
         if not z_positions:
             logger.warning("Sweep drift check: range too small, keeping current Z")
-            return initial_z
+            return _hold_at_start("the sweep range does not fit inside the Z limits")
 
         try:
             exposure = self.core.get_exposure()
@@ -2224,9 +2272,7 @@ class PycromanagerHardware(MicroscopeHardware):
                 f"Sweep drift check: only {len(measurements)} "
                 f"measurements in {elapsed:.0f}ms, keeping current Z"
             )
-            self.core.set_position(initial_z)
-            self.core.wait_for_device(z_dev)
-            return initial_z
+            return _hold_at_start(f"only {len(measurements)} focus measurements were taken")
 
         z_arr = np.array([m[0] for m in measurements])
         scores = np.array([m[1] for m in measurements])
@@ -2263,12 +2309,13 @@ class PycromanagerHardware(MicroscopeHardware):
                     f"Sweep drift check: edge-retry {retry+1} would center at "
                     f"Z={new_center:.2f} ({abs(new_center - initial_z):.1f} um "
                     f"from start Z={initial_z:.2f}, cap {drift_cap_um:.1f} um) -- "
-                    f"refusing to chase boundary peak (metric likely "
-                    f"contrast-inverted), holding at initial Z"
+                    f"refusing to chase boundary peak (focus is lost, or the "
+                    f"metric is contrast-inverted), holding at initial Z"
                 )
-                self.core.set_position(initial_z)
-                self.core.wait_for_device(z_dev)
-                return initial_z
+                return _hold_at_start(
+                    f"the focus score was still rising at Z {boundary_z:.1f}, past the "
+                    f"{drift_cap_um:.0f} um a drift check may move"
+                )
 
             ext_positions = _make_z_positions(new_center)
             if not ext_positions:
@@ -2314,9 +2361,9 @@ class PycromanagerHardware(MicroscopeHardware):
                 f"Metric did not bracket focus -- holding at initial Z "
                 f"({elapsed:.0f}ms)"
             )
-            self.core.set_position(initial_z)
-            self.core.wait_for_device(z_dev)
-            return initial_z
+            return _hold_at_start(
+                f"the focus score peaked at the edge of the search, Z {boundary_z:.1f}"
+            )
 
         # U-shape rejection: when the score curve has a clear interior
         # minimum with edges elevated near the global max, the metric is
@@ -2341,9 +2388,7 @@ class PycromanagerHardware(MicroscopeHardware):
                             f"contrast-inverted, holding at initial Z "
                             f"({elapsed:.0f}ms)"
                         )
-                        self.core.set_position(initial_z)
-                        self.core.wait_for_device(z_dev)
-                        return initial_z
+                        return _hold_at_start("the focus score curve is U-shaped")
 
         start_idx = int(np.argmin(np.abs(z_arr - initial_z)))
         start_score = scores[start_idx]
@@ -2358,9 +2403,7 @@ class PycromanagerHardware(MicroscopeHardware):
                 f"< 2% -- metric not discriminating focus, "
                 f"keeping current Z ({elapsed:.0f}ms)"
             )
-            self.core.set_position(initial_z)
-            self.core.wait_for_device(z_dev)
-            return initial_z
+            return _hold_at_start(f"the focus score only varied by {score_range_pct:.1f}%")
 
         best_z = z_arr[best_idx]
 
@@ -2386,9 +2429,10 @@ class PycromanagerHardware(MicroscopeHardware):
                 f"correction too large for a drift check, holding at initial Z "
                 f"({elapsed:.0f}ms); recover with standard AF"
             )
-            self.core.set_position(initial_z)
-            self.core.wait_for_device(z_dev)
-            return initial_z
+            return _hold_at_start(
+                f"the peak at Z {best_z:.1f} is past the {drift_cap_um:.0f} um a drift "
+                f"check may move"
+            )
 
         self.core.set_position(best_z)
         self.core.wait_for_device(z_dev)
