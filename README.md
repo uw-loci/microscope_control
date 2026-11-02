@@ -83,7 +83,7 @@ The repository has been updated to fix this issue. If you encounter this error:
 
 #### Problem: `ModuleNotFoundError: No module named 'cv2'`
 
-**Cause:** Missing OpenCV dependency (required by autofocus metrics).
+**Cause:** Missing OpenCV dependency (required by autofocus tissue detection).
 
 **Solution:**
 
@@ -138,7 +138,7 @@ These tools are called from the QuPath QPSC extension GUI during microscope setu
 ### Automated Unit Tests
 
 Automated pytest-compatible unit tests are located in the `tests/` directory:
-- **`tests/test_autofocus_metrics.py`** - Tests for 13 autofocus metric calculations
+- **`tests/test_autofocus_score_metric.py`** - Tests for the autofocus score-metric table (`AutofocusUtils.score_metric`) and the canonical Brenner gradient
 - **`tests/test_tissue_detection.py`** - Tests for empty region detection algorithms
 - **`tests/test_coordinate_validation.py`** - Tests for stage safety checks
 - **`tests/test_config_manager.py`** - Tests for configuration management
@@ -158,7 +158,7 @@ pip install -e ".[dev]"
 pytest
 
 # Run specific test file
-pytest tests/test_autofocus_metrics.py
+pytest tests/test_autofocus_score_metric.py
 
 # Run with coverage report
 pytest --cov=microscope_control --cov-report=html
@@ -170,7 +170,7 @@ open htmlcov/index.html  # or xdg-open on Linux
 **Test Coverage:**
 
 Current automated tests achieve ~75-85% coverage for testable components:
-- ✅ Autofocus metrics (all 13 metrics)
+- ✅ Autofocus score metrics (one table shared by the acquisition, test and benchmark paths)
 - ✅ Empty region detection (5 detection methods)
 - ✅ Coordinate validation (safety-critical)
 - ✅ Configuration management
