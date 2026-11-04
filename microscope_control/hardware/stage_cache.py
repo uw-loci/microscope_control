@@ -42,6 +42,19 @@ Threading model
 - pause()/resume() let callers temporarily quiesce the polling
   thread for tight loops where they need the bus to themselves
   (e.g. a Z scan that is sensitive to bus contention).
+
+Stage not responding
+--------------------
+After _SUSTAINED_ERROR_THRESHOLD reads in a row fail (stage controller
+off or unplugged), the cache counts the stage as down: it logs one
+WARNING naming the error, retries every _DOWN_RETRY_S instead of at the
+poll rate, repeats the WARNING every _DOWN_REMINDER_S, and logs INFO
+when a read succeeds again. While it is down, get_cached_position()
+raises StageUnavailableError at once instead of making its own serial
+read, so position requests from the client neither wait for a serial
+timeout nor log a stack trace each. force_refresh() always reads the
+stage, so callers that need a live position still get the real error.
+Failures from both paths count toward the same state.
 """
 
 import logging
@@ -54,10 +67,34 @@ from microscope_control.hardware.stage import Stage
 
 logger = logging.getLogger(__name__)
 
-# Number of consecutive poll failures before we treat it as a sustained
-# problem worth a WARNING. Below this, transient serial-bus blips are
-# logged at DEBUG so they don't dominate long-running session logs.
+# Number of consecutive failed reads before the stage counts as down.
+# Below this, transient serial-bus blips are logged at DEBUG so they
+# don't dominate long-running session logs.
 _SUSTAINED_ERROR_THRESHOLD = 3
+
+# While the stage is down: seconds between read attempts, and seconds
+# between repeats of the "not responding" WARNING.
+_DOWN_RETRY_S = 5.0
+_DOWN_REMINDER_S = 600.0
+
+
+def _first_line(exc: BaseException) -> str:
+    """The first line of an exception's text.
+
+    Java exceptions from mmcorej (through the Pycromanager ZMQ bridge)
+    carry their whole stack trace in str(e).
+    """
+    text = str(exc)
+    return text.splitlines()[0] if text else type(exc).__name__
+
+
+class StageUnavailableError(RuntimeError):
+    """The stage has not answered its last few reads; no live read was made.
+
+    Raised by StagePositionCache.get_cached_position() while the stage
+    counts as down. The message names the last error and how long the
+    stage has been failing.
+    """
 
 
 class StagePositionCache:
@@ -88,7 +125,8 @@ class StagePositionCache:
                 serializing all stage access, high-frequency cache
                 polling just queues behind moves and adds no value.
             retry_backoff_s: How long to sleep after a polling
-                error before trying again. Kept short so transient
+                error before trying again, until the stage counts as
+                down (then _DOWN_RETRY_S). Kept short so transient
                 serial blips don't visibly stale the cache.
         """
         self._stage = stage
@@ -109,6 +147,14 @@ class StagePositionCache:
         self._poll_count = 0
         self._error_count = 0
 
+        # Failure streak, shared by the poll thread and force_refresh().
+        # Guarded by self._lock. Times are time.monotonic() seconds.
+        self._consecutive_errors = 0
+        self._first_error_at = 0.0
+        self._last_attempt_at = 0.0
+        self._last_warning_at = 0.0
+        self._last_error = ""
+
     # --- Lifecycle ---
 
     def start(self) -> None:
@@ -128,8 +174,8 @@ class StagePositionCache:
             self.force_refresh()
         except Exception as e:
             logger.warning(
-                "StagePositionCache: initial read failed (%s); " "polling thread will retry",
-                e,
+                "StagePositionCache: initial read failed (%s); polling thread will retry",
+                _first_line(e),
             )
 
         self._stop_event.clear()
@@ -199,9 +245,17 @@ class StagePositionCache:
             Position with x, y, z all set. Never returns None coords
             -- if the cache is empty and a refresh fails, the
             underlying exception propagates.
+
+        Raises:
+            StageUnavailableError: the stage counts as down and was
+                tried less than _DOWN_RETRY_S ago; no read was made.
         """
         with self._lock:
             x, y, z, ts = self._x, self._y, self._z, self._timestamp
+            down = self._consecutive_errors >= _SUSTAINED_ERROR_THRESHOLD
+            since_attempt_s = time.monotonic() - self._last_attempt_at
+            if down and since_attempt_s < _DOWN_RETRY_S:
+                raise StageUnavailableError(self._down_message_locked())
 
         if ts == 0.0:
             # Cache empty -- force a read so callers never see None.
@@ -244,26 +298,108 @@ class StagePositionCache:
         Use for callers that need the exact current position
         (focus-scan endpoints, per-tile acquisition metadata) and
         cannot tolerate up-to-100 ms staleness from the cache.
+        Always reads the stage, even while it counts as down; the
+        outcome updates the failure streak.
         """
-        x, y, z = self._stage.get_xyz()
+        try:
+            x, y, z = self._stage.get_xyz()
+        except Exception as e:
+            self._record_failure(e)
+            raise
         with self._lock:
             self._x = x
             self._y = y
             self._z = z
             self._timestamp = time.monotonic()
+        self._record_success()
         return Position(x, y, z)
+
+    # --- Failure streak ---
+
+    def _down_message_locked(self) -> str:
+        """Why the stage counts as down. Caller holds self._lock."""
+        failing_s = time.monotonic() - self._first_error_at
+        return "Stage not responding (%d failed reads over %.0f s): %s" % (
+            self._consecutive_errors,
+            failing_s,
+            self._last_error,
+        )
+
+    def _record_failure(self, exc: BaseException) -> None:
+        """Count a failed read and log it: DEBUG, one WARNING, then reminders."""
+        summary = _first_line(exc)
+        now = time.monotonic()
+        with self._lock:
+            self._error_count += 1
+            self._consecutive_errors += 1
+            if self._consecutive_errors == 1:
+                self._first_error_at = now
+            self._last_attempt_at = now
+            self._last_error = summary
+            count = self._consecutive_errors
+            failing_s = now - self._first_error_at
+            if count < _SUSTAINED_ERROR_THRESHOLD:
+                level = "debug"
+            elif count == _SUSTAINED_ERROR_THRESHOLD:
+                level = "first"
+                self._last_warning_at = now
+            elif now - self._last_warning_at >= _DOWN_REMINDER_S:
+                level = "reminder"
+                self._last_warning_at = now
+            else:
+                level = "quiet"
+
+        if level == "first":
+            logger.warning(
+                "Stage not responding (%d failed reads): %s. Is the stage "
+                "controller powered on and connected? Retrying every %.0f s; "
+                "position requests get a hardware error until it answers.",
+                count,
+                summary,
+                _DOWN_RETRY_S,
+            )
+        elif level == "reminder":
+            logger.warning(
+                "Stage still not responding (%d failed reads over %.0f min): %s",
+                count,
+                failing_s / 60.0,
+                summary,
+            )
+        else:
+            logger.debug("StagePositionCache: read failed (%d in a row): %s", count, summary)
+
+    def _record_success(self) -> None:
+        """End a failure streak; log the recovery if the stage counted as down."""
+        now = time.monotonic()
+        with self._lock:
+            count = self._consecutive_errors
+            failing_s = now - self._first_error_at
+            self._consecutive_errors = 0
+            self._last_attempt_at = now
+            self._last_error = ""
+        if count >= _SUSTAINED_ERROR_THRESHOLD:
+            logger.info(
+                "Stage responding again after %d failed reads over %.0f s",
+                count,
+                failing_s,
+            )
+
+    @property
+    def is_stage_down(self) -> bool:
+        """True while the stage has failed its last few reads in a row."""
+        with self._lock:
+            return self._consecutive_errors >= _SUSTAINED_ERROR_THRESHOLD
 
     # --- Background polling ---
 
     def _poll_loop(self) -> None:
         """Daemon thread body: poll get_xyz() in a loop.
 
-        Exceptions are caught and logged at warning (first few) /
-        debug (steady state) so a failing serial bus doesn't kill
-        the polling thread. The cache simply goes stale until
-        reads start succeeding again.
+        Exceptions are caught so a failing serial bus doesn't kill
+        the polling thread; force_refresh() counts and logs them (see
+        "Stage not responding" in the module docstring). The cache
+        goes stale until reads succeed again.
         """
-        consecutive_errors = 0
         while not self._stop_event.is_set():
             if self._pause_event.is_set():
                 # Paused: sleep in short chunks so resume()/stop()
@@ -273,49 +409,14 @@ class StagePositionCache:
                 continue
 
             try:
-                x, y, z = self._stage.get_xyz()
-                with self._lock:
-                    self._x = x
-                    self._y = y
-                    self._z = z
-                    self._timestamp = time.monotonic()
+                self.force_refresh()
                 self._poll_count += 1
-                # Only announce recovery if we previously logged a WARNING.
-                # Singleton blips (1-2 errors) don't get a WARN, so they
-                # don't need a paired recovery INFO either -- that pair
-                # was the bulk of the weekend log spam.
-                if consecutive_errors >= _SUSTAINED_ERROR_THRESHOLD:
-                    logger.info(
-                        "StagePositionCache: polling recovered after %d consecutive errors",
-                        consecutive_errors,
-                    )
-                consecutive_errors = 0
-            except Exception as e:
-                self._error_count += 1
-                consecutive_errors += 1
-                # Java exceptions from mmcorej (Pycromanager ZMQ bridge)
-                # render their full stack trace via __str__; strip to the
-                # first line so the log isn't dominated by 13-line stacks
-                # for transient serial-bus blips.
-                summary = str(e).splitlines()[0] if str(e) else type(e).__name__
-                # Quiet for short transients (~500 ms cache staleness is
-                # harmless), loud once errors persist enough to suggest a
-                # real wire / device problem worth investigating.
-                if consecutive_errors < _SUSTAINED_ERROR_THRESHOLD:
-                    logger.debug(
-                        "StagePositionCache: poll failed (%d in a row): %s",
-                        consecutive_errors,
-                        summary,
-                    )
-                else:
-                    logger.warning(
-                        "StagePositionCache: poll failed (%d in a row): %s",
-                        consecutive_errors,
-                        summary,
-                    )
-                # Back off slightly on errors so we don't hammer a
-                # broken bus at full poll rate.
-                if self._stop_event.wait(timeout=self._retry_backoff_s):
+            except Exception:
+                # Back off on errors: briefly for a transient blip, then
+                # every _DOWN_RETRY_S once the stage counts as down, so
+                # a switched-off controller is not asked twice a second.
+                backoff_s = _DOWN_RETRY_S if self.is_stage_down else self._retry_backoff_s
+                if self._stop_event.wait(timeout=backoff_s):
                     return
                 continue
 
