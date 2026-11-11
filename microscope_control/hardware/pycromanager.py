@@ -177,6 +177,12 @@ class PycromanagerHardware(MicroscopeHardware):
         # focus curve to the operator while a search runs.
         self.autofocus_listener = None
 
+        # Peak validation of the last autofocus() call that committed a Z (the dict
+        # AutofocusUtils.validate_focus_peak returns: peak_prominence, quality_score,
+        # is_valid, ...), or None when the last call committed nothing. The
+        # acquisition's focus surface weighs a result by how clear its peak was.
+        self.last_autofocus_validation = None
+
         # Log microscope info
         microscope_info = settings.get("microscope", {})
         logger.info(
@@ -1420,6 +1426,7 @@ class PycromanagerHardware(MicroscopeHardware):
         """
         # Stop streaming -- snap_image() cannot run during sequence acquisition
         self.camera.stop_if_streaming()
+        self.last_autofocus_validation = None
 
         # Read stage Z limits once for edge-retry clamping. Same accessor as
         # sweep_focus / autofocus_sweep_drift_check.
@@ -1767,6 +1774,7 @@ class PycromanagerHardware(MicroscopeHardware):
                     new_pos = Position(current_pos.x, current_pos.y, new_z)
                     self.move_to_position(new_pos)
 
+                self.last_autofocus_validation = dict(validation)
                 return new_z
 
         except AutofocusAborted:
