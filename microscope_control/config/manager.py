@@ -10,6 +10,8 @@ from typing import Dict, Any, Optional, List
 from copy import deepcopy
 import logging
 
+from microscope_control.config.per_detector import apply_detector_overlay
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,6 +60,10 @@ class ConfigManager:
 
         self._configs: Dict[str, Dict[str, Any]] = {}
         self._current_config_name: Optional[str] = None
+        # The camera Micro-Manager has active, as a detector ID. load_config_file merges
+        # its per_detector values into every config it loads (see per_detector.py).
+        # The server sets it on CONFIG and when the active camera changes.
+        self.active_detector: Optional[str] = None
         self._load_configs()
         logger.info(f"ConfigManager initialized with directory: {self.config_dir}")
 
@@ -76,7 +82,9 @@ class ConfigManager:
             except Exception as e:
                 logger.error(f"Failed to load config {file}: {e}")
 
-    def load_config_file(self, config_path: str) -> Dict[str, Any]:
+    def load_config_file(
+        self, config_path: str, apply_detector_values: bool = True
+    ) -> Dict[str, Any]:
         """
         Load a single configuration file and merge with resources file.
 
@@ -91,8 +99,14 @@ class ConfigManager:
         wizard wrote into the config -- config_OWS3.yml's HAMAMATSU_DCAM_01, for one --
         never reached the server, while QPSC used it.
 
+        Then the ``per_detector`` values of :attr:`active_detector` are merged in
+        (``apply_detector_overlay``), unless ``apply_detector_values`` is False -- the
+        server's CONFIG handler loads the raw file first, because it learns the active
+        camera only after the config is loaded.
+
         Args:
             config_path: Path to YAML configuration file
+            apply_detector_values: Merge the active camera's per_detector values.
 
         Returns:
             Dictionary containing merged configuration data
@@ -120,6 +134,8 @@ class ConfigManager:
         else:
             logger.debug(f"No resources file found at: {resources_path}")
 
+        if apply_detector_values and self.active_detector is not None:
+            data = apply_detector_overlay(data, self.active_detector)
         return data
 
     def get_config(self, name: Optional[str] = None) -> Optional[Dict[str, Any]]:

@@ -20,6 +20,7 @@ from microscope_control.hardware.base import (
     notify_af_sample,
     reports_autofocus,
 )
+from microscope_control.config.profiles import sibling_for_detector
 from microscope_control.autofocus.core import AutofocusUtils
 from microscope_imageprocessing.focus import (
     resolve_metric,
@@ -183,6 +184,10 @@ class PycromanagerHardware(MicroscopeHardware):
         # acquisition's focus surface weighs a result by how clear its peak was.
         self.last_autofocus_validation = None
 
+        # The server's ConfigManager, when it sets one: set_active_camera tells it the new
+        # camera, so every later config load merges that camera's per_detector values.
+        self.config_manager = None
+
         # Log microscope info
         microscope_info = settings.get("microscope", {})
         logger.info(
@@ -296,6 +301,29 @@ class PycromanagerHardware(MicroscopeHardware):
             )
         return cls(self.core, self.studio, detector_config)
 
+    def refresh_active_detector(self) -> Optional[str]:
+        """Re-read Micro-Manager's active camera and return its detector ID (or None).
+
+        One Core call (getCameraDevice), unlike _detect_camera_name, which enumerates
+        every device property and is too slow to run while a sequence acquisition is
+        streaming. When the call fails the last known camera is kept.
+        """
+        try:
+            name = self.core.get_camera_device()
+        except Exception as e:
+            logger.warning(
+                "Could not read the active camera from Micro-Manager (%s); keeping %s",
+                e,
+                self._camera_name,
+            )
+            return self._active_detector_id
+        if name and name != self._camera_name:
+            logger.info("Micro-Manager's active camera is now %s (was %s)", name, self._camera_name)
+            self._camera_name = name
+        if name:
+            self._active_detector_id = self._find_detector_id(name)
+        return self._active_detector_id
+
     def _find_detector_id(self, camera_name: str) -> Optional[str]:
         """Find the detector ID for a given MM camera device name."""
         id_detectors = self.settings.get("id_detector", {})
@@ -363,6 +391,14 @@ class PycromanagerHardware(MicroscopeHardware):
             cam.flip_x,
             cam.flip_y,
         )
+        if self.config_manager is not None and self.config_manager.active_detector != detector_id:
+            # Config loads from here on merge this camera's per_detector values. The
+            # settings already in memory keep the previous camera's until the next load.
+            self.config_manager.active_detector = detector_id
+            logger.info(
+                "Config loads now use %s's per_detector values (from the next load)",
+                detector_id,
+            )
 
     @property
     def camera_registry(self) -> Dict[str, Any]:
@@ -693,6 +729,21 @@ class PycromanagerHardware(MicroscopeHardware):
             )
             return
 
+        # A two-camera config keeps one profile set per camera. A key picked by name
+        # can belong to the other camera's set; use the active camera's own profile for
+        # the same modality and objective when the config has one.
+        sibling = sibling_for_detector(profiles, resolved_key, self._active_detector_id)
+        if sibling != resolved_key:
+            logger.info(
+                "Profile '%s' is for detector %s; using '%s', the same modality and "
+                "objective on the active camera %s",
+                resolved_key,
+                (profiles.get(resolved_key) or {}).get("detector"),
+                sibling,
+                self._active_detector_id,
+            )
+            resolved_key = sibling
+
         profile = profiles[resolved_key]
         if resolved_key != profile_name:
             logger.info(
@@ -726,10 +777,23 @@ class PycromanagerHardware(MicroscopeHardware):
                 self.apply_config_preset(group, preset)
 
         # === STEP 3: Switch detector/camera if specified ===
+        # A camera Micro-Manager has not loaded (the other port of a two-camera stand
+        # runs its own Micro-Manager config) cannot be selected: warn and carry on with
+        # the active one rather than abandon the mode setup.
         detector_id = profile.get("detector")
         if detector_id and detector_id != self._active_detector_id:
             if detector_id in self._camera_registry:
-                self.set_active_camera(detector_id)
+                try:
+                    self.set_active_camera(detector_id)
+                except Exception as e:
+                    logger.warning(
+                        "Profile '%s' wants camera %s, which Micro-Manager could not select "
+                        "(not loaded?): %s. Continuing with the active camera %s.",
+                        profile_name,
+                        detector_id,
+                        e,
+                        self._active_detector_id,
+                    )
             else:
                 logger.warning("Detector '%s' not in camera registry", detector_id)
 

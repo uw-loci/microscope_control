@@ -142,6 +142,8 @@ Automated pytest-compatible unit tests are located in the `tests/` directory:
 - **`tests/test_tissue_detection.py`** - Tests for empty region detection algorithms
 - **`tests/test_coordinate_validation.py`** - Tests for stage safety checks
 - **`tests/test_config_manager.py`** - Tests for configuration management
+- **`tests/test_per_detector.py`** - Tests for `apply_detector_overlay`, which merges the active camera's `per_detector` values into a config (one config per microscope; `ConfigManager.active_detector` applies it on every load)
+- **`tests/test_profile_resolution.py`** - Tests for `resolve_profile_key` (the acquisition profile for a modality, objective and camera; QPSC's `resolveProfileKey` applies the same rule) and for `apply_mode_setup` continuing when a profile's camera is not loaded in Micro-Manager
 
 These tests:
 - Run without hardware (use synthetic test data)
