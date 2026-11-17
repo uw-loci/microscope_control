@@ -57,6 +57,7 @@ stage, so callers that need a live position still get the real error.
 Failures from both paths count toward the same state.
 """
 
+from microscope_control.hardware.health import MICROMANAGER, health, is_bridge_timeout
 import logging
 import threading
 import time
@@ -327,6 +328,8 @@ class StagePositionCache:
 
     def _record_failure(self, exc: BaseException) -> None:
         """Count a failed read and log it: DEBUG, one WARNING, then reminders."""
+        if is_bridge_timeout(exc):
+            health.failed(MICROMANAGER, exc)
         summary = _first_line(exc)
         now = time.monotonic()
         with self._lock:
@@ -370,6 +373,7 @@ class StagePositionCache:
 
     def _record_success(self) -> None:
         """End a failure streak; log the recovery if the stage counted as down."""
+        health.succeeded(MICROMANAGER)
         now = time.monotonic()
         with self._lock:
             count = self._consecutive_errors
@@ -383,6 +387,25 @@ class StagePositionCache:
                 count,
                 failing_s,
             )
+
+    def down_status(self) -> dict:
+        """The stage's state for a status report: ok, since (wall clock), message, failures."""
+        with self._lock:
+            down = self._consecutive_errors >= _SUSTAINED_ERROR_THRESHOLD
+            if not down:
+                return {
+                    "ok": True,
+                    "since": None,
+                    "message": "",
+                    "failures": self._consecutive_errors,
+                }
+            since = time.time() - (time.monotonic() - self._first_error_at)
+            return {
+                "ok": False,
+                "since": since,
+                "message": self._down_message_locked(),
+                "failures": self._consecutive_errors,
+            }
 
     @property
     def is_stage_down(self) -> bool:

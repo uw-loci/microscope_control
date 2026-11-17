@@ -5,6 +5,7 @@ Bayer-filter cameras (e.g. MicroPublisher6) and monochrome cameras.
 Camera-specific subclasses (e.g. JAICamera) override methods as needed.
 """
 
+from microscope_control.hardware.health import CAMERA, MICROMANAGER, health, is_bridge_timeout
 import time
 import logging
 from collections import OrderedDict
@@ -162,11 +163,19 @@ class PycromanagerCamera(Camera):
 
         # Capture
         t_cam_start = time.perf_counter()
-        self._core.snap_image()
-        t_cam_snap = time.perf_counter()
-        logger.debug("    [TIMING] Camera snap: %.1fms", (t_cam_snap - t_cam_start) * 1000)
-
-        tagged_image = self._core.get_tagged_image()
+        try:
+            self._core.snap_image()
+            t_cam_snap = time.perf_counter()
+            logger.debug("    [TIMING] Camera snap: %.1fms", (t_cam_snap - t_cam_start) * 1000)
+            tagged_image = self._core.get_tagged_image()
+        except Exception as exc:
+            # Recorded for the server's hardware status (HWSTAT); the caller still sees the error.
+            health.failed(CAMERA, exc)
+            if is_bridge_timeout(exc):
+                health.failed(MICROMANAGER, exc)
+            raise
+        health.succeeded(CAMERA)
+        health.succeeded(MICROMANAGER)
         t_cam_transfer = time.perf_counter()
         logger.debug("    [TIMING] Buffer transfer: %.1fms", (t_cam_transfer - t_cam_snap) * 1000)
 
