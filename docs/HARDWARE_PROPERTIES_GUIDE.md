@@ -283,6 +283,10 @@ reconstruction:
 - **Acquisition profiles:** the profile for a modality and objective is chosen for the active camera. Each profile's `detector` field names its camera, and a profile with no `detector` field fits every camera. If a profile picked by name belongs to the other camera, the same modality and objective on the active camera is used instead.
 - **Camera not loaded:** if a profile's camera cannot be selected in Micro-Manager (for example, the other port of a two-camera stand runs its own Micro-Manager config), the mode setup logs a warning and continues with the active camera.
 
+### Hardware Health (`hardware/health.py`)
+
+`hardware/health.py` records which part of the microscope is not answering, for the command server's `HWSTAT` reply. It probes nothing: it learns only from calls that happen anyway. `PycromanagerCamera` records each snap as a success or failure of `camera`, and a failure that looks like a Micro-Manager bridge timeout (`is_bridge_timeout`: timeout or ZMQ errors) also counts against `micromanager`; the stage position cache does the same for bridge timeouts on its reads. A part is failing from its first failure after a success until its next success, with the time of that first failure (`since`), the count and the last message. `health.snapshot(stage_cache)` returns all three parts as plain dicts; the stage part comes from the stage cache's own `down_status()` (failing after 3 failed reads in a row) and carries `known: false` when there is no stage cache. The module-level `health` object is the one tracker the server and the hardware classes share.
+
 ### How Properties Are Used in QPSC
 
 | Feature | Device | Property | Code Location |

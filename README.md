@@ -14,6 +14,7 @@ Hardware control library for microscopes via Pycromanager (Micro-Manager).
 - **Configuration Management**: YAML-based microscope configuration
 - **JAI Camera Support**: Per-channel exposure, gain, and black level control for JAI 3-CCD prism cameras; optional high-bit-depth PixelFormat mode for PPM
 - **White Balance Calibration**: Iterative per-channel calibration with automatic gain/exposure adaptation for low-light conditions
+- **Hardware Health**: `hardware/health.py` tracks which part (camera, Micro-Manager bridge, stage) is failing, from snaps and stage reads that happen anyway, for the command server's `HWSTAT`; see [docs/HARDWARE_PROPERTIES_GUIDE.md](docs/HARDWARE_PROPERTIES_GUIDE.md#hardware-health-hardwarehealthpy)
 
 ## Installation
 
@@ -143,6 +144,7 @@ Automated pytest-compatible unit tests are located in the `tests/` directory:
 - **`tests/test_coordinate_validation.py`** - Tests for stage safety checks
 - **`tests/test_config_manager.py`** - Tests for configuration management
 - **`tests/test_per_detector.py`** - Tests for `apply_detector_overlay`, which merges the active camera's `per_detector` values into a config (one config per microscope; `ConfigManager.active_detector` applies it on every load)
+- **`tests/test_hardware_health.py`** - Tests for the hardware health tracker behind `HWSTAT` (failing from the first failure to the next success, bridge-timeout detection, the stage part from the stage cache)
 - **`tests/test_profile_resolution.py`** - Tests for `resolve_profile_key` (the acquisition profile for a modality, objective and camera; QPSC's `resolveProfileKey` applies the same rule) and for `apply_mode_setup` continuing when a profile's camera is not loaded in Micro-Manager
 
 These tests:
