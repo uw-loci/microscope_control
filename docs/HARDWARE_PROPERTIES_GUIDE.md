@@ -266,6 +266,23 @@ detectors:
 - If the configuration is absent or incomplete, high-bit mode is a no-op and the camera stays at its current format
 - The feature is safe to configure but inactive until explicitly triggered by acquisition workflows
 
+### Two Cameras in One Microscope Config (`per_detector`)
+
+A microscope with two cameras keeps one config file. Values that depend on the camera go in a `per_detector` mapping beside the shared value, keyed by detector ID:
+
+```yaml
+reconstruction:
+  black_level: 51
+  per_detector:
+    LCPS_DETECTOR_FLIR_ORYX_001: {black_level: 99}
+    LCPS_DETECTOR_HAMAMATSU_FLASH_001: {black_level: 51}
+```
+
+- **Merge rules:** when the active camera is `LCPS_DETECTOR_FLIR_ORYX_001`, its entry is merged into the parent mapping wherever a `per_detector` key appears. Scalars are replaced, nested mappings are merged key by key, and `device_properties` lists are merged by `(device, property)`: a matching entry is replaced in place and a new one is appended. Each channel in a list uses its own `per_detector` entry.
+- **Which camera is active:** the server sets the active camera from Micro-Manager on `CONFIG` and whenever the camera changes. Config loads after that point use its values. Settings already in memory keep the previous camera's values until the next load.
+- **Acquisition profiles:** the profile for a modality and objective is chosen for the active camera. Each profile's `detector` field names its camera, and a profile with no `detector` field fits every camera. If a profile picked by name belongs to the other camera, the same modality and objective on the active camera is used instead.
+- **Camera not loaded:** if a profile's camera cannot be selected in Micro-Manager (for example, the other port of a two-camera stand runs its own Micro-Manager config), the mode setup logs a warning and continues with the active camera.
+
 ### How Properties Are Used in QPSC
 
 | Feature | Device | Property | Code Location |
