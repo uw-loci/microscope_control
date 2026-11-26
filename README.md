@@ -136,6 +136,14 @@ These tools are called from the QuPath QPSC extension GUI during microscope setu
 
 **Not intended for automated CI/CD** - these are interactive diagnostic tools.
 
+### Record and replay at the Micro-Manager boundary
+
+`microscope_control.trace` records every `Core` call a session makes (arguments, return
+values, frames as digests) and plays the recording back as a fake core, so a session captured
+once at the microscope can be rerun against changed code anywhere. How-to and format:
+[docs/RECORD_AND_REPLAY.md](docs/RECORD_AND_REPLAY.md); the command server switches it on
+with `--trace-dir`.
+
 ### Automated Unit Tests
 
 Automated pytest-compatible unit tests are located in the `tests/` directory:
